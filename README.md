@@ -1,6 +1,8 @@
-# Q-Wolf Buddy (`qwbuddy`)
+<div align="right">
+  Language: <b>English</b> | <a href="README.zh.md">简体中文</a>
+</div>
 
-[English](README.md) | [简体中文](README.zh.md)
+# Q-Wolf Buddy (`qwbuddy`)
 
 > Lightweight, in-repo AI controller manual and runtime for single projects. Specify requirements; QW buddy manages task dispatching, worker isolation, automated wakeups, acceptance gates, and ledger accounting.
 
