@@ -17,6 +17,7 @@ usage() {
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
   --pane <pane_id>      复用既有 pane（须为交互 shell），否则新开 herdr tab
   --name <agent名>      工人 agent 名（默认：qwb-<任务id>）
+  --accept-new-scenarios  主控显式确认：曾派发但丢 scenarios-fp 基线的任务书，允许重建冻结基线（留一行说明）
   -h, --help            显示本帮助
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
@@ -25,7 +26,7 @@ usage() {
 EOF
 }
 
-PROJECT_ROOT="$(pwd)"; TASK=""; WORKER=""; WORKTREE=""; CREATE_WT=0; HERE=0; PANE=""; NAME=""
+PROJECT_ROOT="$(pwd)"; TASK=""; WORKER=""; WORKTREE=""; CREATE_WT=0; HERE=0; PANE=""; NAME=""; ACCEPT_NEW=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --here) HERE=1; shift ;;
     --pane) PANE="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
+    --accept-new-scenarios) ACCEPT_NEW=1; shift ;;
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -105,6 +107,23 @@ printf '%s\n' "$SCEN_BLK" | grep -E '^#{1,6}|^[[:space:]]*Then' \
 # 场景冻结指纹：派发时的场景块 sha1，稍后写进 state: 附近（lint 重算比对，改动即 FAIL）
 SCEN_FP="$(printf '%s' "$SCEN_BLK" | shasum | cut -d' ' -f1)"
 
+# —— 冻结基线核对（R2-M1）：再次派发不得覆盖/丢失基线 ——
+# 已有 scenarios-fp: → 与当前场景块指纹比对：一致→正常派发且基线原样保留；不一致→拒绝（自家派发入口不得洗白改动）。
+# 无基线但有 dispatch: → 曾派发的新制任务丢了基线，默认拒绝；主控显式 --accept-new-scenarios 才允许重建并留说明行。
+DECLARED_FP="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$TASK_FILE" | head -1 | tr -d '[:space:]')"
+REBUILD_FP=0
+if [[ -n "$DECLARED_FP" ]]; then
+  [[ "$DECLARED_FP" == "$SCEN_FP" ]] \
+    || { echo "错误：验收场景在派发后被改动：请恢复场景，或由主控确认后手动删除 scenarios-fp: 行并以 --accept-new-scenarios 再派发" >&2; exit 1; }
+elif grep -q '^dispatch:' "$TASK_FILE"; then
+  if [[ "$ACCEPT_NEW" -eq 1 ]]; then
+    REBUILD_FP=1
+  else
+    echo "错误：任务书有 dispatch: 但无 scenarios-fp: 冻结基线（新制任务丢基线）——由主控核实后加 --accept-new-scenarios 重建" >&2
+    exit 1
+  fi
+fi
+
 # 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
 LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
@@ -150,12 +169,15 @@ fi
 # 窗口：复用 --pane 或新开 tab（tab create 返回 JSON，pane id 按契约取 .result.root_pane.pane_id）
 if [[ -z "$PANE" ]]; then
   out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
-  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json -0777 -e '
+  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
+  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
     my $j = eval { decode_json(<STDIN>) };
-    print(($j && ref $j eq "HASH" && ref $j->{result} eq "HASH" && ref $j->{result}{root_pane} eq "HASH")
-      ? ($j->{result}{root_pane}{pane_id} // "") : "");
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{pane_id} : undef;
+    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
   ')"
-  [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失或为空：$out" >&2; exit 1; }
+  [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
 fi
 
 NAME="${NAME:-qwb-$TASK_ID}"
@@ -165,12 +187,11 @@ NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd '
 # 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
 lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"
 if grep -q '^state:' "$TASK_FILE"; then
-  perl -i -pe 'if (!$done && /^state:/) { $_ = "state: running\n"; $done = 1 }
-               if (/^scenarios-fp:/) { $_ = "scenarios-fp: '"$SCEN_FP"'\n" }' "$TASK_FILE"
+  perl -i -pe 'if (!$done && /^state:/) { $_ = "state: running\n"; $done = 1 }' "$TASK_FILE"
 else
-  perl -i -pe 'if ($. == 1 && !$done) { $_ = "state: running\nscenarios-fp: '"$SCEN_FP"'\n\n$_"; $done = 1 }' "$TASK_FILE"
+  perl -i -pe 'if ($. == 1 && !$done) { $_ = "state: running\n\n$_"; $done = 1 }' "$TASK_FILE"
 fi
-# 有 state: 行但还没有 scenarios-fp: → 插到 state: 行后（写在 state 附近）
+# 首次派发或 --accept-new-scenarios 重建才写 scenarios-fp:；已有基线原样保留（不重写、不改值，R2-M1）
 grep -q '^scenarios-fp:' "$TASK_FILE" \
   || perl -i -pe 'if (!$ins && /^state:/) { $_ .= "scenarios-fp: '"$SCEN_FP"'\n"; $ins = 1 }' "$TASK_FILE"
 { grep -q '^state: running' "$TASK_FILE" && grep -q "^scenarios-fp: ${SCEN_FP}" "$TASK_FILE"; } \
@@ -179,6 +200,9 @@ grep -q '^scenarios-fp:' "$TASK_FILE" \
 [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && printf '\n' >> "$TASK_FILE"
 printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR" >> "$TASK_FILE"
+[[ "$REBUILD_FP" -eq 1 ]] \
+  && printf 'working: %s 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）\n' \
+       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TASK_FILE"
 # 自检：任务书原有行不得丢失（行数只增不减）
 lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
 (( lines_after >= lines_before )) \
