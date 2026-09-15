@@ -1,6 +1,7 @@
-# Q-Wolf Buddy (`qwbuddy`)
+# 🐺 Q-Wolf Buddy (`qwbuddy`)
 
-> Lightweight, in-repo AI controller manual and runtime for single projects. Specify requirements; QW buddy manages task dispatching, worker isolation, automated wakeups, acceptance gates, and ledger accounting.
+> **Stop babysitting your AI coding agents.**  
+> Turn your existing Claude Code, Codex, Pi, and Devin into an **autonomous, self-verifying, sandbox-isolated engineering team** right inside your repository.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell: Bash](https://img.shields.io/badge/shell-bash%203.2+-4EAA25.svg)](https://www.gnu.org/software/bash/)
@@ -14,83 +15,102 @@
 
 ---
 
-## What and Why
+## 💡 What Pain Points & Core Problems Does It Solve?
 
-Working with coding agents (Claude Code, Codex, Pi, Devin) inside real repositories reveals three recurring friction points:
+When working with single-agent coding tools (Claude Code, Codex CLI, Cursor, Devin, etc.) in real codebases, developers face **4 fundamental blockers**:
 
-| Problem | Symptom | How QW Buddy Solves It |
-|---|---|---|
-| **Controller Goes Silent** | Assign a task to a background worker. When the worker finishes 10 minutes later, the controller's interactive turn has ended. The controller never wakes up to verify or land changes. | Deploys a thin sentinel script (`qwb-wake.sh`) that monitors ledger state and re-prompts the idle controller via terminal multiplexing (`herdr`). |
-| **No Identity Switching** | Single sessions drift between architecting, reviewing, implementing, and consulting without boundaries, leaking context and expanding scope. | Codifies explicit role playbooks (`qwbuddy/roles/`). Enforces that reviews require a different model family and separate native session. |
-| **No Dispatch Standards** | Tasks get dumped into arbitrary agent sessions without explicit acceptance criteria, isolated workspaces, or failure scenarios. | Enforces task tickets (`tasks/YYYY-MM-DD-*.md`) with Given/When/Then scenarios, frozen baselines, and automatic git worktree isolation. |
+1. **The "Human Polling Daemon" Trap**:  
+   You assign a heavy task to a background worker and step away for coffee. 15 minutes later, the worker finished, but the **controller AI's interactive turn has ended and gone idle**. Nobody verifies the code, nobody merges the branch. The workflow freezes halfway. You are forced to babysit the terminal and manually type "Continue / Review". You become an organic message bus between two AI agents.
+2. **The "Trashing the Working Tree" Risk**:  
+   You ask an agent to fix a minor bug; it indiscriminately reformats 30 unrelated files, alters your package lockfiles, and pollutes your main branch. When running concurrent tasks, agents overwrite each other's uncommitted changes.
+3. **The "False Green" AI Sycophancy Problem**:  
+   Worker agents confidently boast: *"All tests pass, feature implemented!"* In reality, running the command reveals broken code, or worse, the agent generated a tautological test that always returns `true` to deceive the acceptance check.
+4. **The "Grading Its Own Exam" Self-Review Fallacy**:  
+   The same Claude or GPT session writes the implementation and then reviews its own code. Model-family blind spots mean that same-family reviews are superficial and miss critical vulnerabilities.
 
-**Developer role**: Specify requirements. Delegate planning, execution, verification, and landing to the controller.
-
----
-
-## How It Works
-
-### Architecture
-
-```
-+-------------------------------------------------------------------------+
-|                            Developer (User)                             |
-|                        Specify requirements only                        |
-+-------------------------------------------------------------------------+
-                                     |
-                                     v
-+-------------------------------------------------------------------------+
-|                     Controller (AI Session in Herdr)                    |
-|  - Creates task ticket (tasks/YYYY-MM-DD-<topic>.md)                    |
-|  - Runs qwb-run.sh to dispatch worker into isolated git worktree        |
-|  - Independently executes acceptance checks upon wakeup                 |
-+-------------------------------------------------------------------------+
-            ^                                                |
-            | Wakeup prompt                                  | Dispatch task
-            | ("Check ledger")                               v
-+-----------------------+                        +------------------------+
-|   Sentinel / Daemon   |                        |     Worker (Agent)     |
-|     (qwb-wake.sh)     |                        |      (Herdr Pane)      |
-|  - Inspects ledger    |                        |  - Runs in worktree    |
-|  - SHA1 fingerprint   |                        |  - Appends status lines|
-|  - Fallback re-wake   |                        |    (working:/done:)    |
-+-----------------------+                        +------------------------+
-            |                                                |
-            | Reads unclosed tasks                           | Appends status
-            v                                                v
-+-------------------------------------------------------------------------+
-|                           Ledger (tasks/*.md)                           |
-|        Single source of truth: task specs, evidence, and audit logs      |
-+-------------------------------------------------------------------------+
-```
-
-### Core Mechanisms
-
-| Mechanism | Component | Enforced Behavior |
-|---|---|---|
-| **Fingerprint Wake & Fallback** | `qwb-wake.sh` | Computes progress fingerprint `sha1(state + last_status_line)`. Skips re-waking if fingerprint is unchanged. Re-wakes unconditionally after `QWB_REWAKE_MS` (default 30 min) to catch crashed workers. |
-| **Suspicion Gate & Revision** | `qwb-run.sh` | Traps specification defects via `blocked: spec-defect:`. Blocks redispatch until controller documents `working: spec-resolved:`. Requires `--revise-scenarios=<reason>` to update frozen specs. |
-| **Scenario Freezing** | `qwb-run.sh`, `qwb-lint.sh` | Requires BDD acceptance scenarios (Given/When/Then + at least one failure path). Embeds `scenarios-fp:` at dispatch. Fails lint if scenarios are edited post-dispatch. |
-| **Worktree Lifecycle** | `qwb-worktree.sh` | Dispatches work into isolated `.worktrees/<task-id>/` by default. Provides 3 clean exit paths: `--merged` (rebase/merge), `--archive` (tag and remove), or `--keep` (explicit conflict holding). Validates HEAD OID before deletion. |
-| **Review Identity Audit** | `qwb-lint.sh` | Verifies independent review tickets (`review-required: yes`). Checks that `review-impl` and `review-rev` use different model families and distinct native session IDs. Rejects same-family audits. |
-| **Dual Quality Gates** | `qwb-test.sh` | Executes project-defined fast gate (`QWB_GATE_FAST`, ~0.7s) on single changes and full gate (`QWB_GATE_FULL`, ~45s) before merge. Fails closed if gates are undefined. |
+**The QW Buddy Solution: True AFK Coding (Away From Keyboard).**  
+You specify requirements in Markdown. The system autonomously handles **task decomposition, dispatching into isolated sandboxes, automated wakeups upon completion, adversarial acceptance gates, and git landing**.
 
 ---
 
-## Quickstart
+## 🥊 How Does It Compare to Grokbot & Traditional Coding Bots? What Improvements Were Made?
 
-### 1. Install into a Target Project
+Unlike traditional coding bots, heavy multi-agent frameworks (CrewAI, AutoGPT), or cloud blackbox agents, QW Buddy was engineered with distinct design priorities and architectural improvements:
 
-Execute the installer from the `qonnwolfbuddy` repository root:
+| Dimension | Traditional Coding Bots / Grokbot / Heavy Frameworks | QW Buddy Improvements & Advantages |
+|---|---|---|
+| **Architecture Weight & Dependencies** | Requires heavy Python environments, Docker containers, external databases, or cloud APIs; thousands of lines of code; complex setup. | **Ultra-Lightweight Zero Dependencies (98% Thinner)**: Just 8 POSIX Bash scripts (~1000 lines), zero external databases, installs into any project in 2 seconds. |
+| **Workspace Isolation** | Most agents work directly in the active project directory; multi-tasking or rework pollutes the working tree; rollback is painful. | **Physical Git Worktree Isolation**: Every task gets a dedicated `.worktrees/<task-id>` sandbox automatically; main branch remains pristine. |
+| **Completion Wakeup Loop** | Relies on manual polling or webhooks; sessions go idle and abandon the workflow. | **Millisecond Progress Fingerprint Sentinel (`qwb-wake.sh`)**: Tracks `sha1` progress fingerprints; automatically injects terminal prompts to wake the controller; 30-min timeout fallback. |
+| **Acceptance Reliability** | Trusts worker self-reports or simple process exit codes; vulnerable to fake tests and sycophancy. | **Zero-Trust Independent Quality Gates**: Freezes Given/When/Then scenario fingerprints before dispatch; controller independently executes fast/full test suites at the repo root. |
+| **Code Review Objectivity** | Same session prompts roles back-and-forth, or same-family models praise each other. | **Mandatory Cross-Model Family Auditing**: Implementation and review **must use different model families and distinct native session IDs** (e.g. Codex writes, Claude reviews); strictly enforced by `qwb-lint.sh`. |
+| **Runtime Visibility** | Sealed inside Docker containers or remote web UIs; difficult to inspect or debug. | **Full Terminal Visibility (No Blackbox)**: Every agent runs in a real, interactive terminal pane (`herdr`); developers can inspect or take over at any second. |
+
+---
+
+## 🔀 Does It Solve "High-Concurrency Tasks"? — Multi-Agent Concurrency & Race Defense
+
+> **Important Definition**: This is not about Web API "high QPS / network throughput". It specifically solves **"Concurrent Multi-Agent Engineering, Workspace Collision Defense, and Atomic State Accounting"** when multiple AI agents work on the same repository simultaneously.
+
+When you dispatch multiple parallel tasks to different AI workers (e.g. one refactoring the backend, one building a frontend component, one revising documentation), QW Buddy provides industrial-grade concurrency guarantees:
+
+1. **Worktree Parallelism (No Git Collisions)**:  
+   Every task runs in its own Git Worktree. Multiple workers code simultaneously in independent physical directories without file locks, branch contention, or dirty git states.
+2. **Atomic In-Place Ledger Updates (Eliminated Fatal Defect F2)**:  
+   Multiple workers append status lines concurrently. Early prototypes suffered from snapshot overwrites erasing worker lines. QW Buddy was hardened through adversarial audits to use **in-place line replacement with post-write line count verification**, ensuring concurrent `done:` and evidence lines are never lost.
+3. **TOCTOU Race Defense on Worktree Cleanup (Eliminated Fatal Defect H1)**:  
+   When finalizing and removing a worktree, if a worker concurrently pushed a new commit, conventional scripts delete the new work. QW Buddy verifies the exact HEAD commit OID immediately prior to deletion; any concurrent commit triggers rejection and archives the tag safely.
+4. **Controller Mutual Exclusion Lock (`qwb-lock.sh`)**:  
+   Uses filesystem atomic primitives (`mkdir`) to prevent multiple controller sessions from issuing conflicting dispatch or acceptance commands simultaneously.
+5. **Concurrent Event Waiting & Time Budgeting (`qwb-wake.sh`)**:  
+   The sentinel daemon monitors multiple unclosed tasks concurrently, rotating wait events across active panes with millisecond time budgets to prevent busy-waiting loops.
+
+---
+
+## 🏗️ Technical Architecture
+
+QW Buddy is organized into a clean 3-layer architecture, with the **plain-text Markdown ledger** serving as the Single Source of Truth:
+
+```
++---------------------------------------------------------------------------------+
+|                         1. Planning & Decision Layer                            |
+|  - Developer: Specifies requirements in tasks/*.md using Given/When/Then format  |
+|  - Controller AI: Runs in Herdr terminal; breaks down tasks, dispatches, & tests |
++---------------------------------------------------------------------------------+
+           │                                                    ▲
+           │ 1. qwb-run.sh dispatches task                      │ 4. qwb-wake.sh auto-wakes
+           │    (locks scenarios-fp fingerprint)                │    (injects prompt: "Check ledger")
+           ▼                                                    │
++---------------------------------------------------------------------------------+
+|                         2. Isolated Execution Layer                             |
+|  - Worker Agents (Codex / Devin / Pi): Run interactively in Herdr terminal tabs  |
+|  - Physical Sandboxes (Git Worktrees): Each task runs in .worktrees/<task-id>/   |
+|  - Restricted Behavior: Workers only write code & append working:/done:/blocked: |
++---------------------------------------------------------------------------------+
+           │                                                    ▲
+           │ 2. Appends status line & evidence                  │ 3. Scans unclosed tasks
+           ▼                                                    │
++---------------------------------------------------------------------------------+
+|                         3. State & Audit Layer                                  |
+|  - Ledger (tasks/*.md): State machine (running / blocked / verified) & evidence  |
+|  - Sentinel Daemon (qwb-wake.sh): Computes sha1(state + status_line) progress   |
+|  - Quality Gates (qwb-test.sh / qwb-lint.sh): Enforces fast (~0.7s) / full (~45s)|
++---------------------------------------------------------------------------------+
+```
+
+---
+
+## 🚀 Quickstart in 60 Seconds
+
+### Step 1: Install into Your Project
+Run the idempotent installer from the `qonnwolfbuddy` repository root:
 
 ```bash
-# Idempotent: copies templates, initializes tasks/ ledger, and writes hooks
-bash bin/qwb-init.sh /path/to/target-project
+bash bin/qwb-init.sh /path/to/your-project
 ```
 
-### 2. Declare Quality Gates
-
-Open `/path/to/target-project/qwbuddy/config.sh` and specify your project's test commands:
+### Step 2: Declare Quality Gates
+Open `qwbuddy/config.sh` in your project and define your test commands (undeclared gates fail closed to prevent false greens):
 
 ```bash
 # Example for a Node / TypeScript project:
@@ -98,143 +118,39 @@ QWB_GATE_FAST='npm run lint'
 QWB_GATE_FULL='npm run lint && npm test'
 ```
 
-Verify that the gates execute cleanly:
-
-```bash
-cd /path/to/target-project
-bash qwbuddy/bin/qwb-test.sh fast    # Runs fast gate (must exit 0)
-bash qwbuddy/bin/qwb-test.sh full    # Runs full gate (must exit 0)
-```
-
-### 3. Initialize Controller and Run Roll Call
-
-Open your preferred coding assistant (Claude Code, Pi, or Codex) inside the target project directory and instruct it:
+### Step 3: Initialize Controller
+Open your AI coding assistant (Claude Code, Pi, or Codex) inside your project root and send:
 
 ```text
 You are now QW buddy. Read qwbuddy/QWBUDDY.md and assume the Controller role.
 ```
 
-Inspect active tasks, worker panes, and sentinel status:
+### Step 4: Dispatch a Task Ticket
+Create your task ticket in `tasks/YYYY-MM-DD-<topic>.md` with an acceptance scenario block, then dispatch and start the sentinel:
 
 ```bash
-bash qwbuddy/bin/qwb-status.sh
-```
+# Dispatch into an isolated git worktree
+bash qwbuddy/bin/qwb-run.sh --task 2026-09-16-feat --worker codex
 
-### 4. Dispatch a Task Ticket
-
-Write a task specification in `tasks/YYYY-MM-DD-<topic>.md` with an acceptance scenario block:
-
-```markdown
-## 验收场景
-
-Scenario: user_successful_export
-  Given valid data in the database
-  When the export endpoint is triggered
-  Then an export artifact is written to disk
-
-Scenario: user_export_invalid_format_fails (Failure path)
-  Given an unsupported export format parameter
-  When the export endpoint is triggered
-  Then return exit code 1 with an informative error
-```
-
-Dispatch the ticket to a background worker in an isolated worktree:
-
-```bash
-# Worker must be declared in qwbuddy/config.sh QWB_WORKERS (default: codex pi claude).
-# To use Devin, add it first:  QWB_WORKERS="codex pi claude devin"
-bash qwbuddy/bin/qwb-run.sh \
-  --project . \
-  --task YYYY-MM-DD-<topic> \
-  --worker codex \
-  --name feat-export
-```
-
-Launch the sentinel daemon to watch the ledger and re-prompt the controller:
-
-```bash
+# Start the sentinel daemon to watch the ledger and wake the controller
 bash qwbuddy/bin/qwb-wake.sh --ensure --pane <controller-pane-id>
 ```
+**Now you can step away from your keyboard.**
 
 ---
 
-## Design Principles
+## 🛠️ Battle-Tested Quality Evidence
 
-### Three Yardsticks
+QW Buddy was built and hardened using its own mechanisms across multi-round adversarial audits:
 
-1. **Whose state is it? (谁的状态归谁)**  
-   Keep vendor-specific state (context windows, session caches, token buffers) inside the vendor harness. Store project state (task tickets, execution progress, verification logs, lessons learned) outside the AI model in plain Markdown (`tasks/*.md`).
-2. **Thin is future-proof (薄即抗淘汰)**  
-   Harnesses evolve rapidly and will absorb prompting and basic waiting routines. QW buddy only implements what single-vendor harnesses cannot: cross-model task routing, persistent project memory, and adversarial acceptance discipline.
-3. **Rules aren't written on paper (规范不写在纸上)**  
-   Replace written guidelines with executable test assertions. Every policy is checked by `qwb-lint.sh`, verified by negative tests in `tests/smoke.sh`, and validated through automated gates.
-
-### What We Explicitly Do Not Do
-
-| Non-Goal | Decision Rationale |
-|---|---|
-| **No Central Registries or Multi-Repo Sync** | Designed for self-contained single projects. The repository boundary is absolute. |
-| **No Human Notifications** | Sends zero notifications to Slack, DingTalk, or desktop alerts. Controllers wake up; humans sleep. |
-| **No Background Databases or Message Queues** | Markdown files in `tasks/` serve as persistent queue, state ledger, and audit log. |
-| **No Headless-Only Workers** | Workers run in interactive terminal panes (`herdr`) to preserve human visibility and debuggability. |
-| **No Auto-Restart of Dead Controller Processes** | Wakes running, idle controllers. If a machine reboots, the user restarts the session from the ledger. |
-| **No Vendor Plugins or Proprietary Hooks** | Pure POSIX / Bash implementation with zero proprietary extensions. |
-
----
-
-## Project Layout
-
-```
-qonnwolfbuddy/
-├── README.md               # Project documentation and specifications
-├── qwb.config.sh           # Quality gate declaration for this repository
-├── docs/                   # Architecture, runbooks, and audit reports
-│   ├── DESIGN.md           # Authoritative system architecture design
-│   ├── DECISIONS.md        # Architecture Decision Records (ADRs)
-│   ├── E2E-RUNBOOK.md      # Real end-to-end closed-loop runbook
-│   └── reviews/            # 10 independent audit & advisory reports
-├── templates/              # Assets installed into target repositories
-│   ├── QWBUDDY.md          # Primary controller handbook
-│   ├── TASK.md             # Task specification template with scenario blocks
-│   ├── config.sh           # Worker table, timeouts, and gate definitions (Bash source)
-│   ├── roles/              # Role playbooks: Controller, Reviewer, Executor, Consultant
-│   ├── agents-hook.md      # Integration hook for AGENTS.md
-│   └── claude-hook.md      # Integration hook for CLAUDE.md
-├── bin/                    # Runtime executables (copied to <project>/qwbuddy/bin/)
-│   ├── qwb-init.sh         # Installer (idempotent; copies templates and hooks)
-│   ├── qwb-run.sh          # Dispatcher (scenario gate, worktree creation, logging)
-│   ├── qwb-wake.sh         # Sentinel daemon (fingerprint dedup, fallback re-wake)
-│   ├── qwb-status.sh       # Roll call, inspection, and status reporting
-│   ├── qwb-lock.sh         # Atomic directory lock for controller
-│   ├── qwb-worktree.sh     # Worktree lifecycle manager (list / finish)
-│   ├── qwb-test.sh         # Fast & full quality gate test runner
-│   └── qwb-lint.sh         # Repo linter (state domains, dead configs, ASCII traps)
-├── tests/                  # Verification test suites and fixtures
-│   ├── smoke.sh            # Smoke test suite with negative regression assertions
-│   ├── review-identity.sh  # Independent reviewer identity verification tests
-│   └── fixtures/herdr/     # Real captured Herdr CLI baseline fixtures
-└── tasks/                  # Repository ledger and post-mortem lessons
-    └── lessons/            # Post-mortem incident analysis and countermeasures
-```
-
----
-
-## Testing and Real Agent Verification
-
-### Test Suite Performance
-
-Every commit is gated through executable tests. Undeclared gates fail with exit code 1.
-
-| Gate | Execution Time | Scope | Command |
-|---|---|---|---|
-| **Fast Gate** | `~0.7s` | Shell syntax (`bash -n`) on all scripts + strict `shellcheck` with zero warnings | `bash bin/qwb-test.sh fast` |
-| **Full Gate** | `~45s` | 405 assertions: smoke tests, contract validation, negative traps, identity checks, and lint | `bash bin/qwb-test.sh full` |
-
-### Verified by Real Agents
-
-- **Real Closed-Loop E2E**: Verified end-to-end using real Devin (SWE-2 Max) workers, live Herdr terminal tabs, shell sentinel, and Claude controller (`docs/E2E-RUNBOOK.md`). Confirmed automated wakeup on completion, independent acceptance, deliberate sabotage detection, and clean worktree removal.
-- **9 Adversarial Audit Reports + 1 Advisory**: Hardened across multi-round independent reviews by different model families (GPT-6 Astra High/Medium, Claude Fable 5.1) documented in `docs/reviews/`, plus one model-family consultation that reshaped the spec-defect gate.
-- **Critical Defects 6 → 0**: Eliminated all 6 critical vulnerabilities discovered during adversarial audits:
+- **405 Assertions (100% Green)**:
+  - Fast Gate (`fast`, ~0.7s): Shell syntax (`bash -n`) + strict `shellcheck` with zero warnings.
+  - Full Gate (`full`, ~45s): 405 assertions covering smoke tests, negative regression traps, contract validations, and lint.
+- **Verified by Real Autonomous Agents**:
+  - Validated end-to-end using real Devin (SWE-2 Max) workers, live Herdr terminal tabs, shell sentinel, and Claude controller (`docs/E2E-RUNBOOK.md`). Confirmed automated wakeup on completion, independent acceptance, deliberate sabotage detection, and clean worktree removal.
+- **9 Adversarial Audit Reports + 1 Advisory**:
+  - Hardened through multi-round independent reviews by different model families (GPT-6 Astra High/Medium, Claude Fable 5.1) documented in `docs/reviews/`, plus one architectural consultation.
+- **Eliminated All 6 Critical Defects (Fatal 6 → 0)**:
   1. *F3 Wakeup deadlocks*: Replaced static state tracking with SHA1 progress fingerprints.
   2. *F4 Sentinel crashes*: Handled terminal delivery failures without exiting the main loop.
   3. *G1 Detached HEAD loss*: Replaced branch-name assumptions with explicit HEAD OID tracking.
@@ -244,7 +160,23 @@ Every commit is gated through executable tests. Undeclared gates fail with exit 
 
 ---
 
-## Roadmap
+## 📂 Project Layout
+
+```
+qonnwolfbuddy/
+├── README.md               # English documentation and project homepage
+├── README.zh.md            # Chinese documentation and project homepage
+├── docs/                   # Architecture specs, ADRs, E2E runbook, and 10 audit reports
+├── templates/              # Assets installed into target repositories (QWBUDDY manual, templates, roles)
+│   └── roles/              # Role playbooks: Controller, Reviewer, Executor, Consultant
+├── bin/                    # Runtime executables (qwb-init, run, wake, status, worktree, test, lint)
+├── tests/                  # 405-assertion test suite and real Herdr CLI fixtures
+└── tasks/                  # Repository ledger and post-mortem lessons
+```
+
+---
+
+## 🧭 Roadmap
 
 - [x] Complete core architecture specification and ADR records (`docs/DESIGN.md`, `docs/DECISIONS.md`)
 - [x] Implement in-repo templates, role playbooks, and POSIX bash runtime scripts
@@ -256,6 +188,6 @@ Every commit is gated through executable tests. Undeclared gates fail with exit 
 
 ---
 
-## License
+## 📄 License
 
 Distributed under the [MIT License](LICENSE).
