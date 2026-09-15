@@ -194,18 +194,23 @@ qwbuddy/roles/
 │   └── lessons/<主题>.md        错题本详情
 └── qwbuddy/
     ├── QWBUDDY.md       主控总说明书
+    ├── TASK.md          任务书模板（含验收场景块：Given/When/Then + 至少一条失败路径）
     ├── roles/           主控 / 审核者 / 执行者 / 咨询师
-    ├── config.sh        工人表 + 派工规则 + 超时（**bash 可直接 source，唯一来源**）
+    ├── config.sh        工人表 + 派工规则 + 超时 + 快门/全门（bash 可直接 source，唯一来源）
     └── bin/
         ├── qwb-init.sh      装进新项目（幂等）
         ├── qwb-run.sh       派发 + 记账（派发前清点 worktree 残留）
-        ├── qwb-wake.sh      值守：以未结项为准叫醒主控
+        ├── qwb-wake.sh      值守：以未结项为准叫醒主控（支持假时钟注入便于测试）
         ├── qwb-status.sh    点名 + 汇报
         ├── qwb-lock.sh      主控锁（mkdir 原子目录锁）
-        └── qwb-worktree.sh  worktree 清点与收尾（list / finish）
+        ├── qwb-worktree.sh  worktree 清点与收尾（list / finish）
+        ├── qwb-test.sh      快门/全门执行器（跑 config 声明的 QWB_GATE_FAST/FULL）
+        └── qwb-lint.sh      自身 lint（承诺未实现 / state 值域 / 死配置 / 非 ASCII 陷阱）
 ```
 
 **零钩子、零插件、零队列、零数据库、零外部服务。**
+
+**测试纪律（可执行的，不只是写在纸上的）**：先场景后代码（任务书必须有验收场景块，含失败路径）；场景冻结后才许可提交实现；快门/全门分级（改一行跑快门，合并前跑全门）；假替身必须有契约基线（`tests/fixtures/` 真录样本）；时间逻辑用可注入时钟而非真 `sleep`。
 
 ### 8.2 母本仓布局
 

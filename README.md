@@ -38,15 +38,19 @@ qonnwolfbuddy/
 │   ├── config.sh          工人表 + 派工规则 + 超时（bash source 单一来源）
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
-├── bin/               脚本（已完成，共 666 行 shell，6 个）
+├── qwb.config.sh      本仓自用的质量门声明（快门 / 全门）
+├── bin/               脚本（已完成，8 个）
 │   ├── qwb-init.sh        装进新项目（幂等）
 │   ├── qwb-run.sh         派发 + 记账
 │   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控（进展指纹去重）
 │   ├── qwb-status.sh      点名 + 汇报
-│   ├── qwb-lock.sh        主控锁（mkdir 原子目录锁，防两个主控同时动手）
-│   └── qwb-worktree.sh    worktree 清点与收尾（list / finish --merged|--archive|--keep）
-├── tests/             冒烟测试（已完成）
-│   └── smoke.sh           126 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   ├── qwb-lock.sh        主控锁（mkdir 原子目录锁）
+│   ├── qwb-worktree.sh    worktree 清点与收尾（list / finish --merged|--archive|--keep）
+│   ├── qwb-test.sh        快门/全门执行器（`qwb-test.sh fast|full`）
+│   └── qwb-lint.sh        自身 lint（承诺未实现 / state 值域 / 死配置 / 非 ASCII 陷阱）
+├── tests/             测试（已完成）
+│   ├── smoke.sh           188 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   └── fixtures/herdr/    真录的 herdr 响应基线（假替身的契约依据）
 └── tasks/             本仓自己的账本 + 错题本
 ```
 
@@ -63,7 +67,6 @@ qonnwolfbuddy/
 ## 质量门
 
 ```bash
-bash -n bin/*.sh tests/smoke.sh   # 语法
-shellcheck bin/*.sh               # 静态检查（须零告警）
-bash tests/smoke.sh               # 冒烟（须打印 SMOKE PASS，退出码 0）
+bash bin/qwb-test.sh fast        # 快门：语法 + shellcheck（改一行跑它）
+bash bin/qwb-test.sh full        # 全门：smoke + lint（合并前跑它）
 ```
