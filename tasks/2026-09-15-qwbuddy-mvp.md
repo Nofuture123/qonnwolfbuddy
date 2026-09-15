@@ -2,7 +2,7 @@
 
 ```
 任务 id:  qwbuddy-mvp
-state:    running
+state:    verified
 派发:     主控（pi / qonnwolfbuddy 会话）→ 执行者（Terra high）
 主账本:   /Users/rocky/projects/qonnwolfbuddy/tasks/2026-09-15-qwbuddy-mvp.md（绝对路径，工人只追加，不改他人行）
 工作目录: /Users/rocky/projects/qonnwolfbuddy/.worktrees/qwbuddy-mvp/（隔离副本，代码改动只在这里）
@@ -182,3 +182,40 @@ needs-decision: <需要主控判断的选项>
 
 主控会在主工作区独立重跑：`bash -n` ×4、`shellcheck` ×4、`bash tests/smoke.sh`（检查退出码），并**亲自读一遍**四个脚本与 `QWBUDDY.md`，确认没有 `30m`、没有 headless、没有通知通道、没有队列。通过后才合并落地。
 
+working: 已完成 templates/QWBUDDY.md、roles/×4、config.json 与两份短钩子；下一阶段实现 bin/ 与 smoke。
+working: 已完成 bin/qwb-{init,run,wake,status}.sh 与 tests/smoke.sh；bash tests/smoke.sh 首轮通过，正在做交付前复核。
+done: 全部交付物完成，提交 9c41adb（worktree 分支 qwbuddy-mvp）。实跑 `bash tests/smoke.sh` → SMOKE PASS 退出码 0（bash -n ×4 全 PASS；shellcheck ×4 零告警；临时目录 init 双跑幂等，AGENTS.md/CLAUDE.md 钩子各 1 处；status 空账本退出 0；python3 -m json.tool 过；wake --dry-run 把 state=running 列为未结项、verified 不列、且无副作用）。关键文件：templates/QWBUDDY.md(111行)、templates/roles/{主控,审核者,执行者,咨询师}.md(18-21行)、templates/config.json(51行)、templates/agents-hook.md 与 claude-hook.md(各7行)、bin/qwb-init.sh(59行)、bin/qwb-run.sh(106行)、bin/qwb-wake.sh(107行)、bin/qwb-status.sh(59行)、tests/smoke.sh(69行)。无 30m 式超时、无 headless 标志、无通知通道、无队列/守护进程、纯 shell（python3 仅 smoke 校验 JSON）。
+done: 返修三项完成，提交 5a2f00d（worktree 分支 qwbuddy-mvp）。Bug1：qwb-run.sh 4 处 $VAR+全角字符（第58行 $CONF（、第92行 $TASK_FILE（ / $DIR， / $TASK_FILE——）改 ${VAR}，并用 python3 正则 \$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F] 全扫 bin/*.sh 确认零残留。Bug2：check_round() 尾行 && 短路使函数返回 1 在 set -e 下打断主循环，改 if/fi + return 0；同模式自查——主循环 [[ ]] && exit 0 改 if/fi，其余 for/if 内 && 写法经 bash 3.2 实测不触发 set -e（短路命令豁免）。Bug3：smoke.sh 新增三条断言。实跑 `bash tests/smoke.sh` → SMOKE PASS 退出码 0，共 30 项断言全 PASS，新增覆盖：⑦ stub herdr（tab create 返回 {"result":{"root_pane":{"pane_id":"wtest:p9"}}}，其余 {"result":{"ok":true}}，调用追加日志）下 wake --once 有未结项退出 0、写 wake: 去重行、日志有 pane run；⑧ python3 扫描 bin/*.sh 无 $VAR+非ASCII；⑨ stub herdr 下 qwb-run.sh --task disp --worker codex --worktree $TMP 退出 0、任务书 state: blocked→running、末尾 dispatch: 行、日志含 agent start 与 agent prompt 且 prompt 参数含任务书绝对路径。改动文件：bin/qwb-run.sh、bin/qwb-wake.sh、tests/smoke.sh（+59 -6 行）。
+
+---
+
+## 验收记录（主控 / pi 会话，2026-09-15）
+
+**质量门——主控在主工作区独立重跑，不采信工人自述**
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 语法 | `bash -n bin/*.sh tests/smoke.sh` | 全通过，退出码 0 |
+| 静态 | `shellcheck bin/*.sh` | **退出码 0**（零告警） |
+| 工人自建门 | `bash tests/smoke.sh` | SMOKE PASS，39 项断言，退出码 0 |
+| **主控自建端到端门** | `/tmp/qwb-verify.sh`（herdr stub 拦截，真实执行四个脚本） | **26 项断言全 PASS，退出码 0** |
+| 禁项扫描 | grep `30m`/headless/通知/队列/数据库/守护进程/tmux | 命中项**均只是禁令文字本身**，无实现违规 |
+| 超时单位 | config.json + 脚本 | 全部毫秒（`1800000`）✓ |
+| herdr 子命令 | `herdr agent` 复核 | `agent start/prompt/wait/list` 真实存在 ✓ |
+
+主控端到端门覆盖（独立于工人的 smoke.sh）：init 布局与钩子幂等、空账本 status 退出 0、`state` 未结项判定、run 派发记账（state→running + dispatch 行 + agent start/prompt 且 prompt 含任务书绝对路径）、wake 叫醒与去重、末尾状态行不干扰头部 `state` 判定。
+
+**主控发现并返修的问题（工人首轮自检未发现）**
+
+1. **qwb-run.sh 派发 100% 崩溃**：变量后紧跟全角字符（`$TASK_FILE（` / `$DIR，` / `$TASK_FILE——` / `$CONF（` 共 4 处），bash 把多字节序列并入变量名，`set -u` 下报 `unbound variable` 直接退出——崩在发提示词那一步，`dispatch` 行与 `state: running` 都没写。
+2. **qwb-wake.sh 值守第一轮即死**：`check_round()` 末行 `[[ need -eq 0 && -z ids ]] && echo` 在有未结项时返回 1，函数返回 1，`set -e` 下 `while :; do check_round; ...` 被直接打断——**恰好在最需要它活着的时候死，唤醒机制等于作废**。
+3. 首轮 `tests/smoke.sh` 完全没覆盖 `qwb-run.sh`，正是问题 1 漏网的原因。
+
+返修提交 `5a2f00d`：4 处改 `${VAR}` 花括号；`check_round` 改 `if/fi` + 显式 `return 0`；主循环 `&& exit 0` 改 `if/fi`；smoke 补三条回归断言（`--once` 有未结项退出 0、python3 扫描禁 `$VAR`+非 ASCII、stub herdr 下 run 真实派发）。修复后全部门重跑通过。
+
+**已知项（不阻塞合并）**
+
+- `tests/smoke.sh` 自身未纳入 shellcheck 覆盖，含 17 条 SC2015 (info)（`A && ok || bad` 断言惯用法，`ok`/`bad` 均为 echo，无实际风险）。
+- `qwb-run.sh` 校验工人表用 grep 而非 JSON 解析；`config.json` 全部用 sed 提取（有意避免引入 jq 依赖）。
+
+**结论**：验收通过，`state: verified`。
