@@ -31,6 +31,7 @@
 
 - `tasks/` 是**唯一真相**。任务书 `tasks/YYYY-MM-DD-<主题>.md`，头部必须有 `state: <值>` 字段行。
 - `state` 值域固定五个：`running` / `blocked` / `needs-decision` / `done` / `verified`。
+- 任务书**写好即写 `state: running`**。「已写好、待派发」不需要单独状态——对值守而言「待派」与「已派」同义：都要主控动手。写了非 5 值域的值（如 `pending`）等于静默丢弃：`qwb-status.sh` 标 `[非法]`、`qwb-wake.sh` 警告且不叫。
 - 所有任务经任务书文件派发，**无隐性依赖**——换会话、换 AI、重启都不丢。
 - 派发时给工人**主账本的绝对路径**（`<项目根>/tasks/...`）。工人在 worktree 副本里干活，写进副本 `tasks/` 的东西你**看不到**。
 - 工人只往主账本**追加**状态行，不改别人的行、不改 `state:` 字段。
@@ -53,7 +54,7 @@ needs-decision: <需要判断的选项>
 ## 4. 派发流程
 
 ```
-写任务书（含 state: running 之外的初始状态） 
+写任务书（写好即 state: running，见 §3） 
   → 开 worktree（herdr worktree create，或让 qwb-run.sh --create-worktree 代劳）
   → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree]
        （它负责：查主控锁、开窗口、起工人、发提示词、记账：窗口 + 派发时间 + state: running；
@@ -77,6 +78,7 @@ needs-decision: <需要判断的选项>
 - **收·废弃**：先提交到该分支 → `git tag archive/<任务id>` → `git worktree remove` + `git branch -D` → 记账（写明标签名）。
 - **留·例外**：只允许两种——等使用者裁决的、有冲突待解的；且必须在账本**点名**。
 - 补充：谁派生谁收尾；`git worktree prune` 清元数据残留。
+- 实现：`qwb-worktree.sh list` 清点（标出残留）、`qwb-worktree.sh finish <id> --merged|--archive|--keep[=原因]` 收尾并往任务书追加 `worktree:` 记账行；`qwb-run.sh --create-worktree` 开新 worktree 前会自动清点，有残留打警告但不阻塞。
 
 ## 7. 身份切换
 
@@ -95,6 +97,7 @@ needs-decision: <需要判断的选项>
 | `qwb-wake.sh [--dry-run|--once]` | 值守：查未结项 → 叫醒你的 pane |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
+| `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §6） |
 
 所有脚本支持 `--help`。值守脚本由使用者（或你）启动；它叫不醒**已退出**的你。
 
