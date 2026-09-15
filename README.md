@@ -26,32 +26,42 @@ QW buddy 把这三件事固化成一本书（说明书 + 角色文件）和几�
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | **决策记录**——每条设计结论及其理由、被否掉的替代方案 |
 | [`docs/reviews/2026-09-15-astra-review.md`](docs/reviews/2026-09-15-astra-review.md) | **Astra（gpt-6-astra high）独立审核**——送审快照、审核结论、逐条处置 |
 
-## 母本仓规划布局
+## 母本仓布局
 
 ```
 qonnwolfbuddy/
 ├── README.md          本文件
 ├── docs/              设计文档（已完成）
-├── templates/         装进项目的模板（待建）
+├── templates/         装进项目的模板（已完成）
 │   ├── QWBUDDY.md         主控总说明书
 │   ├── roles/             主控 / 审核者 / 执行者 / 咨询师
 │   ├── config.json        工人表 + 派工规则 + 超时
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
-├── bin/               脚本（待建）
-│   ├── qwb-init.sh        装进新项目
+├── bin/               脚本（已完成，共 328 行 shell）
+│   ├── qwb-init.sh        装进新项目（幂等）
 │   ├── qwb-run.sh         派发 + 记账
-│   ├── qwb-wake.sh        值守：叫醒主控
+│   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控
 │   └── qwb-status.sh      点名 + 汇报
-└── tests/             （待定）
+├── tests/             冒烟测试（已完成）
+│   └── smoke.sh           39 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+└── tasks/             本仓自己的账本 + 错题本
 ```
 
 装进项目后的布局见 [`docs/DESIGN.md`](docs/DESIGN.md) 第 8 节。
 
 ## 下一步
 
-1. 写 `templates/` 下的说明书与角色文件
-2. 写 `bin/` 下四个脚本（约 300 行 shell）
-3. 挑一个真实项目跑通一轮：派活 → 工人在 Herdr 窗口干活 → 值守叫醒主控 → 主控验收 → 记账
+1. ~~写 `templates/` 下的说明书与角色文件~~ ✅
+2. ~~写 `bin/` 下四个脚本~~ ✅
+3. **挑一个真实项目跑通一轮**：派活 → 工人在 Herdr 窗口干活 → 值守叫醒主控 → 主控验收 → 记账
 
-设计已定稿并经过独立审核（见 docs/），可以按 `docs/DESIGN.md` 第 13 节的清单开工。
+1、2 已完成并验收（见 [`tasks/2026-09-15-qwbuddy-mvp.md`](tasks/2026-09-15-qwbuddy-mvp.md) 的验收记录）。第 3 步待做。
+
+## 质量门
+
+```bash
+bash -n bin/*.sh tests/smoke.sh   # 语法
+shellcheck bin/*.sh               # 静态检查（须零告警）
+bash tests/smoke.sh               # 冒烟（须打印 SMOKE PASS，退出码 0）
+```

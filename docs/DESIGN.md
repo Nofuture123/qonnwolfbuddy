@@ -253,14 +253,17 @@ qwbuddy/roles/
 1. **谁的状态**：状态属于**产品**（会话 / 模型 / 厂商）→ 交给那个产品；属于**使用者和项目**（任务 / 验收 / 教训）→ 放在产品外面，也就是 QW buddy 这层。
 2. **薄即抗淘汰**：Harness（Claude Code / Codex / Pi）会越来越强，会吃掉「等待、通知、记忆」这类事；QW buddy 只持有它吃不掉的东西——**跨厂商调度 + 属于项目的账本与验收纪律**。
 
-## 13. 待实现清单
+## 13. 待实现清单（MVP 已完成 ✅）
 
-- [ ] `templates/QWBUDDY.md`——主控总说明书（含开局点名、状态行规矩、验收留痕、MVP 边界）
-- [ ] `templates/roles/{主控,审核者,执行者,咨询师}.md`
-- [ ] `templates/config.json`——工人表 + 派工规则 + 超时（毫秒）
-- [ ] `templates/agents-hook.md` / `claude-hook.md`——进门钩子片段
-- [ ] `bin/qwb-init.sh`——装进新项目
-- [ ] `bin/qwb-run.sh`——派发 + 记账
-- [ ] `bin/qwb-wake.sh`——值守：以账本未结项为准，叫醒主控
-- [ ] `bin/qwb-status.sh`——点名 + 汇报
+- [x] `templates/QWBUDDY.md`——主控总说明书（含开局点名、状态行规矩、验收留痕、MVP 边界）
+- [x] `templates/roles/{主控,审核者,执行者,咨询师}.md`
+- [x] `templates/config.json`——工人表 + 派工规则 + 超时（毫秒）
+- [x] `templates/agents-hook.md` / `claude-hook.md`——进门钩子片段
+- [x] `bin/qwb-init.sh`——装进新项目
+- [x] `bin/qwb-run.sh`——派发 + 记账
+- [x] `bin/qwb-wake.sh`——值守：以账本未结项为准，叫醒主控
+- [x] `bin/qwb-status.sh`——点名 + 汇报
 - [ ] 挑一个真实项目跑通一轮，验证「派活 → 工人干活 → 值守叫醒 → 主控验收 → 记账」
+
+实现与验收记录见 [`../tasks/2026-09-15-qwbuddy-mvp.md`](../tasks/2026-09-15-qwbuddy-mvp.md)（含主控独立质量门、两个返修 bug 与已知项）。
+质量门：`bash -n bin/*.sh` + `shellcheck bin/*.sh`（零告警）+ `bash tests/smoke.sh`（SMOKE PASS）。
