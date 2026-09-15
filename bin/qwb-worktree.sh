@@ -11,14 +11,15 @@ usage() {
                             「残留」  = 账本中无对应未结项任务书（建议用 finish 收掉）。
   finish <任务id> <动作>    收尾 <项目>/.worktrees/<任务id>，并往该任务书追加
                             worktree: <动作> branch=<分支> tag=<标签> 记账行：
-    --merged        先核实真落地（分支并入当前 HEAD，或顶端已含于某个 remote-tracking
-                    refs/remotes/*/<分支>）；核实不通过则拒绝，不盲删。
-                    通过 → git worktree remove + git branch -d。
-    --archive       打 git tag archive/<任务id>（指向分支顶端）
-                    → git worktree remove + git branch -D。
-    --keep[=原因]   不动 git，只在任务书点名保留及原因。
-  三种动作都先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
-  先提交或清理再来）。--keep 也一样：留下的 worktree 不该藏看不见的未提交改动。
+    --merged        先核实真落地（worktree 当前 HEAD OID 并入当前 HEAD，或顶端已含于某个
+                    remote-tracking refs/remotes/*/<实际分支>）；核实不通过则拒绝，不盲删。
+                    通过 → git worktree remove + git branch -d（detached HEAD 时无分支可删）。
+    --archive       打 git tag archive/<任务id>（指向 worktree 当前 HEAD OID）
+                    → git worktree remove + git branch -D；detached HEAD 时只打 tag、
+                    删 worktree，不删同名分支（它指向别的东西，不指向本工作区）。
+    --keep[=原因]   不动 git，只在任务书点名保留及原因（不做脏检查——规范允许留冲突待解的）。
+  --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
+  先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。
 
 选项:
   --project <根>    项目根（默认：当前目录）
@@ -96,51 +97,82 @@ TASK_FILE="$(unique_task_for "$TASK_ID")" \
 WT_DIR="$WT_BASE/$TASK_ID"
 [[ -d "$WT_DIR" ]] || { echo "错误：worktree 不存在：${WT_DIR}" >&2; exit 1; }
 
+# 一切判断与归档以 worktree 当前 HEAD 的实际提交 OID 为准，不得拿同名分支当本工作区的工作
 BRANCH="$(git -C "$WT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-[[ -n "$BRANCH" && "$BRANCH" != "HEAD" ]] || BRANCH="$TASK_ID"
-
-DIRTY="$(git -C "$WT_DIR" status --porcelain 2>/dev/null || true)"
-if [[ -n "$DIRTY" ]]; then
-  echo "拒绝：${WT_DIR} 有未提交改动/未跟踪文件，先提交或清理（本脚本不做 --force）：" >&2
-  printf '%s\n' "$DIRTY" >&2
-  exit 1
+HEAD_OID="$(git -C "$WT_DIR" rev-parse HEAD 2>/dev/null || true)"
+DETACHED=0
+if [[ "$BRANCH" == "HEAD" ]]; then
+  DETACHED=1; BRANCH=""
+elif [[ -z "$BRANCH" ]]; then
+  BRANCH="$TASK_ID"
+elif [[ "$BRANCH" != "$TASK_ID" ]]; then
+  echo "提示：worktree 目录名 ${TASK_ID} 与实际分支 ${BRANCH} 不一致，以实际分支为准" >&2
 fi
 
+# 脏检查只对真要删东西的动作；--keep 不动 git，不做脏检查（规范允许留冲突待解的）
+if [[ "$ACTION" != "keep" ]]; then
+  [[ -n "$HEAD_OID" ]] || { echo "错误：无法读取 ${WT_DIR} 的 HEAD（非 git worktree 或无提交），拒绝收尾" >&2; exit 1; }
+  if ! DIRTY="$(git -C "$WT_DIR" status --porcelain 2>&1)"; then
+    echo "拒绝：git status 失败，无法确认 ${WT_DIR} 工作区状态，不当干净放行：" >&2
+    printf '%s\n' "$DIRTY" >&2
+    exit 1
+  fi
+  if [[ -n "$DIRTY" ]]; then
+    echo "拒绝：${WT_DIR} 有未提交改动/未跟踪文件，先提交或清理（本脚本不做 --force）：" >&2
+    printf '%s\n' "$DIRTY" >&2
+    exit 1
+  fi
+fi
+
+BL="$BRANCH"
+if [[ "$DETACHED" -eq 1 ]]; then BL="detached"; fi
 TAG="-"
 case "$ACTION" in
   merged)
     landed=""
-    if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$BRANCH" HEAD 2>/dev/null; then
+    if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$HEAD_OID" HEAD 2>/dev/null; then
       landed="已合并进当前分支（HEAD）"
-    else
+    elif [[ "$DETACHED" -eq 0 ]]; then
       while IFS= read -r rt; do
-        if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$BRANCH" "$rt" 2>/dev/null; then
+        if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$HEAD_OID" "$rt" 2>/dev/null; then
           landed="已推送（分支顶端含于 ${rt}）"; break
         fi
       done < <(git -C "$PROJECT_ROOT" for-each-ref --format='%(refname:short)' "refs/remotes/*/${BRANCH}")
     fi
     if [[ -z "$landed" ]]; then
-      echo "拒绝：分支 ${BRANCH} 未合并进当前分支，顶端也不在已知 remote-tracking 分支里——无法核实已落地，不盲删。" >&2
+      echo "拒绝：${WT_DIR} 当前 HEAD（${HEAD_OID}）未合并进当前分支${BRANCH:+，分支 ${BRANCH} 顶端也不在已知 remote-tracking 分支里}——无法核实已落地，不盲删。" >&2
       echo "确已落地请先 git fetch / 合并；要废弃请改用 --archive。" >&2
       exit 1
     fi
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
-    git -C "$PROJECT_ROOT" branch -d "$BRANCH"
-    echo "已收尾（${landed}）：worktree ${WT_DIR} 已删，分支 ${BRANCH} 已删"
+    if [[ "$DETACHED" -eq 1 ]]; then
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD，无分支可删）"
+    else
+      git -C "$PROJECT_ROOT" branch -d "$BRANCH"
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删，分支 ${BRANCH} 已删"
+    fi
     ;;
   archive)
     TAG="archive/$TASK_ID"
-    git -C "$PROJECT_ROOT" tag "$TAG" "$BRANCH"
+    git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID"
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
-    git -C "$PROJECT_ROOT" branch -D "$BRANCH"
-    echo "已归档：tag ${TAG} → 分支 ${BRANCH} 顶端；worktree 已删，分支已删（-D）"
+    if [[ "$DETACHED" -eq 1 ]]; then
+      kept=""
+      if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
+        kept="；保留分支 ${TASK_ID}（它不指向本工作区）"
+      fi
+      echo "已归档：tag ${TAG} → detached HEAD ${HEAD_OID}；worktree 已删${kept}"
+    else
+      git -C "$PROJECT_ROOT" branch -D "$BRANCH"
+      echo "已归档：tag ${TAG} → 分支 ${BRANCH} 顶端；worktree 已删，分支已删（-D）"
+    fi
     ;;
   keep)
     echo "已保留：worktree ${WT_DIR} 原样不动，原因记入任务书${REASON:+：${REASON}}"
     ;;
 esac
 
-line="worktree: ${ACTION} branch=${BRANCH} tag=${TAG}"
+line="worktree: ${ACTION} branch=${BL} tag=${TAG}"
 [[ -n "$REASON" ]] && line="${line} reason=${REASON}"
 printf '%s\n' "$line" >> "$TASK_FILE"
 echo "已记账：$(basename "$TASK_FILE") ← ${line}"

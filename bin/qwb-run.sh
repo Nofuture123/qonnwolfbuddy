@@ -8,7 +8,7 @@ usage() {
 
 必选:
   --task <id|路径>      任务书 id（如 qwbuddy-mvp）或文件路径
-  --worker <名>         工人名（对应 config.json workers 表，如 codex/pi/claude）
+  --worker <名>         工人名（须在 config.sh 的 QWB_WORKERS 里整词精确匹配，如 codex/pi/claude）
 
 选项:
   --project <根>        项目根（默认：当前目录）
@@ -39,7 +39,7 @@ command -v herdr >/dev/null 2>&1 || { echo "错误：找不到 herdr 命令" >&2
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 LEDGER="$PROJECT_ROOT/tasks"
-CONF="$PROJECT_ROOT/qwbuddy/config.json"
+CONF="$PROJECT_ROOT/qwbuddy/config.sh"
 
 # 定位任务书：路径直接用；id 在 tasks/ 里唯一匹配
 if [[ -f "$TASK" ]]; then
@@ -54,18 +54,22 @@ fi
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
 
-# 工人须在 config.json workers 表里（herdr kind 与工人同名）：
-# 只取 "workers" 段、匹配「作为对象键名出现」（"名": {），防说明字段名（如 note/kind）蒙混过关
+# 工人须在 config.sh 的 QWB_WORKERS 里（herdr kind 与工人同名）。
+# 配置唯一来源是 bash 文件：直接 source，不再解析 JSON。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-WSEC="$(sed -n '/"workers"[[:space:]]*:[[:space:]]*[{]/,/^  }/p' "$CONF")"
-WESC="$(printf '%s' "$WORKER" | sed 's/[][\.*^$/]/\\&/g')"
-if ! printf '%s\n' "$WSEC" | grep -qE "^[[:space:]]*\"${WESC}\"[[:space:]]*:[[:space:]]*[{]"; then
-  WNAMES="$(printf '%s\n' "$WSEC" | sed -n 's/^[[:space:]]*"\([^"]*\)"[[:space:]]*:[[:space:]]*[{].*/\1/p' | paste -sd' ' -)"
-  echo "错误：工人 '${WORKER}' 不在 config.json workers 表里（合法工人：${WNAMES}）" >&2
+QWB_WORKERS=""; QWB_AGENT_START_MS=""
+# shellcheck source=/dev/null
+. "$CONF"
+# 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(codex)' 这类都混不过）
+wfound=0
+for w in $QWB_WORKERS; do
+  [[ "$w" == "$WORKER" ]] && wfound=1 && break
+done
+if [[ "$wfound" -eq 0 ]]; then
+  echo "错误：工人 '${WORKER}' 不在 config.sh 的 QWB_WORKERS 里（合法工人：${QWB_WORKERS}）" >&2
   exit 1
 fi
-START_MS="$(sed -n 's/.*"agent_start_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$CONF" | head -1)"
-START_MS="${START_MS:-30000}"
+START_MS="${QWB_AGENT_START_MS:-30000}"
 
 # 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"

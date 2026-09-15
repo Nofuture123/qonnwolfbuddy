@@ -11,13 +11,14 @@ usage() {
 去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串)；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
-等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；等待失败或无可用 pane
-     一律退化为按 interval sleep 后再扫，不得忙循环。
+等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval，
+     等待耗时计入预算——超时路径（已耗 ≥半个 interval）直接下轮再扫；仅立即失败（耗时≈0）
+     或无可用 pane 才 sleep 一个间隔，不得忙循环。
 
 选项:
   --project <根>      项目根（默认：当前目录）
-  --pane <pane_id>    主控 pane（默认：$QWB_CONTROLLER_PANE 或 config.json controller.pane_id）
-  --interval <毫秒>   事件等待的超时（默认：config.json timeouts.wake_interval_ms，否则 120000）
+  --pane <pane_id>    主控 pane（默认：$QWB_CONTROLLER_PANE 或 config.sh QWB_CONTROLLER_PANE）
+  --interval <毫秒>   事件等待的超时（默认：config.sh QWB_WAKE_INTERVAL_MS，否则 120000）
   --once              只检查一轮就退出
   --dry-run           只报告未结项，不叫、不写 wake 行
   -h, --help          显示本帮助
@@ -40,18 +41,16 @@ done
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 LEDGER="$PROJECT_ROOT/tasks"
-CONF="$PROJECT_ROOT/qwbuddy/config.json"
+CONF="$PROJECT_ROOT/qwbuddy/config.sh"
 
 if [[ "$DRY" -eq 0 ]]; then
   command -v herdr >/dev/null 2>&1 || { echo "错误：找不到 herdr 命令，无法叫醒主控" >&2; exit 1; }
 fi
-if [[ -z "$INTERVAL" && -f "$CONF" ]]; then
-  INTERVAL="$(sed -n 's/.*"wake_interval_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$CONF" | head -1)"
-fi
-INTERVAL="${INTERVAL:-120000}"
-if [[ -z "$PANE" && -f "$CONF" ]]; then
-  PANE="$(sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -1)"
-fi
+# 配置唯一来源是 bash 文件：直接 source（PANE 已被 --pane/环境变量占上则不覆盖）
+# shellcheck source=/dev/null
+if [[ -f "$CONF" ]]; then . "$CONF"; fi
+INTERVAL="${INTERVAL:-${QWB_WAKE_INTERVAL_MS:-120000}}"
+PANE="${PANE:-${QWB_CONTROLLER_PANE:-}}"
 
 # 未结项：输出「文件<TAB>state」。state 不在 5 值域 → stderr 警告（不算未结项，但必须说出来）。
 # 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
@@ -95,7 +94,7 @@ check_round() {
     if [[ "$DRY" -eq 1 ]]; then
       echo "未结项（将叫醒）: $(basename "$f") state=$st"
     else
-      [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.json controller.pane_id）" >&2; exit 1; }
+      [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; exit 1; }
       if herdr pane run "$PANE" "看账本：未结项待处理 →$(printf '%s' "$ids")。请读 tasks/ 继续处理。"; then
         printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f"
         echo "已叫醒：$(basename "$f") state=${st} → pane ${PANE}"
@@ -116,7 +115,7 @@ sleep_interval() {
 
 wait_round() {
   # 事件：只对未结项任务书取 dispatch 行、用时间戳最新的一条做 agent wait；
-  # 等待失败（pane 已关 / agent 已退）或无可用 pane → 按 interval sleep 退化等待，不得忙循环
+  # 无可用 pane → 按 interval sleep 退化等待，不得忙循环
   local f st disp p=""
   disp="$(
     while IFS=$'\t' read -r f st; do
@@ -127,7 +126,15 @@ wait_round() {
     p="$(printf '%s' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
   fi
   if [[ -n "$p" ]]; then
-    herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1 || sleep_interval
+    # 一轮预算 = 1×interval：等待本身耗掉的时间计入预算。
+    # 耗掉 ≥ 半个 interval 视为超时路径 → 直接下轮扫描不再 sleep；
+    # 只有立即失败（耗时≈0，如 pane 不存在）才 sleep 一个间隔防忙循环。
+    local t0 dt
+    t0="$(date +%s)"
+    if ! herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1; then
+      dt=$(( $(date +%s) - t0 ))
+      if (( dt * 2000 < INTERVAL )); then sleep_interval; fi
+    fi
   else
     sleep_interval
   fi
