@@ -60,6 +60,20 @@ grep -q "\"$WORKER\"" "$CONF" || { echo "错误：工人 '$WORKER' 不在 config
 START_MS="$(sed -n 's/.*"agent_start_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$CONF" | head -1)"
 START_MS="${START_MS:-30000}"
 
+# 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
+LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
+LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
+SELF="${HERDR_PANE_ID:-pid:$$}"
+[[ -f "$LOCK_BIN" ]] || { echo "错误：找不到 ${LOCK_BIN}" >&2; exit 1; }
+if ! bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" >/dev/null 2>&1; then
+  holder_id="$(sed -n 's/^[^ ]* //p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+  if [[ "$holder_id" != "$SELF" ]]; then
+    echo "错误：主控锁被占用，锁主：$(cat "$LOCK_DIR/owner" 2>/dev/null || echo '（锁目录存在但无 owner 文件）')" >&2
+    echo "确认是残留锁后手动释放：bash ${LOCK_BIN} release --project ${PROJECT_ROOT}" >&2
+    exit 1
+  fi
+fi
+
 # worktree：指定的必须存在；--create-worktree 则新建 <根>/.worktrees/<id>
 if [[ "$CREATE_WT" -eq 1 ]]; then
   WORKTREE="$PROJECT_ROOT/.worktrees/$TASK_ID"
