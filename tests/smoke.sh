@@ -28,7 +28,7 @@ bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
 for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
-assert_file "$TMP/qwbuddy/config.json"
+assert_file "$TMP/qwbuddy/config.sh"
 for s in init run wake status lock worktree; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
 assert_dir  "$TMP/tasks"
 assert_dir  "$TMP/tasks/lessons"
@@ -45,13 +45,11 @@ done
 echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
-echo "== 5. config.json 合法 JSON =="
-if command -v python3 >/dev/null 2>&1; then
-  chk python3 -m json.tool "$TMP/qwbuddy/config.json"
-elif command -v jq >/dev/null 2>&1; then
-  chk jq . "$TMP/qwbuddy/config.json"
+echo "== 5. config.sh 可被 source 且值正确（G3）=="
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+  ok "config.sh source 后三个配置值正确"
 else
-  echo "SKIP  无 python3/jq，跳过 JSON 校验"
+  bad "config.sh source 失败或配置值不对"
 fi
 
 echo "== 6. qwb-wake.sh --dry-run 未结项判定 =="
@@ -73,7 +71,8 @@ cat > "$STUB/herdr" <<EOF
 echo "herdr \$*" >> "$STUBLOG"
 case "\${1:-} \${2:-}" in
   "pane run")   [[ "\${HERDR_FAIL:-}" == *run*  ]] && exit 1; printf '%s\n' '{"result":{"ok":true}}' ;;
-  "agent wait") [[ "\${HERDR_FAIL:-}" == *wait* ]] && exit 1; printf '%s\n' '{"result":{"ok":true}}' ;;
+  "agent wait") if [[ "\${HERDR_WAIT_SLEEP:-0}" -gt 0 ]]; then sleep "\$HERDR_WAIT_SLEEP"; exit 1; fi
+                [[ "\${HERDR_FAIL:-}" == *wait* ]] && exit 1; printf '%s\n' '{"result":{"ok":true}}' ;;
   "tab create") printf '%s\n' '{"result":{"root_pane":{"pane_id":"wtest:p9"}}}' ;;
   *) printf '%s\n' '{"result":{"ok":true}}' ;;
 esac
@@ -152,6 +151,17 @@ n="$(grep -c 'agent wait' "$STUBLOG" || true)"
 [[ "$n" -ge 2 && "$n" -le 8 ]] \
   && ok "4 秒内 ${n} 次 agent wait（≈1 秒/轮，无忙循环）" || bad "4 秒内 ${n} 次 agent wait（忙循环或未等待）"
 
+echo "== 12b. G2：agent wait 超时路径不再重复 sleep（一轮 ≈1×interval）=="
+: > "$STUBLOG"
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_WAIT_SLEEP=1 exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
+WPID=$!
+sleep 4
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
+n="$(grep -c 'agent wait' "$STUBLOG" || true)"
+[[ "$n" -ge 3 && "$n" -le 6 ]] \
+  && ok "4 秒内 ${n} 次 agent wait（超时路径 ≈1 秒/轮 = 1×interval；旧实现会 sleep 两轮仅 ~2 次）" \
+  || bad "4 秒内 ${n} 次 agent wait（超时路径仍重复 sleep 或退化成忙循环）"
+
 echo "== 13. F1 回归：主控锁 =="
 LOCKD="$TMP/qwbuddy/.controller.lock"
 rm -rf "$LOCKD"
@@ -171,22 +181,25 @@ rm -rf "$LOCKD"
   && ok "自持锁时可派发" || bad "自持锁时派发被拒"
 rm -rf "$LOCKD"
 
-echo "== 14. R2：config.json timeouts 无死配置 =="
-grep -q 'agent_wait_ms' "$TMP/qwbuddy/config.json" && bad "agent_wait_ms 死配置仍在" || ok "agent_wait_ms 已删"
-tkeys="$(sed -n '/"timeouts"[[:space:]]*:[[:space:]]*[{]/,/}/p' "$TMP/qwbuddy/config.json" | tail -n +2 | sed -n 's/.*"\([^"]*\)"[[:space:]]*:.*/\1/p')"
-for k in $tkeys; do
-  if grep -q "$k" "$ROOT"/bin/qwb-*.sh; then ok "timeouts.$k 有脚本读取"; else bad "timeouts.$k 是死配置（bin/ 无引用）"; fi
+echo "== 14. R2：config.sh 无死配置 =="
+ckeys="$(sed -n 's/^\(QWB_[A-Z_]*\)=.*/\1/p' "$TMP/qwbuddy/config.sh")"
+[[ -n "$ckeys" ]] || bad "config.sh 未提取到 QWB_* 键"
+for k in $ckeys; do
+  if grep -q "$k" "$ROOT"/bin/qwb-*.sh; then ok "$k 有脚本读取"; else bad "$k 是死配置（bin/ 无引用）"; fi
 done
 
-echo "== 15. R3：--worker 非法名被拒（整文件子串匹配回归）=="
-: > "$STUBLOG"
-if r3out="$( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-run.sh --task disp --worker note 2>&1 )"; then
-  bad "--worker note 竟被接受"
-else
-  ok "--worker note 被拒绝（退出码非 0）"
-fi
-grep -q 'agent start' "$STUBLOG" && bad "--worker note 仍调用了 herdr agent start" || ok "--worker note 未调用 agent start"
-printf '%s' "$r3out" | grep -q 'codex' && ok "报错列出合法工人名" || bad "报错未列出合法工人名"
+echo "== 15. R3+G3：--worker 非法名被拒（整词精确匹配）=="
+r3out=""
+for wname in workers '(codex)' note; do
+  : > "$STUBLOG"
+  if r3out="$( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-run.sh --task disp --worker "$wname" 2>&1 )"; then
+    bad "--worker ${wname} 竟被接受"
+  else
+    ok "--worker ${wname} 被拒绝（退出码非 0）"
+  fi
+  grep -q 'agent start' "$STUBLOG" && bad "--worker ${wname} 仍调用了 herdr agent start" || ok "--worker ${wname} 未调用 agent start"
+done
+printf '%s' "$r3out" | grep -q 'codex pi claude' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
 
 echo "== 16. R4：非法 state 变可见 =="
 ILF="$TMP/tasks/2099-01-06-illegal.md"
@@ -201,7 +214,7 @@ printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-06-illegal' \
 echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
 GP="$TMP/gitp"
 mkdir -p "$GP/tasks" "$GP/.worktrees" "$GP/qwbuddy"
-cp "$TMP/qwbuddy/config.json" "$GP/qwbuddy/config.json"
+cp "$TMP/qwbuddy/config.sh" "$GP/qwbuddy/config.sh"
 git -C "$GP" init -q
 git -C "$GP" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
 WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
@@ -251,6 +264,12 @@ else
 fi
 [[ -d "$GP/.worktrees/$WTD" ]] && ok "拒绝后脏 worktree 未动" || bad "脏 worktree 被删"
 
+# G4：--keep 不做脏检查——同一脏 worktree 上 --keep 退出 0 且记账
+bash "$WTB" finish "$WTD" --keep=有冲突待解 --project "$GP" >/dev/null \
+  && ok "脏 worktree --keep 退出 0（G4）" || bad "脏 worktree --keep 被拒（G4 未修）"
+grep -q '^worktree: keep' "$WTDF" && ok "--keep 记账成功" || bad "--keep 未记账"
+[[ -d "$GP/.worktrees/$WTD" ]] && ok "--keep 后脏 worktree 未动" || bad "--keep 动了 worktree"
+
 # --merged 放行路径：分支合并进 HEAD 后正常收尾
 WTM="wtmerged"; WTMF="$GP/tasks/2099-01-09-${WTM}.md"
 printf '# merged\nstate: running\n' > "$WTMF"
@@ -267,6 +286,76 @@ printf '# new\nstate: running\n' > "$GP/tasks/2099-01-10-wtnew.md"
 r1out="$( cd "$GP" && PATH="$STUB:$PATH" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnew --worker codex --create-worktree 2>&1 )"
 printf '%s' "$r1out" | grep -q '残留' && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
 [[ -d "$GP/.worktrees/wtnew" ]] && ok "警告不阻塞：worktree 已建" || bad "--create-worktree 被阻塞"
+
+echo "== 18. G1：detached HEAD 下归档/落地以实际 HEAD OID 为准 =="
+# 场景：分支 wtdet 在 A；checkout --detach 后提交 B（分支仍指 A）
+WTG="wtdet"; WTGF="$GP/tasks/2099-01-12-${WTG}.md"
+printf '# det\nstate: running\n' > "$WTGF"
+git -C "$GP" worktree add -q -b "$WTG" "$GP/.worktrees/$WTG"
+AOID="$(git -C "$GP/.worktrees/$WTG" rev-parse HEAD)"
+git -C "$GP/.worktrees/$WTG" checkout -q --detach
+git -C "$GP/.worktrees/$WTG" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
+BOID="$(git -C "$GP/.worktrees/$WTG" rev-parse HEAD)"
+[[ "$AOID" != "$BOID" ]] && ok "G1 场景就绪（A=${AOID:0:7} B=${BOID:0:7}）" || bad "G1 场景构造失败（A==B）"
+
+# --merged 对未合并的 detached B 拒绝（旧实现会拿同名分支 A 放行）
+if bash "$WTB" finish "$WTG" --merged --project "$GP" >/dev/null 2>&1; then
+  bad "detached 未合并 --merged 竟放行（G1 未修）"
+else
+  ok "detached 未合并 --merged 拒绝"
+fi
+[[ -d "$GP/.worktrees/$WTG" ]] && ok "拒绝后 detached worktree 未动" || bad "拒绝后 detached worktree 被删"
+
+# --archive：tag 必须指向 B（实际 HEAD OID），且同名分支保留
+bash "$WTB" finish "$WTG" --archive --project "$GP" >/dev/null \
+  && ok "detached --archive 退出 0" || bad "detached --archive 失败"
+tagoid="$(git -C "$GP" rev-parse "archive/$WTG" 2>/dev/null || true)"
+[[ "$tagoid" == "$BOID" ]] && ok "archive/${WTG} 指向 detached 提交 B" || bad "archive tag 指向 ${tagoid} 而非 B（${BOID}）"
+git -C "$GP" show-ref --verify --quiet "refs/heads/$WTG" \
+  && ok "同名分支 ${WTG} 保留（它不指向本工作区）" || bad "同名分支 ${WTG} 被误删（G1 未修）"
+[[ -d "$GP/.worktrees/$WTG" ]] && bad "archive 后 worktree 仍在" || ok "archive 后 worktree 已删"
+grep -q 'branch=detached' "$WTGF" && ok "worktree: 行记 branch=detached" || bad "worktree: 行未标 detached"
+
+echo "== 19. G1b：git status 失败（非 0）→ 拒绝而非放行 =="
+REAL_GIT="$(command -v git)"
+GSTUB="$TMP/gitstub"; mkdir -p "$GSTUB"
+cat > "$GSTUB/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\${3:-}" == "status" ]]; then echo "fatal: mocked status failure" >&2; exit 128; fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GSTUB/git"
+WTS="wtstf"; WTSF="$GP/tasks/2099-01-13-${WTS}.md"
+printf '# stf\nstate: running\n' > "$WTSF"
+git -C "$GP" worktree add -q -b "$WTS" "$GP/.worktrees/$WTS"
+if PATH="$GSTUB:$PATH" bash "$WTB" finish "$WTS" --archive --project "$GP" >/dev/null 2>&1; then
+  bad "git status 失败时 --archive 竟放行（G1b 未修）"
+else
+  ok "git status 失败 → --archive 拒绝"
+fi
+[[ -d "$GP/.worktrees/$WTS" ]] && ok "status 失败拒绝后 worktree 未动" || bad "status 失败后 worktree 被删"
+git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTS" >/dev/null \
+  && bad "status 失败仍打了 archive tag" || ok "status 失败未打 tag"
+
+echo "== 20. G3：init 与 config.sh =="
+PRES="$TMP/presproj"; mkdir -p "$PRES/qwbuddy"
+printf 'QWB_CONTROLLER_PANE="wtest:mine"\n' > "$PRES/qwbuddy/config.sh"
+bash "$ROOT/bin/qwb-init.sh" "$PRES" >/dev/null
+grep -q 'wtest:mine' "$PRES/qwbuddy/config.sh" \
+  && ok "init 不覆盖已存在 config.sh" || bad "init 覆盖了已存在 config.sh"
+MIG="$TMP/migproj"; mkdir -p "$MIG/qwbuddy"
+echo '{}' > "$MIG/qwbuddy/config.jso""n"
+migout="$(bash "$ROOT/bin/qwb-init.sh" "$MIG" 2>&1)"
+printf '%s' "$migout" | grep -q '旧版' && ok "init 对旧版 JSON 配置打迁移提示" || bad "init 未打迁移提示"
+assert_file "$MIG/qwbuddy/config.sh"
+
+echo "== 21. G3：bin/ tests/ templates/ 中旧配置文件名字面量零命中 =="
+if grep -rn 'config\.json' "$ROOT/bin" "$ROOT/tests" "$ROOT/templates" >/dev/null 2>&1; then
+  bad "bin/tests/templates 仍出现旧配置文件名"
+  grep -rn 'config\.json' "$ROOT/bin" "$ROOT/tests" "$ROOT/templates" || true
+else
+  ok "旧配置文件名字面量零命中"
+fi
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

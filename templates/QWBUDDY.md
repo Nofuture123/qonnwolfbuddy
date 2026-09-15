@@ -13,7 +13,7 @@
 3. **未结项** = `state` ∈ {`running`, `blocked`, `needs-decision`}。列出未结项清单。
 4. 读每个未结项末尾的状态行，搞清楚活到哪了。
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
-6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.json` 的 `controller.pane_id`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
+6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
 
 如果账本为空：报「账本无任务」，等使用者提需求。
 
@@ -62,7 +62,7 @@ needs-decision: <需要判断的选项>
   → 提示词里必须含：任务书绝对路径 + 主账本绝对路径 + 「写完状态行再收工」
 ```
 
-工人选择看 `qwbuddy/config.json` 的 `workers` 表与 `routing` 规则；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
+工人选择看 `qwbuddy/config.sh` 的 `QWB_WORKERS` 工人表与其下方派工规则注释；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
 
 ## 5. 验货门
 

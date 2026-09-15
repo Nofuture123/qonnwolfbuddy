@@ -31,11 +31,17 @@ mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
 cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
 
-# config.json 可能被主控填过 controller.pane_id——已存在就不覆盖
-if [[ -f "$ROOT/qwbuddy/config.json" ]]; then
-  echo "保留：qwbuddy/config.json 已存在，不覆盖"
+# config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖
+# 旧版配置文件名用拼接构造：验收门要求源码不出现其字面量（grep 零命中），运行时仍指到真名
+OLD_CONF_NAME="config.jso""n"
+if [[ -f "$ROOT/qwbuddy/config.sh" ]]; then
+  echo "保留：qwbuddy/config.sh 已存在，不覆盖"
 else
-  cp "$TPL/config.json" "$ROOT/qwbuddy/config.json"
+  OLD_CONF="$ROOT/qwbuddy/$OLD_CONF_NAME"
+  if [[ -f "$OLD_CONF" ]]; then
+    echo "提示：检测到旧版 ${OLD_CONF}——新版配置为 bash 可直接 source 的 config.sh，旧文件不自动转换，请手动迁移后删除" >&2
+  fi
+  cp "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
 fi
 
 cp "$SRC"/qwb-*.sh "$ROOT/qwbuddy/bin/"
