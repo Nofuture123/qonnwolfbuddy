@@ -628,10 +628,12 @@ for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agen
   assert_file "$FIXDIR/$fx.json"
 done
 
-# 真正的 JSON 路径检查：fixture 剔 # 注释行后按点分路径解析，路径须存在且值非空
-jpath() { # $1=fixture 文件  $2=点分路径（如 result.root_pane.pane_id）→ 0=存在且非空
-  perl -MJSON::PP=decode_json -e '
-    my ($f, $p) = @ARGV;
+# 真正的 JSON 路径检查：fixture 剔 # 注释行后按点分路径解析，路径须存在、非空且类型匹配（R2-M2）
+# 类型约定：string=必须是 JSON 字符串（encode_json 回带引号；对象/数组/数字/布尔/null/空串全拒）；
+#           array/object=非空对应容器；any（缺省）=存在且非空
+jpath() { # $1=fixture 文件  $2=点分路径  $3=期望类型 → 0=满足契约
+  perl -MJSON::PP=decode_json,encode_json -e '
+    my ($f, $p, $t) = @ARGV;
     open my $fh, "<", $f or exit 2;
     my $raw = do { local $/; <$fh> }; close $fh;
     $raw =~ s/^#.*\n//mg;
@@ -640,30 +642,39 @@ jpath() { # $1=fixture 文件  $2=点分路径（如 result.root_pane.pane_id）
       exit 1 unless ref $cur eq "HASH" && exists $cur->{$k};
       $cur = $cur->{$k};
     }
-    exit 1 if !defined $cur
-      || (!ref $cur && $cur eq "")
-      || (ref $cur eq "HASH"  && !%$cur)
-      || (ref $cur eq "ARRAY" && !@$cur);
+    exit 1 if !defined $cur;
+    if ($t eq "string") {
+      exit 1 if ref $cur || $cur eq "" || encode_json($cur) !~ /^"/;
+    } elsif ($t eq "array") {
+      exit 1 if ref $cur ne "ARRAY" || !@$cur;
+    } elsif ($t eq "object") {
+      exit 1 if ref $cur ne "HASH" || !%$cur;
+    } else {
+      exit 1 if (!ref $cur && $cur eq "")
+        || (ref $cur eq "HASH"  && !%$cur)
+        || (ref $cur eq "ARRAY" && !@$cur);
+    }
     exit 0;
-  ' "$1" "$2"
+  ' "$1" "$2" "${3:-any}"
 }
-# 每个 fixture 必须满足的契约路径清单（存在且非空才算过）
+# 每个 fixture 必须满足的契约清单：路径:类型（存在、非空、类型相符才算过）
 fx_paths() {
   case "$1" in
-    tab-create.json)         printf 'result.root_pane.pane_id result.tab.tab_id' ;;
-    agent-start.json)        printf 'result.type result.agent.pane_id' ;;
-    agent-prompt.json)       printf 'result.type result.agent.pane_id' ;;
-    agent-wait.json)         printf 'result.type result.agent.pane_id' ;;
-    agent-wait-timeout.json) printf 'error.code' ;;
-    agent-list.json)         printf 'result.type result.agents' ;;
-    pane-run-error.json)     printf 'error.code' ;;
+    tab-create.json)         printf 'result.root_pane.pane_id:string result.tab.tab_id:string' ;;
+    agent-start.json)        printf 'result.type:string result.agent.pane_id:string' ;;
+    agent-prompt.json)       printf 'result.type:string result.agent.pane_id:string' ;;
+    agent-wait.json)         printf 'result.type:string result.agent.pane_id:string' ;;
+    agent-wait-timeout.json) printf 'error.code:string' ;;
+    agent-list.json)         printf 'result.type:string result.agents:array' ;;
+    pane-run-error.json)     printf 'error.code:string' ;;
     *)                       printf '' ;;
   esac
 }
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error; do
-  for p in $(fx_paths "$fx.json"); do
-    jpath "$FIXDIR/$fx.json" "$p" \
-      && ok "$fx fixture 含契约路径 .${p}（非空）" || bad "$fx fixture 缺契约路径 .${p}（或为空）"
+  for pt in $(fx_paths "$fx.json"); do
+    p="${pt%%:*}"; t="${pt##*:}"
+    jpath "$FIXDIR/$fx.json" "$p" "$t" \
+      && ok "$fx fixture 含契约路径 .${p}（${t}，非空）" || bad "$fx fixture 缺契约路径 .${p}（或为空/错型）"
   done
 done
 [[ -z "$(sed '/^#/d' "$FIXDIR/pane-run.json")" ]] \
@@ -675,6 +686,12 @@ jpath "$BADFX" result.root_pane.pane_id \
   && bad "错误层级 fixture 竟通过契约检查（假绿）" || ok "错误层级 fixture 被契约检查拒绝"
 jpath "$BADFX" result \
   && bad "空对象 result 竟算非空" || ok "空对象 result 被判不满足契约"
+# R2-M2 负例：pane_id 错型（对象/数组/数字/布尔）必须各被契约拒绝——存在且非空不算过
+for badval in '{"wrong":1}' '["audit:p1"]' '17' 'false'; do
+  printf '{"result":{"root_pane":{"pane_id":%s},"tab":{"tab_id":"t1"}}}\n' "$badval" > "$BADFX"
+  jpath "$BADFX" result.root_pane.pane_id string \
+    && bad "pane_id=${badval} 错型竟过契约检查" || ok "pane_id=${badval} 错型被契约拒绝"
+done
 # 行为证明：stub 确实读 fixture——换掉 fixture 内容，派发结果跟着变
 FIXDIR2="$TMP/fix2"; mkdir -p "$FIXDIR2"; cp "$FIXDIR"/*.json "$FIXDIR2/"
 sed 's/"pane_id":"[^"]*"/"pane_id":"contract:p99"/' "$FIXDIR/tab-create.json" > "$FIXDIR2/tab-create.json"
@@ -748,7 +765,7 @@ Given 并发追加被覆盖
 When  派发
 Then  报错不留假绿
 EOF
-F2P="$TMP/f2probe.log"; : > "$F2P"
+F2N="$TMP/f2awk.count"; echo 0 > "$F2N"
 F2STUB="$TMP/f2stub"; mkdir -p "$F2STUB"
 cat > "$F2STUB/herdr" <<EOF
 #!/usr/bin/env bash
@@ -761,21 +778,31 @@ case "\${1:-} \${2:-}" in
 esac
 exit 0
 EOF
+# R2-M4：替身每次 awk 调用注入**唯一**标记（带序号）并记次数——
+# 同名标记会被「场景提取先行调用」提前留下的旧标记蒙混，必须逐条核对
 cat > "$F2STUB/awk" <<EOF
 #!/usr/bin/env bash
-echo "called" >> "$F2P"
+n=\$(( \$(cat "$F2N") + 1 ))
+echo "\$n" > "$F2N"
 /usr/bin/awk "\$@"
-printf 'done: awk-injected-during-dispatch\n' >> "$F2T"
+printf 'done: awk-injected-%s\n' "\$n" >> "$F2T"
 EOF
 chmod +x "$F2STUB/herdr" "$F2STUB/awk"
 rm -rf "$TMP/qwbuddy/.controller.lock"   # 前面段落的派发已持锁；本节统一用固定 pane id 当主控
 ( cd "$TMP" && PATH="$F2STUB:$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task f2race --worker codex --here ) >/dev/null \
   && ok "带并发注入的派发退出 0" || bad "带并发注入的派发非 0"
-# 负例：只要派发路径还调用 awk（旧实现的「读快照→整文件覆盖」），替身注入的追加就必须存活；
+# 负例：注入次数 == 任务书里对应标记行数，且每条唯一标记都在——任何丢行/重复都会被抓（R2-M4）；
 # 实现不再调 awk 时注入点不存在，由下面 agent-start 注入断言兜底
-if [[ -s "$F2P" ]]; then
-  grep -q 'awk-injected-during-dispatch' "$F2T" \
-    && ok "awk 快照窗口注入的追加行未丢" || bad "awk 替身注入行被覆盖丢失（F2 未修）"
+inj="$(cat "$F2N")"
+if [[ "$inj" -gt 0 ]]; then
+  miss=0
+  for ((i=1; i<=inj; i++)); do
+    grep -qxF "done: awk-injected-${i}" "$F2T" || miss=$((miss+1))
+  done
+  found="$(grep -cF 'done: awk-injected-' "$F2T" || true)"
+  [[ "$miss" -eq 0 && "$found" -eq "$inj" ]] \
+    && ok "awk 注入 ${inj} 次，任务书保留全部 ${inj} 条唯一标记" \
+    || bad "awk 注入 ${inj} 次但任务书只剩 ${found} 条唯一标记（丢 ${miss} 条，F2 未修）"
 else
   ok "派发全程未调 awk 处理任务书（快照覆盖注入点已消除）"
 fi
@@ -951,6 +978,139 @@ cp "$ROOT/bin/qwb-init.sh" "$MI/qwbuddy/bin/qwb-init.sh"
 mout="$(bash "$MI/qwbuddy/bin/qwb-init.sh" "$MI" 2>&1)"; mrc=$?
 { [[ "$mrc" -ne 0 ]] && printf '%s' "$mout" | grep -q '母本仓'; } \
   && ok "安装副本里的 qwb-init.sh 被执行 → 拒绝并提示母本仓" || bad "安装副本 init 行为不对（rc=${mrc}）"
+
+echo "== 34. R2-M2：坏 fixture 必须喂给真实运行路径（不只测测试内 jpath）=="
+FIXDIR3="$TMP/fix3"; mkdir -p "$FIXDIR3"; cp "$FIXDIR"/*.json "$FIXDIR3/"
+# 错误层级：result 与 root_pane 平级、pane_id 在顶层（审核 R3 反转变体的同款输入）
+printf '%s\n' '{"result":{},"root_pane":{},"pane_id":"audit:p1"}' > "$FIXDIR3/tab-create.json"
+DISP3="$TMP/tasks/2099-01-40-disp3.md"
+cat > "$DISP3" <<'EOF'
+# d3
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务写好
+When  派发
+Then  pane 写进账本
+### user_失败
+Given fixture 错形
+When  派发
+Then  报错退出
+EOF
+: > "$STUBLOG"
+if ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl HERDR_FIXDIR="$FIXDIR3" bash qwbuddy/bin/qwb-run.sh --task disp3 --worker codex --here ) >/dev/null 2>&1; then
+  bad "错误层级 fixture 驱动真实 run 竟派发成功（运行时解析退化未被抓）"
+else
+  ok "错误层级 fixture → 真实 run 拒绝派发"
+fi
+grep -q 'agent start' "$STUBLOG" && bad "被拒后仍调用了 agent start" || ok "被拒后未调用 agent start"
+grep -q '^dispatch:' "$DISP3" && bad "被拒仍写了 dispatch 行" || ok "被拒任务书无 dispatch 行"
+# 错型也拦在运行时边界：pane_id 为对象 → 拒绝（旧实现会传出 HASH(0x…) 继续派发）
+FIXDIR4="$TMP/fix4"; mkdir -p "$FIXDIR4"; cp "$FIXDIR"/*.json "$FIXDIR4/"
+printf '%s\n' '{"result":{"root_pane":{"pane_id":{"wrong":1}},"tab":{"tab_id":"t1"}},"id":"x"}' > "$FIXDIR4/tab-create.json"
+DISP4="$TMP/tasks/2099-01-41-disp4.md"
+cat > "$DISP4" <<'EOF'
+# d4
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务写好
+When  派发
+Then  pane 写进账本
+### user_失败
+Given fixture 错形
+When  派发
+Then  报错退出
+EOF
+: > "$STUBLOG"
+if ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl HERDR_FIXDIR="$FIXDIR4" bash qwbuddy/bin/qwb-run.sh --task disp4 --worker codex --here ) >/dev/null 2>&1; then
+  bad "pane_id 为对象的响应竟派发成功（运行时无类型约束）"
+else
+  ok "pane_id 为对象 → 真实 run 拒绝派发"
+fi
+grep -q 'agent start' "$STUBLOG" && bad "错型被拒后仍调用了 agent start" || ok "错型被拒后未调用 agent start"
+grep -q '^dispatch:' "$DISP4" && bad "错型仍写了 dispatch 行" || ok "错型任务书无 dispatch 行"
+
+echo "== 35. R2-M1：再次派发不得覆盖/丢失冻结基线 =="
+# 正例：场景改回原文（指纹恢复一致）→ 再派发成功、基线值不变、追加第二条 dispatch
+sed -i '' 's/放行执行/拒绝执行/' "$MPT"
+( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen --worker codex --here ) >/dev/null \
+  && ok "未改场景再次派发成功（返工合法）" || bad "未改场景再次派发被拒"
+fp2="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$MPT" | head -1 | tr -d '[:space:]')"
+[[ "$fp2" == "$mpfp" ]] && ok "再次派发后基线值不变" || bad "再次派发基线被改写"
+[[ "$(grep -c '^dispatch:' "$MPT")" == "2" ]] \
+  && ok "再次派发正常追加第二条 dispatch 行" || bad "dispatch 行数异常（应为 2）"
+# 负例：改场景 → 再派发必须被拒；不触达 herdr、不动账本、不覆盖基线
+sed -i '' 's/拒绝执行/放行执行/' "$MPT"
+: > "$STUBLOG"
+nout="$( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动'; } \
+  && ok "改场景后再次派发被拒（rc=${nrc}）" || bad "改场景后再次派发竟放行（rc=${nrc}）"
+{ ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "被拒未触达 herdr（无 tab create / agent start）" || bad "被拒仍触达 herdr"
+[[ "$(grep -c '^dispatch:' "$MPT")" == "2" ]] && ok "被拒未追加 dispatch" || bad "被拒仍改账本"
+fp3="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$MPT" | head -1 | tr -d '[:space:]')"
+[[ "$fp3" == "$mpfp" ]] && ok "被拒后原基线仍在" || bad "被拒后基线被覆盖"
+# 恢复场景原文（保持 MP 项目一致）
+sed -i '' 's/放行执行/拒绝执行/' "$MPT"
+# 负例：删基线留 dispatch → 再派发被拒；--accept-new-scenarios 才允许重建且留说明行
+MPT2="$MP/tasks/2099-01-33-mscen2.md"
+cat > "$MPT2" <<'EOF'
+# mscen2
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 前置
+When  动作
+Then  成功
+### user_失败路径
+Given 非法输入
+When  动作
+Then  拒绝执行
+EOF
+( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen2 --worker codex --here ) >/dev/null \
+  && ok "mscen2 首次派发成功" || bad "mscen2 首次派发被拒"
+sed -i '' '/^scenarios-fp:/d' "$MPT2"   # 模拟新制任务丢基线
+nout="$( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen2 --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '冻结基线'; } \
+  && ok "删基线留 dispatch → 再派发被拒" || bad "删基线留 dispatch 竟放行（rc=${nrc}）"
+( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen2 --worker codex --here --accept-new-scenarios ) >/dev/null \
+  && ok "--accept-new-scenarios 允许重建基线" || bad "--accept-new-scenarios 仍被拒"
+grep -q '^scenarios-fp:' "$MPT2" && ok "基线已重建写回" || bad "未重建基线"
+grep -q 'accept-new-scenarios' "$MPT2" && ok "任务书留了重建说明行" || bad "未留重建说明行"
+
+echo "== 36. R2-M3：死键判定——字面量/纯赋值不算读取 =="
+LK="$TMP/lkproj"; mkdir -p "$LK"; bash "$ROOT/bin/qwb-init.sh" "$LK" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_AUDIT_UNUSED=1\n' >> "$LK/qwbuddy/config.sh"
+# 假引用 1：只打印字面量（无 $）→ 仍须判死键
+printf '%s\n' '#!/usr/bin/env bash' 'echo QWB_AUDIT_UNUSED' > "$LK/qwbuddy/bin/helper.sh"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$LK" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_AUDIT_UNUSED'; } \
+  && ok "echo 字面量不算读取 → lint FAIL" || bad "echo 字面量被当成读取（R2-M3 未修，rc=${rc}）"
+# 假引用 2：纯赋值 → 仍须判死键
+printf '%s\n' '#!/usr/bin/env bash' 'QWB_AUDIT_UNUSED=2' > "$LK/qwbuddy/bin/helper.sh"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$LK" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_AUDIT_UNUSED'; } \
+  && ok "纯赋值不算读取 → lint FAIL" || bad "纯赋值被当成读取（R2-M3 未修，rc=${rc}）"
+# 对照：真读取 → lint 过
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$QWB_AUDIT_UNUSED"' > "$LK/qwbuddy/bin/helper.sh"
+bash "$ROOT/bin/qwb-lint.sh" --project "$LK" >/dev/null 2>&1 \
+  && ok '真读取 $QWB_X → lint 恢复 0（对照）' || bad "真读取仍 FAIL——判定规则有问题"
+
+echo "== 37. R2-M5：文档不得虚构 qwbuddy 子命令入口 =="
+if grep -nE 'qwbuddy[[:space:]]+(init|run|wake|status)([^A-Za-z0-9_]|$)' "$ROOT/README.md" "$ROOT/docs/DESIGN.md"; then
+  bad "README/DESIGN 仍出现 qwbuddy <子命令> 入口写法（真实入口是 bin/qwb-*.sh）"
+else
+  ok "README.md 与 DESIGN.md 无 qwbuddy init/run/wake/status 入口写法"
+fi
+[[ -x "$ROOT/bin/qwb-init.sh" ]] \
+  && ok "真实入口 bin/qwb-init.sh 存在且可执行" || bad "bin/qwb-init.sh 缺失或不可执行"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

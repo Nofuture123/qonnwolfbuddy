@@ -9,7 +9,7 @@ usage() {
 逐项检查并输出 PASS/FAIL，任一 FAIL → 退出码 1：
   1. 文档承诺的脚本必须存在（QWBUDDY.md 与 docs/DESIGN.md 点名的 qwb-*.sh；qwb-init.sh 为母本仓专用安装器除外）
   2. tasks/*.md 的 state: 值 ∈ running|blocked|needs-decision|done|verified（有字段但值为空同样 FAIL；无字段的非任务文档跳过）
-  3. config 无死键（QWB_X=… 与 export QWB_X=… 都算声明；$QWB_X 出现在非纯注释行才算被引用）
+  3. config 无死键（QWB_X=… 与 export QWB_X=… 都算声明；非注释行出现 $QWB_X / ${QWB_X} 才算被读取）
   4. 无「变量后紧跟非 ASCII」写法（应写成 ${VAR} 形式；扫描 bin/*.sh 全部脚本）
   5. 质量门已声明（QWB_GATE_FAST / QWB_GATE_FULL 均非空）
   6. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）
@@ -96,8 +96,10 @@ if [[ -f "$CONF" ]]; then
     # 声明形式：QWB_X=… 与 export QWB_X=… 都算
     while IFS= read -r k; do
       [[ -n "$k" ]] || continue
-      # 「被引用」= 名字出现在非纯注释行（整行注释里的名字不算读取）
-      grep -h "$k" "${binsh[@]}" 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -q . \
+      # 「被引用」= 非注释行里出现真实变量读取 $QWB_X / ${QWB_X}（R2-M3）；
+      # 纯赋值（QWB_X=…）、不带 $ 的字面量（echo QWB_X）、整行注释都不算
+      grep -hE '\$[{]?'"$k"'([^A-Za-z0-9_]|$)' "${binsh[@]}" 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' | grep -q . \
         || dead="${dead} ${k}"
     done < <(sed 's/^export[[:space:]][[:space:]]*//' "$CONF" | sed -n 's/^\(QWB_[A-Z_]*\)=.*/\1/p')
   fi
