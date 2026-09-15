@@ -55,7 +55,7 @@ qonnwolfbuddy/
 │   ├── qwb-test.sh        快门/全门执行器（`qwb-test.sh fast|full`）
 │   └── qwb-lint.sh        自身 lint（承诺未实现 / state 值域 / 死配置 / 非 ASCII 陷阱）
 ├── tests/             测试（已完成）
-│   ├── smoke.sh           241 项断言（含历轮全部回归与 M1–M6 负例），须打印 SMOKE PASS
+│   ├── smoke.sh           328 项断言（含历轮全部回归与 M1–M6 负例），须打印 SMOKE PASS
 │   └── fixtures/herdr/    真录的 herdr 响应基线（假替身的契约依据）
 └── tasks/             本仓自己的账本 + 错题本
 ```
