@@ -29,6 +29,7 @@ TPL="$SRC/../templates"
 mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 
 cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
+cp "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
 cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
 
 # config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
