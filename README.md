@@ -39,8 +39,8 @@ qonnwolfbuddy/
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
 ├── qwb.config.sh      本仓自用的质量门声明（快门 / 全门）
-├── bin/               脚本（已完成，8 个）
-│   ├── qwb-init.sh        装进新项目（幂等）
+├── bin/               脚本（8 个；其中 qwb-init.sh 为母本仓专用，不随安装进入目标项目）
+│   ├── qwb-init.sh        装进新项目（幂等；仅从母本仓运行）
 │   ├── qwb-run.sh         派发 + 记账
 │   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控（进展指纹去重）
 │   ├── qwb-status.sh      点名 + 汇报
@@ -49,7 +49,7 @@ qonnwolfbuddy/
 │   ├── qwb-test.sh        快门/全门执行器（`qwb-test.sh fast|full`）
 │   └── qwb-lint.sh        自身 lint（承诺未实现 / state 值域 / 死配置 / 非 ASCII 陷阱）
 ├── tests/             测试（已完成）
-│   ├── smoke.sh           188 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   ├── smoke.sh           241 项断言（含历轮全部回归与 M1–M6 负例），须打印 SMOKE PASS
 │   └── fixtures/herdr/    真录的 herdr 响应基线（假替身的契约依据）
 └── tasks/             本仓自己的账本 + 错题本
 ```
