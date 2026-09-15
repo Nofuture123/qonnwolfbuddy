@@ -35,7 +35,7 @@ qonnwolfbuddy/
 ├── templates/         装进项目的模板（已完成）
 │   ├── QWBUDDY.md         主控总说明书
 │   ├── roles/             主控 / 审核者 / 执行者 / 咨询师
-│   ├── config.json        工人表 + 派工规则 + 超时
+│   ├── config.sh          工人表 + 派工规则 + 超时（bash source 单一来源）
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
 ├── bin/               脚本（已完成，共 617 行 shell，6 个）
@@ -46,7 +46,7 @@ qonnwolfbuddy/
 │   ├── qwb-lock.sh        主控锁（mkdir 原子目录锁，防两个主控同时动手）
 │   └── qwb-worktree.sh    worktree 清点与收尾（list / finish --merged|--archive|--keep）
 ├── tests/             冒烟测试（已完成）
-│   └── smoke.sh           86 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   └── smoke.sh           110 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
 └── tasks/             本仓自己的账本 + 错题本
 ```
 
