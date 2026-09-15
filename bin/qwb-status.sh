@@ -41,10 +41,14 @@ else
     case "$st" in
       running|blocked|needs-decision) mark="未结" ;;
       done|verified) mark="已结" ;;
-      *) mark="?" ;;
+      *) mark="非法" ;;
     esac
     last="$(grep -E '^(working|done|blocked|needs-decision|wake|dispatch):' "$f" 2>/dev/null | tail -1 || true)"
-    printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
+    if [[ "$mark" == "非法" ]]; then
+      printf '[非法] %-40s state=%s —— 该任务不会被值守叫醒\n' "$name" "$st"
+    else
+      printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
+    fi
     [[ -n "$last" ]] && printf '       最近: %s\n' "$last"
   done
 fi

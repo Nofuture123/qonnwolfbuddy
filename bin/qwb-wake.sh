@@ -53,14 +53,18 @@ if [[ -z "$PANE" && -f "$CONF" ]]; then
   PANE="$(sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -1)"
 fi
 
-# 未结项：输出「文件<TAB>state」
+# 未结项：输出「文件<TAB>state」。state 不在 5 值域 → stderr 警告（不算未结项，但必须说出来）。
+# 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
 open_items() {
   local f st
   for f in "$LEDGER"/*.md; do
     [[ -e "$f" ]] || continue
+    grep -q '^state:' "$f" || continue
     st="$(sed -n 's/^state:[[:space:]]*//p' "$f" | head -1 | tr -d '[:space:]')"
     case "$st" in
       running|blocked|needs-decision) printf '%s\t%s\n' "$f" "$st" ;;
+      done|verified) ;;
+      *) echo "警告：$(basename "$f") state=${st} 非法（不在 5 值域内），不会被叫醒" >&2 ;;
     esac
   done
 }

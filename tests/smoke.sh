@@ -29,7 +29,7 @@ bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
 for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
 assert_file "$TMP/qwbuddy/config.json"
-for s in init run wake status lock; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
+for s in init run wake status lock worktree; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
 assert_dir  "$TMP/tasks"
 assert_dir  "$TMP/tasks/lessons"
 grep -qF 'qwbuddy/QWBUDDY.md' "$TMP/AGENTS.md" && ok "AGENTS.md 有钩子" || bad "AGENTS.md 无钩子"
@@ -170,6 +170,103 @@ rm -rf "$LOCKD"
 ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:p9 bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null \
   && ok "自持锁时可派发" || bad "自持锁时派发被拒"
 rm -rf "$LOCKD"
+
+echo "== 14. R2：config.json timeouts 无死配置 =="
+grep -q 'agent_wait_ms' "$TMP/qwbuddy/config.json" && bad "agent_wait_ms 死配置仍在" || ok "agent_wait_ms 已删"
+tkeys="$(sed -n '/"timeouts"[[:space:]]*:[[:space:]]*[{]/,/}/p' "$TMP/qwbuddy/config.json" | tail -n +2 | sed -n 's/.*"\([^"]*\)"[[:space:]]*:.*/\1/p')"
+for k in $tkeys; do
+  if grep -q "$k" "$ROOT"/bin/qwb-*.sh; then ok "timeouts.$k 有脚本读取"; else bad "timeouts.$k 是死配置（bin/ 无引用）"; fi
+done
+
+echo "== 15. R3：--worker 非法名被拒（整文件子串匹配回归）=="
+: > "$STUBLOG"
+if r3out="$( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-run.sh --task disp --worker note 2>&1 )"; then
+  bad "--worker note 竟被接受"
+else
+  ok "--worker note 被拒绝（退出码非 0）"
+fi
+grep -q 'agent start' "$STUBLOG" && bad "--worker note 仍调用了 herdr agent start" || ok "--worker note 未调用 agent start"
+printf '%s' "$r3out" | grep -q 'codex' && ok "报错列出合法工人名" || bad "报错未列出合法工人名"
+
+echo "== 16. R4：非法 state 变可见 =="
+ILF="$TMP/tasks/2099-01-06-illegal.md"
+printf '# 非法状态\nstate: pending\n' > "$ILF"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '非法' && ok "status 对 state=pending 显示非法标记" || bad "status 未标非法 state"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
+printf '%s' "$out" | grep -q 'state=pending 非法' && ok "wake 对 state=pending 发 stderr 警告" || bad "wake 未警告非法 state"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-06-illegal' \
+  && bad "非法 state 被列为未结项" || ok "非法 state 不算未结项"
+
+echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
+GP="$TMP/gitp"
+mkdir -p "$GP/tasks" "$GP/.worktrees" "$GP/qwbuddy"
+cp "$TMP/qwbuddy/config.json" "$GP/qwbuddy/config.json"
+git -C "$GP" init -q
+git -C "$GP" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
+WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
+
+WTID="wtdemo"; WTF="$GP/tasks/2099-01-07-${WTID}.md"
+printf '# demo\nstate: running\n' > "$WTF"
+git -C "$GP" worktree add -q -b "$WTID" "$GP/.worktrees/$WTID"
+out="$(bash "$WTB" list --project "$GP")"
+printf '%s' "$out" | grep -q "未结项.*${WTID}" && ok "list 标出未结项 worktree" || bad "list 未标出未结项"
+mkdir -p "$GP/.worktrees/orphan"
+out="$(bash "$WTB" list --project "$GP")"
+printf '%s' "$out" | grep -q '残留.*orphan' && ok "list 标出残留目录" || bad "list 未标出残留"
+
+# --merged 对未合并分支拒绝（先在分支上做个 commit 让它领先 HEAD）
+git -C "$GP/.worktrees/$WTID" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
+if bash "$WTB" finish "$WTID" --merged --project "$GP" >/dev/null 2>&1; then
+  bad "--merged 对未合并分支竟放行"
+else
+  ok "--merged 对未合并分支拒绝"
+fi
+[[ -d "$GP/.worktrees/$WTID" ]] && ok "拒绝后 worktree 未动" || bad "拒绝后 worktree 被删"
+
+# --keep：不动 git，只记账
+bash "$WTB" finish "$WTID" --keep=等使用者裁决 --project "$GP" >/dev/null \
+  && ok "finish --keep 退出 0" || bad "finish --keep 失败"
+grep -q '^worktree: keep' "$WTF" && ok "任务书追加了 worktree: keep 行" || bad "任务书无 worktree: 行"
+[[ -d "$GP/.worktrees/$WTID" ]] && ok "--keep 未删 worktree" || bad "--keep 删了 worktree"
+
+# --archive：打 tag → 删 worktree → branch -D → 记账
+bash "$WTB" finish "$WTID" --archive --project "$GP" >/dev/null \
+  && ok "finish --archive 退出 0" || bad "finish --archive 失败"
+git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTID" >/dev/null \
+  && ok "产生 archive/$WTID 标签" || bad "无 archive 标签"
+[[ -d "$GP/.worktrees/$WTID" ]] && bad "archive 后 worktree 仍在" || ok "archive 后 worktree 已删"
+git -C "$GP" show-ref --verify --quiet "refs/heads/$WTID" && bad "archive 后分支仍在" || ok "archive 后分支已删"
+grep -q 'tag=archive/' "$WTF" && ok "worktree: 行含 tag" || bad "worktree: 行缺 tag"
+
+# 脏 worktree：--archive 拒绝，不动
+WTD="wtdirty"; WTDF="$GP/tasks/2099-01-08-${WTD}.md"
+printf '# dirty\nstate: running\n' > "$WTDF"
+git -C "$GP" worktree add -q -b "$WTD" "$GP/.worktrees/$WTD"
+echo x > "$GP/.worktrees/$WTD/dirty.txt"
+if bash "$WTB" finish "$WTD" --archive --project "$GP" >/dev/null 2>&1; then
+  bad "脏 worktree --archive 竟放行"
+else
+  ok "脏 worktree --archive 拒绝"
+fi
+[[ -d "$GP/.worktrees/$WTD" ]] && ok "拒绝后脏 worktree 未动" || bad "脏 worktree 被删"
+
+# --merged 放行路径：分支合并进 HEAD 后正常收尾
+WTM="wtmerged"; WTMF="$GP/tasks/2099-01-09-${WTM}.md"
+printf '# merged\nstate: running\n' > "$WTMF"
+git -C "$GP" worktree add -q -b "$WTM" "$GP/.worktrees/$WTM"
+git -C "$GP/.worktrees/$WTM" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
+git -C "$GP" -c user.email=t@t.t -c user.name=t merge -qm m "$WTM"
+bash "$WTB" finish "$WTM" --merged --project "$GP" >/dev/null \
+  && ok "已合并分支 --merged 放行" || bad "已合并分支 --merged 被拒"
+[[ -d "$GP/.worktrees/$WTM" ]] && bad "merged 后 worktree 仍在" || ok "merged 后 worktree 已删"
+git -C "$GP" show-ref --verify --quiet "refs/heads/$WTM" && bad "merged 后分支仍在" || ok "merged 后分支已删"
+
+# qwb-run.sh --create-worktree：有残留 → 警告但不阻塞
+printf '# new\nstate: running\n' > "$GP/tasks/2099-01-10-wtnew.md"
+r1out="$( cd "$GP" && PATH="$STUB:$PATH" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnew --worker codex --create-worktree 2>&1 )"
+printf '%s' "$r1out" | grep -q '残留' && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
+[[ -d "$GP/.worktrees/wtnew" ]] && ok "警告不阻塞：worktree 已建" || bad "--create-worktree 被阻塞"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

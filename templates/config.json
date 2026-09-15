@@ -27,7 +27,6 @@
     "派工前查一次本机额度（quota-axi）；模型判定 = 智力档 × 额度现状；额度只是派发时的参考"
   ],
   "timeouts": {
-    "agent_wait_ms": 1800000,
     "agent_start_ms": 30000,
     "wake_interval_ms": 120000
   },

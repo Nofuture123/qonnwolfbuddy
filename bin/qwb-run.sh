@@ -54,9 +54,16 @@ fi
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
 
-# 工人须在 config.json workers 表里（herdr kind 与工人同名）
+# 工人须在 config.json workers 表里（herdr kind 与工人同名）：
+# 只取 "workers" 段、匹配「作为对象键名出现」（"名": {），防说明字段名（如 note/kind）蒙混过关
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-grep -q "\"$WORKER\"" "$CONF" || { echo "错误：工人 '$WORKER' 不在 config.json workers 表里" >&2; exit 1; }
+WSEC="$(sed -n '/"workers"[[:space:]]*:[[:space:]]*[{]/,/^  }/p' "$CONF")"
+WESC="$(printf '%s' "$WORKER" | sed 's/[][\.*^$/]/\\&/g')"
+if ! printf '%s\n' "$WSEC" | grep -qE "^[[:space:]]*\"${WESC}\"[[:space:]]*:[[:space:]]*[{]"; then
+  WNAMES="$(printf '%s\n' "$WSEC" | sed -n 's/^[[:space:]]*"\([^"]*\)"[[:space:]]*:[[:space:]]*[{].*/\1/p' | paste -sd' ' -)"
+  echo "错误：工人 '${WORKER}' 不在 config.json workers 表里（合法工人：${WNAMES}）" >&2
+  exit 1
+fi
 START_MS="$(sed -n 's/.*"agent_start_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$CONF" | head -1)"
 START_MS="${START_MS:-30000}"
 
@@ -76,6 +83,15 @@ fi
 
 # worktree：指定的必须存在；--create-worktree 则新建 <根>/.worktrees/<id>
 if [[ "$CREATE_WT" -eq 1 ]]; then
+  # 开之前先清点：有残留 worktree 打警告但不阻塞（使用者可能有意保留）
+  WT_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
+  if [[ -f "$WT_BIN" ]]; then
+    residue="$(bash "$WT_BIN" list --project "$PROJECT_ROOT" 2>/dev/null | grep '残留' || true)"
+    if [[ -n "$residue" ]]; then
+      echo "警告：.worktrees 下有残留目录，建议先用 qwb-worktree.sh finish 收尾：" >&2
+      printf '%s\n' "$residue" >&2
+    fi
+  fi
   WORKTREE="$PROJECT_ROOT/.worktrees/$TASK_ID"
   mkdir -p "$PROJECT_ROOT/.worktrees"
   if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
