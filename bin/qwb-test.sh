@@ -50,8 +50,8 @@ if [[ "$GATE" == "fast" ]]; then VAR="QWB_GATE_FAST"; CMD="$QWB_GATE_FAST"; else
 
 if [[ -z "$CMD" ]]; then
   cat >&2 <<EOF
-错误：${CONF} 未声明 ${VAR}。正确写法（加进该文件，命令在项目根下执行，按项目布局调路径）：
-  QWB_GATE_FAST="bash -n bin/*.sh tests/smoke.sh && shellcheck bin/*.sh"
+错误：本项目尚未声明质量门（${CONF} 的 ${VAR} 为空/缺失）——请编辑 ${CONF} 填写 QWB_GATE_FAST / QWB_GATE_FULL（示例写法，命令在项目根下执行，按项目布局调路径）：
+  QWB_GATE_FAST='for f in bin/*.sh tests/smoke.sh; do bash -n "\$f" || exit 1; done && shellcheck bin/*.sh'
   QWB_GATE_FULL="bash tests/smoke.sh && bash bin/qwb-lint.sh"
 EOF
   exit 1

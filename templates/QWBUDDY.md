@@ -55,10 +55,11 @@ needs-decision: <需要判断的选项>
 
 ```
 写任务书（模板 qwbuddy/TASK.md；写好即 state: running，见 §3；必须有「验收场景」块，见 §6） 
-  → 开 worktree（herdr worktree create，或让 qwb-run.sh --create-worktree 代劳）
-  → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree]
-       （它负责：查主控锁、开窗口、起工人、发提示词、记账：窗口 + 派发时间 + state: running；
-        锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁）
+  → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree | --here]
+       （默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本；--here 是显式声明在项目根派发；
+        它负责：验收场景门校验、查主控锁、开窗口、记账（state: running + scenarios-fp + dispatch）、
+        起工人、发提示词；锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁；
+        没有验收场景块或缺失败路径场景会直接拒绝派发）
   → 提示词里必须含：任务书绝对路径 + 主账本绝对路径 + 「写完状态行再收工」
 ```
 
@@ -74,7 +75,7 @@ needs-decision: <需要判断的选项>
 ## 6. 测试纪律——先场景后代码
 
 - **先场景后代码**：派发前任务书**必须**有「验收场景」块（模板：`qwbuddy/TASK.md`）；场景用 Given/When/Then；**至少一条失败路径场景**——只写 happy path 的任务书不完整。
-- **场景冻结**：场景定稿后才许可提交实现；实现完成后**不得**回头改写场景以迎合实现——那是自证。
+- **场景冻结**：场景定稿后才许可提交实现；实现完成后**不得**回头改写场景以迎合实现——那是自证。派发时 `qwb-run.sh` 把场景块指纹写进任务书 `scenarios-fp:`；`qwb-lint.sh` 重算比对，派发后改动即 FAIL。
 - **测试分级**：项目要在 `qwbuddy/config.sh` 声明**快门** `QWB_GATE_FAST`（快、无外部依赖，改一行跑它）与**全门** `QWB_GATE_FULL`（完整）；派活/自检跑快门，**合并前跑全门**。执行：`bash qwbuddy/bin/qwb-test.sh fast|full`。
 
 ## 7. worktree 四步规范
@@ -98,14 +99,14 @@ needs-decision: <需要判断的选项>
 
 | 脚本 | 干什么 |
 |---|---|
-| `qwb-init.sh <项目根>` | 装进新项目（幂等） |
-| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账 |
+| `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
+| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根） |
 | `qwb-wake.sh [--dry-run|--once]` | 值守：查未结项 → 叫醒你的 pane |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
 | `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §7） |
 | `qwb-test.sh fast|full` | 快门/全门执行器：跑 config 声明的 QWB_GATE_*（见 §6） |
-| `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法 |
+| `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法、质量门已声明、已派发任务书场景冻结 |
 
 所有脚本支持 `--help`。值守脚本由使用者（或你）启动；它叫不醒**已退出**的你。
 
