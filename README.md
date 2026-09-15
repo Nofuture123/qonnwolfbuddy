@@ -38,7 +38,7 @@ qonnwolfbuddy/
 │   ├── config.sh          工人表 + 派工规则 + 超时（bash source 单一来源）
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
-├── bin/               脚本（已完成，共 617 行 shell，6 个）
+├── bin/               脚本（已完成，共 666 行 shell，6 个）
 │   ├── qwb-init.sh        装进新项目（幂等）
 │   ├── qwb-run.sh         派发 + 记账
 │   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控（进展指纹去重）
