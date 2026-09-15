@@ -8,11 +8,12 @@
 
 ## 1. 开局点名（每次启动先做）
 
-1. 列出 `tasks/` 下全部任务书，读每份头部 `state:` 字段。
-2. **未结项** = `state` ∈ {`running`, `blocked`, `needs-decision`}。列出未结项清单。
-3. 读每个未结项末尾的状态行，搞清楚活到哪了。
-4. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
-5. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.json` 的 `controller.pane_id`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
+1. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。已被占用 = 另一个主控在活动：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。
+2. 列出 `tasks/` 下全部任务书，读每份头部 `state:` 字段。
+3. **未结项** = `state` ∈ {`running`, `blocked`, `needs-decision`}。列出未结项清单。
+4. 读每个未结项末尾的状态行，搞清楚活到哪了。
+5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
+6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.json` 的 `controller.pane_id`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
 
 如果账本为空：报「账本无任务」，等使用者提需求。
 
@@ -55,7 +56,8 @@ needs-decision: <需要判断的选项>
 写任务书（含 state: running 之外的初始状态） 
   → 开 worktree（herdr worktree create，或让 qwb-run.sh --create-worktree 代劳）
   → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree]
-       （它负责：开窗口、起工人、发提示词、记账：窗口 + 派发时间 + state: running）
+       （它负责：查主控锁、开窗口、起工人、发提示词、记账：窗口 + 派发时间 + state: running；
+        锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁）
   → 提示词里必须含：任务书绝对路径 + 主账本绝对路径 + 「写完状态行再收工」
 ```
 
@@ -92,6 +94,7 @@ needs-decision: <需要判断的选项>
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账 |
 | `qwb-wake.sh [--dry-run|--once]` | 值守：查未结项 → 叫醒你的 pane |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
+| `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
 
 所有脚本支持 `--help`。值守脚本由使用者（或你）启动；它叫不醒**已退出**的你。
 
