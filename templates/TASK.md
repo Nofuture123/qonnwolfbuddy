@@ -64,8 +64,8 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 要求独立审核的票在头部加 `review-required: yes`，验收时由**主控据真实会话证据**补记两行：
 
 ```
-review-impl: model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
-review-rev:  model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
+  review-impl: model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
+  review-rev:  model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
 ```
 
 - `family` 只写模型家族（如 `gpt` / `claude` / `gemini`），据真实 TUI/会话记录判断；**无法可靠判断就写 `unknown`**——lint 会报缺证据不通过，不许按名字猜。

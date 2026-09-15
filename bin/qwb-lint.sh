@@ -208,8 +208,9 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
   grep -q '^state:' "$f" || continue
   grep -qE '^review-required:[[:space:]]*yes[[:space:]]*$' "$f" || continue
   rid_n=$((rid_n+1)); n="$(basename "$f")"; b=""
-  il="$(grep -E '^review-impl:' "$f" | head -1)"
-  rl="$(grep -E '^review-rev:' "$f" | head -1)"
+  # 跳过围栏/模板示例：占位符 <...> 开头的身份行不算真实记录
+  il="$(grep -E '^review-impl:' "$f" | grep -v '<' | head -1)"
+  rl="$(grep -E '^review-rev:' "$f" | grep -v '<' | head -1)"
   if [[ -z "$il" || -z "$rl" ]]; then
     rid_bad="${rid_bad} ${n}(缺 review-impl/review-rev 身份行)"; continue
   fi

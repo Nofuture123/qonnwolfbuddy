@@ -14,7 +14,8 @@
 4. 读每个未结项末尾的状态行，搞清楚活到哪了。
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
 6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
-7. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
+7. （仅新项目首次）派发前先在工人 CLI 的 tab 里手工接受一次 workspace 信任提示——首次 trust 对话框会吞掉派发提示词，属一次性人工授权（见 docs/E2E-RUNBOOK.md 现象A）。
+8. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
 
 如果账本为空：报「账本无任务」，等使用者提需求。
 
