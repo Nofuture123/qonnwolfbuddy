@@ -1,7 +1,3 @@
-<div align="right">
-  Language: <b>English</b> | <a href="README.zh.md">简体中文</a>
-</div>
-
 # Q-Wolf Buddy (`qwbuddy`)
 
 > Lightweight, in-repo AI controller manual and runtime for single projects. Specify requirements; QW buddy manages task dispatching, worker isolation, automated wakeups, acceptance gates, and ledger accounting.
@@ -11,6 +7,10 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Tests](https://img.shields.io/badge/tests-405%20passed-brightgreen.svg)]()
 [![Gates](https://img.shields.io/badge/quality%20gates-fast%200.7s%20%7C%20full%2045s-orange.svg)]()
+
+<p align="center">
+  🌐 <b>English</b> | <a href="README.zh.md">简体中文</a>
+</p>
 
 ---
 

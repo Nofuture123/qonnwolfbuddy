@@ -1,7 +1,3 @@
-<div align="right">
-  语言: <a href="README.md">English</a> | <b>简体中文</b>
-</div>
-
 # Q-Wolf Buddy (`qwbuddy`)
 
 > 面向单项目的轻量级代码库内置 AI 主控规范与运行时。使用者只提需求；QW buddy 负责任务派发、执行者隔离、自动唤醒、验收门禁与账本审计。
@@ -11,6 +7,10 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Tests](https://img.shields.io/badge/tests-405%20passed-brightgreen.svg)]()
 [![Gates](https://img.shields.io/badge/quality%20gates-fast%200.7s%20%7C%20full%2045s-orange.svg)]()
+
+<p align="center">
+  🌐 <a href="README.md">English</a> | <b>简体中文</b>
+</p>
 
 ---
 
