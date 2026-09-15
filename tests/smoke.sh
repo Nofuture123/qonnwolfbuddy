@@ -1112,5 +1112,295 @@ fi
 [[ -x "$ROOT/bin/qwb-init.sh" ]] \
   && ok "真实入口 bin/qwb-init.sh 存在且可执行" || bad "bin/qwb-init.sh 缺失或不可执行"
 
+echo "== 38. SDG① 疑点门：未决 spec-defect 阻止派发（无副作用），处置放行，新疑点再拦截 =="
+# 模板同步：两行日志约定 + 审票节必须随 qwb-init 装进目标项目
+grep -q 'spec-defect' "$TMP/qwbuddy/TASK.md" && ok "安装的 TASK.md 含 spec-defect 疑点约定" || bad "TASK.md 缺 spec-defect 约定"
+grep -q 'spec-resolved' "$TMP/qwbuddy/QWBUDDY.md" && ok "安装的 QWBUDDY.md 含 spec-resolved 处置约定" || bad "QWBUDDY.md 缺 spec-resolved 约定"
+grep -q '三个审点' "$TMP/qwbuddy/roles/审核者.md" && ok "安装的 审核者.md 含审票三个审点" || bad "审核者.md 缺审票节"
+# 独立 git 项目：默认派发会开 worktree——拒绝路径必须证明 worktree 没被创建
+SG="$TMP/specgate"; mkdir -p "$SG"
+bash "$ROOT/bin/qwb-init.sh" "$SG" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$SG/qwbuddy/config.sh"
+git -C "$SG" init -q
+git -C "$SG" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
+SGT="$SG/tasks/2099-01-50-sdgate.md"
+cat > "$SGT" <<'EOF'
+# sdgate
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书写好
+When  主控派发
+Then  派发成功
+### user_失败
+Given 票上有未决疑点
+When  主控派发
+Then  拒绝派发
+EOF
+# 38a：末尾未决疑点 → 拒绝派发，且无 worktree/窗口/账本副作用
+printf 'blocked: spec-defect: §2 要求零外部依赖但 §4 又要求 python3；反例：tests/smoke.sh §8；照做会自相矛盾\n' >> "$SGT"
+sg_lines_before="$(wc -l < "$SGT" | tr -d ' ')"
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q 'spec-defect' && printf '%s' "$nout" | grep -q 'spec-resolved'; } \
+  && ok "未决疑点拒绝派发且报错含疑点原文与处置指引（rc=${nrc}）" || bad "未决疑点未拦住派发（rc=${nrc}）"
+[[ ! -e "$SG/.worktrees/sdgate" ]] && ok "被拒未创建 worktree" || bad "被拒仍创建了 worktree"
+{ ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "被拒未触达 herdr（无 tab create / agent start）" || bad "被拒仍触达 herdr"
+{ ! grep -q '^dispatch:' "$SGT" && ! grep -q '^scenarios-fp:' "$SGT" && grep -q '^state: running' "$SGT"; } \
+  && ok "被拒任务书零改动（无 dispatch/scenarios-fp，state 未动）" || bad "被拒仍改了任务书"
+[[ "$(wc -l < "$SGT" | tr -d ' ')" == "$sg_lines_before" ]] \
+  && ok "被拒任务书行数不变" || bad "被拒任务书行数变了"
+# 38b：疑点之后只追加普通状态行（done:/working:）→ 不能解除，仍被拒
+printf 'done: 工人自述已修复\nworking: 继续下一阶段\n' >> "$SGT"
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q 'spec-defect'; } \
+  && ok "普通 done:/working: 行不解除疑点，仍拒绝（rc=${nrc}）" || bad "普通状态行竟解除了疑点（rc=${nrc}）"
+# 38c：主控追加有效 spec-resolved → 放行派发
+printf 'working: spec-resolved: spec；逐项回应：删 §4 的 python3 要求，证据：tests 里仅 smoke.sh 用它；改票位置：§4\n' >> "$SGT"
+( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex ) >/dev/null \
+  && ok "spec-resolved 处置后派发放行" || bad "处置后仍被拒"
+grep -q '^dispatch:' "$SGT" && grep -q '^scenarios-fp:' "$SGT" \
+  && ok "放行后正常记账（dispatch + scenarios-fp）" || bad "放行后记账缺失"
+[[ -d "$SG/.worktrees/sdgate" ]] && ok "放行后创建了隔离 worktree" || bad "放行后未建 worktree"
+# 38d：处置之后新提的疑点 → 重新拦截
+printf 'blocked: spec-defect: 新疑点：§3 验收门命令与 §5 重复且不一致\n' >> "$SGT"
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '新疑点'; } \
+  && ok "处置后新疑点重新拦截（rc=${nrc}）" || bad "新疑点未重新拦截（rc=${nrc}）"
+[[ "$(grep -c '^dispatch:' "$SGT")" == "1" ]] && ok "重新拦截未追加 dispatch" || bad "重新拦截仍写了 dispatch"
+printf 'done: 二轮收尾自述\n' >> "$SGT"   # 给 39a 制造「疑点被普通日志遮住」的形态
+
+echo "== 39. SDG② 显示与唤醒：status 标出被遮住的疑点；值守接收 blocked 行 =="
+# 39a：疑点之后有普通日志（done:）→ status 仍要标出未处理，不被遮住
+# （status 走 stub herdr：本节只断言账本判定，不依赖真机 herdr 服务器的响应速度）
+out="$( cd "$SG" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '规格疑点未处理' \
+  && ok "status 对未决疑点标「规格疑点未处理」" || bad "status 未标未决疑点"
+{ printf '%s' "$out" | grep -q '最近: done: 二轮收尾自述' && printf '%s' "$out" | grep -q '新疑点'; } \
+  && ok "疑点被后续 done: 遮不住（最近行与疑点行同显）" || bad "疑点被后续普通日志遮住"
+# 39b：对照——最后相关事件是 spec-resolved 的票不标
+SG2="$TMP/specgate2"; mkdir -p "$SG2"
+bash "$ROOT/bin/qwb-init.sh" "$SG2" >/dev/null
+printf '# sgres\nstate: running\nblocked: spec-defect: 旧疑点\nworking: spec-resolved: spec；已改票\ndone: 完成\n' \
+  > "$SG2/tasks/2099-01-51-sgres.md"
+out="$( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '规格疑点未处理' \
+  && bad "已处置疑点仍被标未处理" || ok "对照：spec-resolved 后不再标未处理"
+# 39c：现有值守接收 blocked: spec-defect 行——它是 blocked 状态行，改变进展指纹 → 叫醒主控
+SGW="$SG2/tasks/2099-01-52-sgwake.md"
+printf '# sgwake\nstate: running\nworking: 工人开工\n' > "$SGW"
+( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
+out="$( cd "$SG2" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
+printf '%s' "$out" | grep -q '跳过.*sgwake' \
+  && ok "对照：进展未变值守跳过" || bad "进展未变仍要叫（对照失败）"
+printf 'blocked: spec-defect: §2 条款冲突；值守应把主控叫回来处置\n' >> "$SGW"
+out="$( cd "$SG2" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-52-sgwake' \
+  && ok "blocked: spec-defect 行改变进展指纹 → 值守将叫醒主控" || bad "值守没接住 spec-defect 行"
+
+echo "== 40. SDG③ 显式修订：无痕改仍拒；revise 留痕且过 lint；空原因/无旧指纹/写入失败不派发 =="
+SGR="$SG/tasks/2099-01-53-sgrev.md"
+cat > "$SGR" <<'EOF'
+# sgrev
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 场景定稿
+When  派发
+Then  冻结指纹
+### user_失败
+Given 场景被无痕改
+When  再派发
+Then  拒绝
+EOF
+rm -rf "$SG/qwbuddy/.controller.lock"   # 38c 的派发持过锁；本节统一固定 pane id
+( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here ) >/dev/null \
+  && ok "sgrev 首次派发成功（建立基线）" || bad "sgrev 首次派发失败"
+oldfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGR" | head -1 | tr -d '[:space:]')"
+[[ -n "$oldfp" ]] && ok "基线 scenarios-fp=${oldfp:0:8}… 已写入" || bad "基线未写入"
+# 40a：直接编辑场景块（无修订参数）→ 再派发被拒、lint FAIL
+sed -i '' 's/拒绝/放行/' "$SGR"
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动' && printf '%s' "$nout" | grep -q 'revise-scenarios'; } \
+  && ok "无痕改场景再派发被拒且指向显式修订通道（rc=${nrc}）" || bad "无痕改场景竟放行（rc=${nrc}）"
+[[ "$(grep -c '^dispatch:' "$SGR")" == "1" ]] && ok "无痕改被拒未追加 dispatch" || bad "无痕改被拒仍追加 dispatch"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '派发后被改动'; } \
+  && ok "无痕改场景 lint FAIL（指纹不一致）" || bad "lint 未检出无痕改（rc=${rc}）"
+# 40a2：处置结论不授权绕过指纹检查——加了 spec-resolved 也过不了
+printf 'working: spec-resolved: spec；想以此放行改过的场景\n' >> "$SGR"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动'; } \
+  && ok "spec-resolved 不授权绕过指纹检查（仍拒，rc=${nrc}）" || bad "spec-resolved 竟当成改场景许可（rc=${nrc}）"
+# 40b：显式修订 → 更新基线 + 留痕（旧新指纹）+ 派发成功 + lint 通过
+( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here \
+    --revise-scenarios="主控修订：失败路径 Then 细化为放行（依据票 §2 场景条款）" ) >/dev/null \
+  && ok "显式修订后派发成功" || bad "显式修订派发失败"
+newfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGR" | head -1 | tr -d '[:space:]')"
+[[ -n "$newfp" && "$newfp" != "$oldfp" ]] \
+  && ok "基线已更新（${oldfp:0:8}… → ${newfp:0:8}…）" || bad "基线未更新或新旧相同"
+grep -q "^working: scenarios-revised: old=${oldfp} new=${newfp} reason=主控修订" "$SGR" \
+  && ok "修订记录保留旧新指纹与原因（scenarios-revised 留痕）" || bad "修订记录缺失或不完整"
+[[ "$(grep -c '^dispatch:' "$SGR")" == "2" ]] && ok "修订后正常追加第二条 dispatch" || bad "修订后 dispatch 行数异常"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS'; } \
+  && ok "显式修订后 lint 通过（最新记录 new= 与基线一致）" || { bad "修订后 lint 仍 FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
+# 40b2：最新一条修订记录的 new= 与当前基线不一致（伪造/错配）→ lint 必须 FAIL（2.5 第二半：记录核对）
+printf 'working: scenarios-revised: old=%s new=0000000000000000000000000000000000000000 reason=伪造记录演练\n' "$newfp" >> "$SGR"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '最新修订记录'; } \
+  && ok "最新修订记录 new= 与基线错配 → lint FAIL" || bad "修订记录 new= 错配竟过 lint（rc=${rc}）"
+sed -i '' '$d' "$SGR"   # 撤掉伪造记录，恢复「最新记录 == 基线」
+bash "$ROOT/bin/qwb-lint.sh" --project "$SG" >/dev/null 2>&1 \
+  && ok "撤掉伪造记录后 lint 恢复 PASS" || bad "撤掉伪造记录后 lint 仍 FAIL"
+# 40c：空原因 → 拒绝派发，不留半更新修订记录
+sed -i '' 's/放行/拒绝并报错/' "$SGR"
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here --revise-scenarios= 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '原因不能为空'; } \
+  && ok "空原因拒绝派发（rc=${nrc}）" || bad "空原因竟放行（rc=${nrc}）"
+[[ "$(grep -c '^working:[[:space:]]*scenarios-revised:' "$SGR")" == "1" ]] \
+  && ok "空原因未留修订记录" || bad "空原因仍写了修订记录"
+[[ "$(grep -c '^dispatch:' "$SGR")" == "2" ]] && ok "空原因未派发（dispatch 仍 2 条）" || bad "空原因仍派发"
+curfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGR" | head -1 | tr -d '[:space:]')"
+[[ "$curfp" == "$newfp" ]] && ok "空原因未动基线" || bad "空原因动了基线"
+{ ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "空原因未触达 herdr" || bad "空原因仍触达 herdr"
+# 40d：写入失败（任务书被锁不可替换）→ 拒绝派发，无半更新状态
+sed -i '' 's/拒绝并报错/直接拒绝/' "$SGR"
+if command -v chflags >/dev/null 2>&1; then
+  chflags uchg "$SGR"
+  : > "$STUBLOG"
+  nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here \
+      --revise-scenarios="写入失败演练" 2>&1 )"; nrc=$?
+  chflags nouchg "$SGR"
+  [[ "$nrc" -ne 0 ]] \
+    && ok "写入失败拒绝派发（rc=${nrc}）" || bad "写入失败竟继续派发（rc=${nrc}）"
+  [[ "$(grep -c '^working:[[:space:]]*scenarios-revised:' "$SGR")" == "1" ]] \
+    && ok "写入失败未留半更新修订记录" || bad "写入失败仍写了修订记录"
+  curfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGR" | head -1 | tr -d '[:space:]')"
+  [[ "$curfp" == "$newfp" ]] && ok "写入失败基线未半更新" || bad "写入失败基线被半更新"
+  [[ "$(grep -c '^dispatch:' "$SGR")" == "2" ]] && ok "写入失败未派发（dispatch 仍 2 条）" || bad "写入失败仍派发"
+  { ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
+    && ok "写入失败未触达 herdr" || bad "写入失败仍触达 herdr"
+  [[ -z "$(ls "$SG"/tasks/*.revise.* 2>/dev/null)" ]] \
+    && ok "无修订临时文件残留" || bad "有修订临时文件残留"
+else
+  echo "SKIP  无 chflags，写入失败路径未演练"
+fi
+# 40e：票内无旧指纹（从未派发）→ 修订拒绝，指向 --accept-new-scenarios
+SGR2="$SG/tasks/2099-01-54-sgrev-nofp.md"
+cat > "$SGR2" <<'EOF'
+# sgrev-nofp
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 场景定稿
+When  派发
+Then  冻结指纹
+### user_失败
+Given 无基线还想修订
+When  用 --revise-scenarios 派发
+Then  拒绝
+EOF
+: > "$STUBLOG"
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev-nofp --worker codex --here \
+    --revise-scenarios="想直接建基线" 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '旧指纹'; } \
+  && ok "无旧指纹拒绝修订派发（rc=${nrc}）" || bad "无旧指纹竟接受修订（rc=${nrc}）"
+{ ! grep -q '^dispatch:' "$SGR2" && ! grep -q '^scenarios-revised:' "$SGR2"; } \
+  && ok "无旧指纹路径零副作用" || bad "无旧指纹路径留了副作用"
+# 40f：修订与 --accept-new-scenarios 互斥
+nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev-nofp --worker codex --here \
+    --revise-scenarios="x" --accept-new-scenarios 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '互斥'; } \
+  && ok "修订与 --accept-new-scenarios 互斥（rc=${nrc}）" || bad "两个修订参数竟混用（rc=${nrc}）"
+
+echo "== 41. SDG④ 隔离副本幂等：返工/修订后再派不撞已存在；脏目录拒绝（验收报回的主路径）=="
+SG3="$TMP/specidem"; mkdir -p "$SG3"
+bash "$ROOT/bin/qwb-init.sh" "$SG3" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$SG3/qwbuddy/config.sh"
+git -C "$SG3" init -q
+git -C "$SG3" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
+SGI="$SG3/tasks/2099-01-60-sgidem.md"
+cat > "$SGI" <<'EOF'
+# sgidem
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 场景定稿
+When  默认派发
+Then  建隔离副本
+### user_失败
+Given 目标目录已存在但不是有效 worktree
+When  默认派发
+Then  拒绝并提示清理
+EOF
+sgrun() { ( cd "$SG3" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg3 bash qwbuddy/bin/qwb-run.sh "$@" ); }
+wt_count() { git -C "$SG3" worktree list --porcelain 2>/dev/null | grep -c '^worktree .*/\.worktrees/sgidem$'; }
+sgrun --task sgidem --worker codex >/dev/null 2>&1 && ok "首次派发成功" || bad "首次派发失败"
+[[ "$(wt_count)" == "1" ]] && ok "首次派发后该任务恰一份 worktree" || bad "首次派发后 worktree 份数=$(wt_count)"
+# 41a：返工再派（无修订）必须成功且复用同一份副本——验收报的 rc=1 路径
+out="$(sgrun --task sgidem --worker codex 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+  && ok "返工再派发成功且复用既有副本（rc=${rc}）" || { bad "返工再派发失败（rc=${rc}）"; printf '%s\n' "$out" >&2; }
+[[ "$(wt_count)" == "1" ]] && ok "复派后仍恰一份 worktree（复用非重建）" || bad "复派后 worktree 份数=$(wt_count)"
+[[ "$(grep -c '^dispatch:' "$SGI")" == "2" ]] && ok "复派追加第二条 dispatch" || bad "复派 dispatch 行数=$(grep -c '^dispatch:' "$SGI")"
+# 41a2：显式 --create-worktree 同样幂等
+out="$(sgrun --task sgidem --worker codex --create-worktree 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+  && ok "--create-worktree 同样幂等（rc=${rc}）" || { bad "--create-worktree 非幂等（rc=${rc}）"; printf '%s\n' "$out" >&2; }
+[[ "$(wt_count)" == "1" ]] && ok "--create-worktree 后仍恰一份 worktree" || bad "--create-worktree 后份数=$(wt_count)"
+# 41b：改场景 → 显式修订 → 继续派发（端到端，正是验收失败的那条路）
+sed -i '' 's/Then  建隔离副本/Then  复用隔离副本/' "$SGI"
+out="$(sgrun --task sgidem --worker codex --revise-scenarios="主控修订：结果措辞细化（依据本票 §1 场景条款）" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+  && ok "改场景后 --revise-scenarios 继续派发成功（端到端，rc=${rc}）" || { bad "改场景后修订派发失败（rc=${rc}）"; printf '%s\n' "$out" >&2; }
+[[ "$(grep -c '^dispatch:' "$SGI")" == "4" ]] && ok "修订后追加第四条 dispatch" || bad "修订后 dispatch 行数=$(grep -c '^dispatch:' "$SGI")"
+[[ "$(wt_count)" == "1" ]] && ok "全程该任务只有一份 worktree（无重复登记）" || bad "worktree 重复登记：$(wt_count)"
+# 41c：目录存在但不是有效 worktree（普通脏目录）→ 拒绝 + 提示清理，不盲目复用
+SG5="$SG3/tasks/2099-01-61-sgdirty.md"
+cat > "$SG5" <<'EOF'
+# sgdirty
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 脏目录占位
+When  默认派发
+Then  拒绝
+### user_失败
+Given 脏目录占位
+When  忽略清理提示再派
+Then  仍拒绝
+EOF
+mkdir -p "$SG3/.worktrees/sgdirty"; printf 'junk\n' > "$SG3/.worktrees/sgdirty/README.junk"
+: > "$STUBLOG"
+out="$(sgrun --task sgdirty --worker codex 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '有效 git worktree' && printf '%s' "$out" | grep -q 'rm -rf'; } \
+  && ok "普通脏目录 → 拒绝并提示清理（rc=${rc}）" || bad "脏目录未被拒或未提示清理（rc=${rc}）"
+{ ! grep -q '^dispatch:' "$SG5" && [[ -f "$SG3/.worktrees/sgdirty/README.junk" ]] && ! grep -q 'tab create' "$STUBLOG"; } \
+  && ok "脏目录路径零副作用（未派发/未删目录/未触达 herdr）" || bad "脏目录路径有副作用"
+# 41c2：曾登记但目录已被换掉的残留（git 里仍可查）→ 同样拒绝
+rm -rf "$SG3/.worktrees/sgidem"; mkdir -p "$SG3/.worktrees/sgidem"
+: > "$STUBLOG"
+out="$(sgrun --task sgidem --worker codex 2>&1)"; rc=$?
+[[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '有效 git worktree' \
+  && ok "已登记但目录被换掉的残留 → 拒绝（rc=${rc}）" || bad "残留目录被盲目复用（rc=${rc}）"
+[[ "$(grep -c '^dispatch:' "$SGI")" == "4" ]] && ok "残留拒绝后未追加 dispatch" || bad "残留拒绝后仍派发"
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

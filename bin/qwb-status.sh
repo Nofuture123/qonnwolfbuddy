@@ -6,8 +6,10 @@ usage() {
   cat <<'EOF'
 用法: qwb-status.sh [选项]
 
-读 tasks/ 账本，逐份任务书打印 state 与最近一条状态行；若本机有 herdr，
-附带 agent / pane 窗口状态。账本为空也正常退出（退出码 0）。
+读 tasks/ 账本，逐份任务书打印 state 与最近一条状态行；有未决规格疑点
+（最后一个 spec-defect:/spec-resolved: 相关事件是 blocked: spec-defect:，与
+qwb-run.sh 疑点门同判定）的额外标注一行「规格疑点未处理」——后续普通状态行
+遮不住它。若本机有 herdr，附带 agent / pane 窗口状态。账本为空也正常退出（退出码 0）。
 
 选项:
   --project <根>    项目根（默认：当前目录）
@@ -50,6 +52,12 @@ else
       printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
     fi
     [[ -n "$last" ]] && printf '       最近: %s\n' "$last"
+    # 规格疑点未处理：与 qwb-run.sh 疑点门同判定——最后一个相关事件（spec-defect:/spec-resolved:）
+    # 是 spec-defect: 即未决；普通状态行不参与判定，疑点不会被后续 working:/done:/dispatch: 行遮住
+    spev="$(grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$f" 2>/dev/null | tail -1 || true)"
+    if printf '%s' "$spev" | grep -qE '^blocked:[[:space:]]*spec-defect:'; then
+      printf '       规格疑点未处理: %s\n' "$spev"
+    fi
   done
 fi
 
