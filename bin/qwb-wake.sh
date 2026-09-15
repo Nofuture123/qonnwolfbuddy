@@ -11,9 +11,9 @@ usage() {
 去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串)；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
-等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval，
-     无论 wait 成功/失败/超时，已耗时间都计入预算、剩余部分补 sleep；无可用 pane 才整睡
-     一个间隔，不得忙循环。
+等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval
+     （毫秒级计时 + 小数秒 sleep），无论 wait 成功/失败/超时，已耗时间都计入预算、
+     剩余部分补 sleep；无可用 pane 才整睡一个间隔，不得忙循环。
 
 选项:
   --project <根>      项目根（默认：当前目录）
@@ -51,6 +51,8 @@ fi
 if [[ -f "$CONF" ]]; then . "$CONF"; fi
 INTERVAL="${INTERVAL:-${QWB_WAKE_INTERVAL_MS:-120000}}"
 PANE="${PANE:-${QWB_CONTROLLER_PANE:-}}"
+[[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "错误：interval 须为正整数毫秒（当前：${INTERVAL}）" >&2; exit 2; }
 
 # 未结项：输出「文件<TAB>state」。state 不在 5 值域 → stderr 警告（不算未结项，但必须说出来）。
 # 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
@@ -109,9 +111,17 @@ check_round() {
   return 0
 }
 
-sleep_interval() {
-  sleep "$(( INTERVAL / 1000 > 0 ? INTERVAL / 1000 : 1 ))"
+# 毫秒级计时：macOS 的 date 不支持 %N，用 perl Time::HiRes（硬约束允许的基础工具，无新依赖）
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time()*1000'; }
+
+# 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转
+sleep_ms() {
+  local ms="$1"
+  (( ms > 0 )) || ms=1
+  sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
 }
+
+sleep_interval() { sleep_ms "$INTERVAL"; }
 
 wait_round() {
   # 事件：只对未结项任务书取 dispatch 行、用时间戳最新的一条做 agent wait；
@@ -126,15 +136,14 @@ wait_round() {
     p="$(printf '%s' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
   fi
   if [[ -n "$p" ]]; then
-    # 一轮预算 = 1×interval：无论 wait 成功/失败/超时，已耗时间都计入预算，剩余补 sleep——
-    # idle 立即成功、立即失败都睡满剩余；耗尽 timeout（耗时≈interval）不再额外 sleep。
+    # 一轮预算 = 1×interval（毫秒精度）：无论 wait 成功/失败/超时，已耗时间都计入预算，
+    # 剩余部分按毫秒补小数秒 sleep；耗尽 timeout（耗时≈interval）不再额外 sleep。
     local t0 dt
-    t0="$(date +%s)"
+    t0="$(now_ms)"
     herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1 || true
-    dt=$(( $(date +%s) - t0 ))
-    if (( dt * 1000 < INTERVAL )); then
-      local remain=$(( INTERVAL - dt * 1000 ))
-      sleep "$(( remain / 1000 > 0 ? remain / 1000 : 1 ))"
+    dt=$(( $(now_ms) - t0 ))
+    if (( dt < INTERVAL )); then
+      sleep_ms "$(( INTERVAL - dt ))"
     fi
   else
     sleep_interval
