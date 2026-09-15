@@ -1,5 +1,7 @@
 # Q-Wolf Buddy (`qwbuddy`)
 
+[English](README.md) | [简体中文](README.zh.md)
+
 > Lightweight, in-repo AI controller manual and runtime for single projects. Specify requirements; QW buddy manages task dispatching, worker isolation, automated wakeups, acceptance gates, and ledger accounting.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -229,14 +231,14 @@ Every commit is gated through executable tests. Undeclared gates fail with exit 
 ### Verified by Real Agents
 
 - **Real Closed-Loop E2E**: Verified end-to-end using real Devin (SWE-2 Max) workers, live Herdr terminal tabs, shell sentinel, and Claude controller (`docs/E2E-RUNBOOK.md`). Confirmed automated wakeup on completion, independent acceptance, deliberate sabotage detection, and clean worktree removal.
-- **9 Adversarial Audit Reports + 1 Advisory**: Hardened across multi-round independent reviews by different model families (GPT-6 Astra High/Medium, GPT-5.6 Sol, Claude Fable 5.1, Devin SWE-2 reviewers) documented in `docs/reviews/`, plus one model-family consultation that reshaped the spec-defect gate.
+- **9 Adversarial Audit Reports + 1 Advisory**: Hardened across multi-round independent reviews by different model families (GPT-6 Astra High/Medium, Claude Fable 5.1) documented in `docs/reviews/`, plus one model-family consultation that reshaped the spec-defect gate.
 - **Critical Defects 6 → 0**: Eliminated all 6 critical vulnerabilities discovered during adversarial audits:
   1. *F3 Wakeup deadlocks*: Replaced static state tracking with SHA1 progress fingerprints.
   2. *F4 Sentinel crashes*: Handled terminal delivery failures without exiting the main loop.
   3. *G1 Detached HEAD loss*: Replaced branch-name assumptions with explicit HEAD OID tracking.
   4. *H1 TOCTOU races*: Added pre-deletion HEAD checks to prevent wiping concurrent worker commits.
-  5. *F2 File clobbering*: Converted snapshot overwrites to atomic in-place ledger updates.
-  6. *M2 Mock false-positives*: Replaced JSON grep mocks with strict path-and-type contract baselines.
+  5. *F1 Silent worker hangs*: Added timeout fallback re-wake (`QWB_REWAKE_MS`) when a worker hangs without new status lines.
+  6. *F2 File clobbering*: Converted snapshot overwrites to atomic in-place ledger updates.
 
 ---
 
