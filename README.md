@@ -38,13 +38,15 @@ qonnwolfbuddy/
 │   ├── config.json        工人表 + 派工规则 + 超时
 │   ├── agents-hook.md     写入项目 AGENTS.md 的钩子片段
 │   └── claude-hook.md     写入项目 CLAUDE.md 的钩子片段
-├── bin/               脚本（已完成，共 328 行 shell）
+├── bin/               脚本（已完成，共 617 行 shell，6 个）
 │   ├── qwb-init.sh        装进新项目（幂等）
 │   ├── qwb-run.sh         派发 + 记账
-│   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控
-│   └── qwb-status.sh      点名 + 汇报
+│   ├── qwb-wake.sh        值守：以账本未结项为准叫醒主控（进展指纹去重）
+│   ├── qwb-status.sh      点名 + 汇报
+│   ├── qwb-lock.sh        主控锁（mkdir 原子目录锁，防两个主控同时动手）
+│   └── qwb-worktree.sh    worktree 清点与收尾（list / finish --merged|--archive|--keep）
 ├── tests/             冒烟测试（已完成）
-│   └── smoke.sh           39 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   └── smoke.sh           86 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
 └── tasks/             本仓自己的账本 + 错题本
 ```
 
@@ -53,7 +55,7 @@ qonnwolfbuddy/
 ## 下一步
 
 1. ~~写 `templates/` 下的说明书与角色文件~~ ✅
-2. ~~写 `bin/` 下四个脚本~~ ✅
+2. ~~写 `bin/` 下脚本~~ ✅
 3. **挑一个真实项目跑通一轮**：派活 → 工人在 Herdr 窗口干活 → 值守叫醒主控 → 主控验收 → 记账
 
 1、2 已完成并验收（见 [`tasks/2026-09-15-qwbuddy-mvp.md`](tasks/2026-09-15-qwbuddy-mvp.md) 的验收记录）。第 3 步待做。
