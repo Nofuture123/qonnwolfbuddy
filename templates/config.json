@@ -1,0 +1,51 @@
+{
+  "workers": {
+    "codex": {
+      "kind": "codex",
+      "command": "codex",
+      "tier": "强实现",
+      "good_at": "复杂代码、重构"
+    },
+    "pi": {
+      "kind": "pi",
+      "command": "pi",
+      "tier": "快速/便宜",
+      "good_at": "常规执行、机械改动、调研"
+    },
+    "claude": {
+      "kind": "claude",
+      "command": "claude",
+      "tier": "难活/审核",
+      "good_at": "架构判断、对抗审查、前端"
+    }
+  },
+  "routing": [
+    "复杂架构 / 高风险改动 → 强档（codex / claude）",
+    "常规实现 / 机械改动 → 快档（pi）",
+    "审核、挑错 → 必须换一个模型家族（不能自己审自己）",
+    "实时信息、联网 → 按能力表挑",
+    "派工前查一次本机额度（quota-axi）；模型判定 = 智力档 × 额度现状；额度只是派发时的参考"
+  ],
+  "timeouts": {
+    "agent_wait_ms": 1800000,
+    "agent_start_ms": 30000,
+    "wake_interval_ms": 120000
+  },
+  "ledger": {
+    "path": "tasks",
+    "status_prefixes": ["working:", "done:", "blocked:", "needs-decision:"],
+    "open_states": ["running", "blocked", "needs-decision"],
+    "closed_states": ["done", "verified"]
+  },
+  "controller": {
+    "pane_id": "",
+    "note": "主控窗口的 herdr pane id；主控开局点名时填入（见 HERDR_PANE_ID），qwb-wake.sh 靠它叫醒主控"
+  },
+  "hard_rules": [
+    "工人一律在 Herdr 窗口里交互式运行，禁用 headless（-p / --print / --exec / codex exec 等）",
+    "审核必须换模型家族，不能自己审自己",
+    "零通知使用者：唯一的叫人动作是 herdr 叫醒主控窗口",
+    "超时一律毫秒",
+    "无队列、无 ACK、无数据库、无守护进程、无 cron；只用 Herdr"
+  ]
+}
