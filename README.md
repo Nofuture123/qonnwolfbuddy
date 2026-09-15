@@ -46,7 +46,7 @@ qonnwolfbuddy/
 │   ├── qwb-lock.sh        主控锁（mkdir 原子目录锁，防两个主控同时动手）
 │   └── qwb-worktree.sh    worktree 清点与收尾（list / finish --merged|--archive|--keep）
 ├── tests/             冒烟测试（已完成）
-│   └── smoke.sh           110 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
+│   └── smoke.sh           126 项断言，`bash tests/smoke.sh` 须打印 SMOKE PASS
 └── tasks/             本仓自己的账本 + 错题本
 ```
 
