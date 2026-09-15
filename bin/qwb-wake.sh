@@ -10,6 +10,8 @@ usage() {
 未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}。
 去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串)；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
+兜底重叫：fp 未变但最近一条 wake: 行的时间戳距今 ≥ config.sh 的 QWB_REWAKE_MS（>0 才启用）
+     → 仍再叫一次（工人挂起/崩溃没有新账本行时，把超时判断交回主控）；时间戳解析失败按超期处理。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
 等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval
      （毫秒级计时 + 小数秒 sleep），无论 wait 成功/失败/超时，已耗时间都计入预算、
@@ -83,6 +85,22 @@ last_wake_fp() {
   grep '^wake:' "$1" 2>/dev/null | tail -1 | sed -n 's/.*fp=\([^[:space:]]*\).*/\1/p' || true
 }
 
+# 最近一条 wake: 行的时间戳字段（无则空）
+last_wake_ts() {
+  grep '^wake:' "$1" 2>/dev/null | tail -1 | sed -n 's/^wake:[[:space:]]*\([^[:space:]]*\).*/\1/p' || true
+}
+
+# ISO8601 UTC（YYYY-MM-DDTHH:MM:SSZ）→ epoch 秒；格式或数值非法 → 输出空、退出非 0
+ts_epoch() {
+  perl -MTime::Local=timegm -e '
+    my $s = shift // "";
+    exit 1 unless $s =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/;
+    my $e = eval { timegm($6, $5, $4, $3, $2 - 1, $1) };
+    exit 1 unless defined $e;
+    print $e;
+  ' "$1" 2>/dev/null
+}
+
 check_round() {
   local f st fp lwf ids=""
   while IFS=$'\t' read -r f st; do
@@ -90,8 +108,21 @@ check_round() {
     fp="$(progress_fp "$f" "$st")"
     lwf="$(last_wake_fp "$f")"
     if [[ -n "$lwf" && "$lwf" == "$fp" ]]; then
-      echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
-      continue
+      # 兜底重叫：进展指纹未变，但距上次叫醒 ≥ QWB_REWAKE_MS（>0 才启用）→ 仍再叫一次。
+      # 时间戳解析失败保守按超期处理——宁可多叫，不可漏叫。
+      if [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
+        local we
+        we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
+        if [[ -z "$we" ]] || (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
+          : # 超期：落到下方叫醒分支
+        else
+          echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+          continue
+        fi
+      else
+        echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+        continue
+      fi
     fi
     if [[ "$DRY" -eq 1 ]]; then
       echo "未结项（将叫醒）: $(basename "$f") state=$st"

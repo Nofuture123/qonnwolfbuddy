@@ -24,7 +24,7 @@ ROOT="$(cd "$1" && pwd)"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TPL="$SRC/../templates"
 
-[[ -d "$TPL" ]] || { echo "错误：找不到模板目录 ${TPL}（请从 QW buddy 母本仓运行本脚本）" >&2; exit 1; }
+[[ -d "$TPL" ]] || { echo "错误：找不到模板目录 ${TPL}——本脚本只在 QW buddy 母本仓运行（安装副本里的同名文件属历史残留，请改用母本仓 bin/qwb-init.sh 的绝对路径）" >&2; exit 1; }
 
 mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 
@@ -44,7 +44,11 @@ else
   cp "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
 fi
 
-cp "$SRC"/qwb-*.sh "$ROOT/qwbuddy/bin/"
+# 运行时脚本装进目标项目；qwb-init.sh 是母本仓专用安装器，不复制进目标
+for s in "$SRC"/qwb-*.sh; do
+  [[ "$(basename "$s")" == "qwb-init.sh" ]] && continue
+  cp "$s" "$ROOT/qwbuddy/bin/"
+done
 chmod +x "$ROOT/qwbuddy/bin"/qwb-*.sh
 
 # 钩子：已含 qwbuddy/QWBUDDY.md 引用视为已装，跳过

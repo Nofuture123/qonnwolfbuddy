@@ -29,7 +29,10 @@ bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
 for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
 assert_file "$TMP/qwbuddy/config.sh"
-for s in init run wake status lock worktree; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
+for s in run wake status lock worktree test lint; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
+# M5：qwb-init.sh 是母本仓专用安装器，不得复制进目标项目
+[[ -f "$TMP/qwbuddy/bin/qwb-init.sh" ]] \
+  && bad "qwb-init.sh 被复制进目标项目（应母本仓专用）" || ok "qwb-init.sh 不复制进目标项目"
 assert_dir  "$TMP/tasks"
 assert_dir  "$TMP/tasks/lessons"
 grep -qF 'qwbuddy/QWBUDDY.md' "$TMP/AGENTS.md" && ok "AGENTS.md 有钩子" || bad "AGENTS.md 无钩子"
@@ -118,11 +121,31 @@ fi
 
 echo "== 9. qwb-run.sh 真实派发（stub herdr）=="
 DISP="$TMP/tasks/2099-01-02-disp.md"
-printf '# 派发测试\nstate: blocked\n' > "$DISP"
-( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null \
+cat > "$DISP" <<'EOF'
+# 派发测试
+state: blocked
+
+## 1. 验收场景
+
+### user_正常路径
+Given 任务书已写好
+When  主控派发
+Then  账本追加 dispatch 行
+
+### user_失败路径
+Given 工人名非法
+When  主控派发
+Then  拒绝派发并报错
+EOF
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --here ) >/dev/null \
   && ok "qwb-run.sh 派发退出 0" || bad "qwb-run.sh 派发非 0"
 grep -q '^state: running' "$DISP" && ok "任务书 state 变为 running" || bad "任务书 state 未变 running"
 grep -q '^dispatch:' "$DISP" && ok "任务书末尾有 dispatch: 行" || bad "任务书无 dispatch: 行"
+grep -q '^scenarios-fp:' "$DISP" && ok "任务书写入 scenarios-fp 冻结指纹" || bad "任务书无 scenarios-fp"
+ddir="$(grep '^dispatch:' "$DISP" | tail -1 | sed -n 's/.*dir=\([^[:space:]]*\).*/\1/p')"
+[[ "$ddir" == "$(cd "$TMP" && pwd)" ]] \
+  && ok "--here 派发 dir= 项目根本身" || bad "--here dir 不对（${ddir}）"
+grep -q '非隔离' "$STUBLOG" && ok "--here 提示词写明非隔离目录" || bad "--here 提示词未写非隔离"
 grep -q 'agent start' "$STUBLOG" && ok "stub 日志有 agent start" || bad "stub 日志无 agent start"
 grep -q 'agent prompt' "$STUBLOG" && ok "stub 日志有 agent prompt" || bad "stub 日志无 agent prompt"
 grep -qF "$DISP" "$STUBLOG" && ok "prompt 参数含任务书绝对路径" || bad "prompt 参数缺任务书绝对路径"
@@ -364,7 +387,21 @@ bash "$WTB" finish "$WTM" --merged --project "$GP" >/dev/null \
 git -C "$GP" show-ref --verify --quiet "refs/heads/$WTM" && bad "merged 后分支仍在" || ok "merged 后分支已删"
 
 # qwb-run.sh --create-worktree：有残留 → 警告但不阻塞
-printf '# new\nstate: running\n' > "$GP/tasks/2099-01-10-wtnew.md"
+cat > "$GP/tasks/2099-01-10-wtnew.md" <<'EOF'
+# new
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书写好
+When  主控派发
+Then  worktree 建立并派发
+### user_失败
+Given 工人名非法
+When  主控派发
+Then  拒绝派发
+EOF
 r1out="$( cd "$GP" && PATH="$STUB:$PATH" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnew --worker codex --create-worktree 2>&1 )"
 printf '%s' "$r1out" | grep -q '残留' && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
 [[ -d "$GP/.worktrees/wtnew" ]] && ok "警告不阻塞：worktree 已建" || bad "--create-worktree 被阻塞"
@@ -570,6 +607,7 @@ lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
 printf '%s' "$lintout" | grep -c '^PASS' | grep -qE '^[4-9]' \
   && ok "lint 逐项 PASS 输出可见" || bad "lint 无逐项 PASS 输出"
 HL="$TMP/healthy"; mkdir -p "$HL"; bash "$ROOT/bin/qwb-init.sh" "$HL" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HL/qwbuddy/config.sh"
 bash "$ROOT/bin/qwb-lint.sh" --project "$HL" >/dev/null 2>&1 \
   && ok "健康安装项目 lint 退出 0" || bad "健康项目 lint 非 0"
 # 坏项目：四条检查各踩一条
@@ -585,28 +623,334 @@ printf '%s' "$lintout" | grep -q 'pending' && ok "检出非法 state" || bad "�
 printf '%s' "$lintout" | grep -q 'QWB_DEAD_KEY' && ok "检出血配置死键" || bad "未检出死键"
 printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写法" || bad "未检出变量写法"
 
-echo "== 26. D：herdr fixture 契约基线 =="
+echo "== 26. D：herdr fixture 契约基线（真实 JSON 路径检查）=="
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error; do
   assert_file "$FIXDIR/$fx.json"
 done
-tc="$(sed '/^#/d' "$FIXDIR/tab-create.json")"
-{ printf '%s' "$tc" | grep -q '"result"' && printf '%s' "$tc" | grep -q '"root_pane"' && printf '%s' "$tc" | grep -q '"pane_id"'; } \
-  && ok "tab-create fixture 含 .result.root_pane.pane_id 契约字段" || bad "tab-create 契约字段缺失"
-for fx in agent-start agent-prompt agent-wait agent-list; do
-  sed '/^#/d' "$FIXDIR/$fx.json" | grep -q '"result"' \
-    && ok "$fx fixture 含 .result 字段" || bad "$fx fixture 缺 .result"
+
+# 真正的 JSON 路径检查：fixture 剔 # 注释行后按点分路径解析，路径须存在且值非空
+jpath() { # $1=fixture 文件  $2=点分路径（如 result.root_pane.pane_id）→ 0=存在且非空
+  perl -MJSON::PP=decode_json -e '
+    my ($f, $p) = @ARGV;
+    open my $fh, "<", $f or exit 2;
+    my $raw = do { local $/; <$fh> }; close $fh;
+    $raw =~ s/^#.*\n//mg;
+    my $cur = eval { decode_json($raw) } or exit 2;
+    for my $k (split /\./, $p) {
+      exit 1 unless ref $cur eq "HASH" && exists $cur->{$k};
+      $cur = $cur->{$k};
+    }
+    exit 1 if !defined $cur
+      || (!ref $cur && $cur eq "")
+      || (ref $cur eq "HASH"  && !%$cur)
+      || (ref $cur eq "ARRAY" && !@$cur);
+    exit 0;
+  ' "$1" "$2"
+}
+# 每个 fixture 必须满足的契约路径清单（存在且非空才算过）
+fx_paths() {
+  case "$1" in
+    tab-create.json)         printf 'result.root_pane.pane_id result.tab.tab_id' ;;
+    agent-start.json)        printf 'result.type result.agent.pane_id' ;;
+    agent-prompt.json)       printf 'result.type result.agent.pane_id' ;;
+    agent-wait.json)         printf 'result.type result.agent.pane_id' ;;
+    agent-wait-timeout.json) printf 'error.code' ;;
+    agent-list.json)         printf 'result.type result.agents' ;;
+    pane-run-error.json)     printf 'error.code' ;;
+    *)                       printf '' ;;
+  esac
+}
+for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error; do
+  for p in $(fx_paths "$fx.json"); do
+    jpath "$FIXDIR/$fx.json" "$p" \
+      && ok "$fx fixture 含契约路径 .${p}（非空）" || bad "$fx fixture 缺契约路径 .${p}（或为空）"
+  done
 done
-sed '/^#/d' "$FIXDIR/agent-wait-timeout.json" | grep -q '"error"' \
-  && ok "agent-wait-timeout fixture 为真实 error 形状" || bad "timeout fixture 非 error 形状"
 [[ -z "$(sed '/^#/d' "$FIXDIR/pane-run.json")" ]] \
   && ok "pane-run fixture 契约=空输出（与真录一致）" || bad "pane-run fixture 非空，与真录契约不符"
+# 负例：错误层级 fixture（审核同款：result 与 root_pane 平级、pane_id 在顶层）必须被拒
+BADFX="$TMP/bad-tab-create.json"
+printf '%s\n' '{"result":{},"root_pane":{},"pane_id":"fake:p1"}' > "$BADFX"
+jpath "$BADFX" result.root_pane.pane_id \
+  && bad "错误层级 fixture 竟通过契约检查（假绿）" || ok "错误层级 fixture 被契约检查拒绝"
+jpath "$BADFX" result \
+  && bad "空对象 result 竟算非空" || ok "空对象 result 被判不满足契约"
 # 行为证明：stub 确实读 fixture——换掉 fixture 内容，派发结果跟着变
 FIXDIR2="$TMP/fix2"; mkdir -p "$FIXDIR2"; cp "$FIXDIR"/*.json "$FIXDIR2/"
 sed 's/"pane_id":"[^"]*"/"pane_id":"contract:p99"/' "$FIXDIR/tab-create.json" > "$FIXDIR2/tab-create.json"
-DISP2="$TMP/tasks/2099-01-22-disp2.md"; printf '# d2\nstate: blocked\n' > "$DISP2"
-( cd "$TMP" && PATH="$STUB:$PATH" HERDR_FIXDIR="$FIXDIR2" bash qwbuddy/bin/qwb-run.sh --task disp2 --worker codex --worktree "$TMP" ) >/dev/null 2>&1
+DISP2="$TMP/tasks/2099-01-22-disp2.md"
+cat > "$DISP2" <<'EOF'
+# d2
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务写好
+When  派发
+Then  pane 写进账本
+### user_失败
+Given fixture 错形
+When  派发
+Then  报错退出
+EOF
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl HERDR_FIXDIR="$FIXDIR2" bash qwbuddy/bin/qwb-run.sh --task disp2 --worker codex --here ) >/dev/null 2>&1
 grep -qF 'pane=contract:p99' "$DISP2" \
   && ok "改 fixture 后派发 pane 跟着变（stub 真读 fixture，非硬编码）" || bad "stub 未读 fixture（pane 未变）"
+
+echo "== 27. F1 回归：工人无新账本行时的时间兜底重叫 =="
+# 场景：任务已叫醒过一次，此后工人挂起/崩溃不再追加任何行（指纹永不变）
+RWF="$TMP/tasks/2099-01-23-rewake.md"
+printf '# rw\nstate: running\nworking: 工人在干活\n' > "$RWF"
+( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
+[[ "$(grep -c '^wake:' "$RWF")" == "1" ]] && ok "首轮叫醒写下 wake 行" || bad "首轮未写 wake 行"
+# 指纹未变 + 默认 QWB_REWAKE_MS=1800000 未超期 → 不叫
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+  && bad "未超期却将再叫（兜底误触发）" || ok "指纹未变且未超期→不再叫"
+# 负例：把 wake 时间戳改到 2000 年 → 已超期 → 无任何新账本行也必须再叫（修复前永远跳过）
+sed -i '' 's/^wake: [^[:space:]]*/wake: 2000-01-01T00:00:00Z/' "$RWF"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+  && ok "无新行但 wake 已超期→兜底再叫" || bad "无新行且已超期仍跳过（F1 未修）"
+[[ "$(grep -c '^wake:' "$RWF")" == "1" ]] \
+  && ok "dry-run 判定将叫醒但不写 wake 行" || bad "dry-run 写了 wake 行"
+( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
+[[ "$(grep -c '^wake:' "$RWF")" == "2" ]] \
+  && ok "超期后真叫并追加第二条 wake 行" || bad "超期后未追加 wake 行"
+# 负例：wake 时间戳解析失败 → 保守按超期处理（宁可多叫）
+rwfp="$(grep '^wake:' "$RWF" | tail -1 | sed -n 's/.*\(fp=[^[:space:]]*\).*/\1/p')"
+printf 'wake: GARBAGE state=running %s\n' "$rwfp" >> "$RWF"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+  && ok "wake 时间戳解析失败→按超期叫醒" || bad "坏时间戳被当成未超期跳过"
+# 负例：QWB_REWAKE_MS=0 → 关闭兜底，超期/坏时间戳都不再叫
+printf 'QWB_REWAKE_MS=0\n' >> "$TMP/qwbuddy/config.sh"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
+printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+  && bad "QWB_REWAKE_MS=0 仍兜底再叫" || ok "QWB_REWAKE_MS=0 关闭兜底重叫"
+
+echo "== 28. F2 回归：派发记账不得丢工人并发追加 =="
+# 审核复现手法：awk 函数替身在「改 state 的瞬间」注入一条工人追加；herdr 替身在 agent start 时再注入一条
+F2T="$TMP/tasks/2099-01-24-f2race.md"
+cat > "$F2T" <<'EOF'
+# f2race
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务写好
+When  派发
+Then  记账成功
+### user_失败
+Given 并发追加被覆盖
+When  派发
+Then  报错不留假绿
+EOF
+F2P="$TMP/f2probe.log"; : > "$F2P"
+F2STUB="$TMP/f2stub"; mkdir -p "$F2STUB"
+cat > "$F2STUB/herdr" <<EOF
+#!/usr/bin/env bash
+fix() { sed '/^#/d' "$FIXDIR/\$1"; }
+case "\${1:-} \${2:-}" in
+  "tab create")   fix tab-create.json ;;
+  "agent start")  printf 'done: worker-appended-at-start\n' >> "$F2T"; fix agent-start.json ;;
+  "agent prompt") fix agent-prompt.json ;;
+  *)              fix pane-run.json ;;
+esac
+exit 0
+EOF
+cat > "$F2STUB/awk" <<EOF
+#!/usr/bin/env bash
+echo "called" >> "$F2P"
+/usr/bin/awk "\$@"
+printf 'done: awk-injected-during-dispatch\n' >> "$F2T"
+EOF
+chmod +x "$F2STUB/herdr" "$F2STUB/awk"
+rm -rf "$TMP/qwbuddy/.controller.lock"   # 前面段落的派发已持锁；本节统一用固定 pane id 当主控
+( cd "$TMP" && PATH="$F2STUB:$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task f2race --worker codex --here ) >/dev/null \
+  && ok "带并发注入的派发退出 0" || bad "带并发注入的派发非 0"
+# 负例：只要派发路径还调用 awk（旧实现的「读快照→整文件覆盖」），替身注入的追加就必须存活；
+# 实现不再调 awk 时注入点不存在，由下面 agent-start 注入断言兜底
+if [[ -s "$F2P" ]]; then
+  grep -q 'awk-injected-during-dispatch' "$F2T" \
+    && ok "awk 快照窗口注入的追加行未丢" || bad "awk 替身注入行被覆盖丢失（F2 未修）"
+else
+  ok "派发全程未调 awk 处理任务书（快照覆盖注入点已消除）"
+fi
+# 负例：agent start 瞬间（工人已能合法追加）的追加行必须还在文件里
+grep -q 'worker-appended-at-start' "$F2T" \
+  && ok "agent start 时工人追加的行存活" || bad "agent start 时的追加被覆盖（F2 未修）"
+grep -q '^state: running' "$F2T" && ok "并发下 state 仍正确改写" || bad "state 未改写为 running"
+
+echo "== 29. M4 负例：tests/smoke.sh 语法错误必须被快门抓住 =="
+BADT="$TMP/badgate"; mkdir -p "$BADT/bin" "$BADT/tests"
+cp "$ROOT"/bin/qwb-*.sh "$BADT/bin/"
+printf 'if then\n' > "$BADT/tests/smoke.sh"
+cp "$ROOT/qwb.config.sh" "$BADT/qwb.config.sh"
+if bash "$ROOT/bin/qwb-test.sh" fast --project "$BADT" >/dev/null 2>&1; then
+  bad "smoke.sh 语法错误仍过快门（M4 未修）"
+else
+  ok "smoke.sh 语法错误 → fast 门非 0"
+fi
+# 对照：同一布局换成语法正确的 smoke，门应恢复——证明上面失败归因于语法而非环境
+printf '#!/usr/bin/env bash\ntrue\n' > "$BADT/tests/smoke.sh"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$BADT" >/dev/null 2>&1 \
+  && ok "语法修复后 fast 门恢复 0（对照）" || bad "语法正确仍失败——门本身有问题"
+
+echo "== 30. M3 负例：lint 三处漏检 =="
+# 30a：任务书有 state: 字段但值为空 → lint 必须 FAIL（修复前被跳过）
+ES="$TMP/esproj"; mkdir -p "$ES"; bash "$ROOT/bin/qwb-init.sh" "$ES" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$ES/qwbuddy/config.sh"
+printf '# t\nstate: \n' > "$ES/tasks/2099-01-26-emptystate.md"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ES" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '空值'; } \
+  && ok "空 state 值 → lint FAIL" || bad "空 state 值 lint 未检出（rc=${rc}）"
+# 对照：无 state 字段的纯文档不算任务书 → 不因它 FAIL
+rm "$ES/tasks/2099-01-26-emptystate.md"; printf '# lessons\n' > "$ES/tasks/lessons.md"
+bash "$ROOT/bin/qwb-lint.sh" --project "$ES" >/dev/null 2>&1 \
+  && ok "无 state 字段的文档不误报" || bad "无 state 字段文档被误报"
+# 30b：export 形式声明的死键 + 只在纯注释里被「引用」的键 → 都算死键
+EK="$TMP/ekproj"; mkdir -p "$EK"; bash "$ROOT/bin/qwb-init.sh" "$EK" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_UNUSED_KEY=1\nQWB_COMMENT_ONLY=1\n' >> "$EK/qwbuddy/config.sh"
+printf '%s\n' '#!/usr/bin/env bash' '# 只在注释里提到 QWB_COMMENT_ONLY，不算读取' > "$EK/qwbuddy/bin/qwb-note.sh"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$EK" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_UNUSED_KEY'; } \
+  && ok "export 形式死键 → lint FAIL" || bad "export 形式死键未检出（rc=${rc}）"
+printf '%s' "$lintout" | grep -q 'QWB_COMMENT_ONLY' \
+  && ok "仅注释引用仍算死键" || bad "仅注释引用被当成已读取"
+# 30c：非 qwb- 前缀脚本里的 $VAR+非ASCII 写法 → FAIL（修复前只扫 qwb-*.sh）
+HX="$TMP/hxproj"; mkdir -p "$HX"; bash "$ROOT/bin/qwb-init.sh" "$HX" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HX/qwbuddy/config.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$X你好"' > "$HX/qwbuddy/bin/helper.sh"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$HX" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'helper.sh'; } \
+  && ok "非 qwb- 脚本的 \$VAR+非ASCII → lint FAIL" || bad "helper.sh 非ASCII 写法未检出（rc=${rc}）"
+
+echo "== 31. M1：验收场景门（派发前必须有场景 + 失败路径 + 冻结指纹）=="
+# 31a 负例：无场景块的任务书 → 派发必须被拒且提示补场景
+NSF="$TMP/tasks/2099-01-31-noscen.md"; printf '# ns\nstate: running\n' > "$NSF"
+nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task noscen --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '补验收场景'; } \
+  && ok "无场景任务书派发被拒（rc=${nrc}）" || bad "无场景任务书竟派发成功（M1 未修，rc=${nrc}）"
+grep -q '^dispatch:' "$NSF" && bad "被拒任务书仍写了 dispatch 行" || ok "被拒任务书无 dispatch 行"
+# 31b 负例：只有 happy path（无失败路径标记）→ 同样拒绝
+HPF="$TMP/tasks/2099-01-31-happyonly.md"
+cat > "$HPF" <<'EOF'
+# happy
+state: running
+
+## 1. 验收场景
+
+### user_正常一
+Given 前置
+When  动作
+Then  成功
+### user_正常二
+Given 前置二
+When  动作二
+Then  也成功
+EOF
+nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task happyonly --worker codex --here 2>&1 )"; nrc=$?
+{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '失败路径'; } \
+  && ok "无失败路径场景的任务书被拒（rc=${nrc}）" || bad "只有 happy path 竟派发成功（rc=${nrc}）"
+# 31c 正例 + 冻结指纹：装好且门已声明的独立项目里派发 → scenarios-fp 写入
+MP="$TMP/mproj"; mkdir -p "$MP"; bash "$ROOT/bin/qwb-init.sh" "$MP" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$MP/qwbuddy/config.sh"
+MPT="$MP/tasks/2099-01-32-mscen.md"
+cat > "$MPT" <<'EOF'
+# mscen
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 前置
+When  动作
+Then  成功
+### user_失败路径
+Given 非法输入
+When  动作
+Then  拒绝执行
+EOF
+( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen --worker codex --here ) >/dev/null \
+  && ok "含失败路径场景的任务书派发成功" || bad "合法任务书派发被拒"
+mpfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$MPT" | head -1)"
+[[ -n "$mpfp" ]] && ok "派发写入 scenarios-fp=${mpfp:0:8}…" || bad "未写 scenarios-fp"
+# 对照：未改动时 lint 冻结检查过
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MP" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "派发后未改场景 → lint 过（对照）" || { bad "未改场景 lint 竟 FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
+# 31d 负例：派发后改场景块 → lint 必须 FAIL
+sed -i '' 's/拒绝执行/放行执行/' "$MPT"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MP" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '派发后被改动'; } \
+  && ok "派发后改场景块 → lint FAIL（冻结生效）" || bad "派发后改场景 lint 未检出（M1 未修，rc=${rc}）"
+
+echo "== 32. M6：默认派发进隔离副本（不给参数 ≠ 落项目根）=="
+rm -rf "$GP/qwbuddy/.controller.lock"   # wtnew 的派发持过锁；本节统一固定 pane id
+M6T="$GP/tasks/2099-01-33-m6def.md"
+cat > "$M6T" <<'EOF'
+# m6def
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given git 项目
+When  默认派发
+Then  开隔离副本
+### user_失败
+Given 非 git 项目
+When  默认派发
+Then  报错提示 --here
+EOF
+( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:gp bash "$TMP/qwbuddy/bin/qwb-run.sh" --task m6def --worker codex ) >/dev/null \
+  && ok "不带 worktree 参数的派发退出 0" || bad "默认派发非 0"
+[[ -d "$GP/.worktrees/m6def" ]] \
+  && ok "默认派发创建了 .worktrees/m6def 隔离副本" || bad "默认派发未建隔离副本（M6 未修）"
+ddir="$(grep '^dispatch:' "$M6T" | tail -1 | sed -n 's/.*dir=\([^[:space:]]*\).*/\1/p')"
+[[ "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
+  && ok "dispatch 行 dir= 指向隔离副本" || bad "dir= 未指向隔离副本（${ddir}）"
+[[ "$ddir" != "$(cd "$GP" && pwd)" ]] \
+  && ok "dir= 绝不是项目根" || bad "dir= 仍是项目根（M6 未修）"
+# --worktree 复用既有副本仍可用
+M6W="$GP/tasks/2099-01-33-m6reuse.md"
+sed 's/m6def/m6reuse/' "$M6T" > "$M6W"
+( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:gp bash "$TMP/qwbuddy/bin/qwb-run.sh" --task m6reuse --worker codex --worktree "$GP/.worktrees/m6def" ) >/dev/null \
+  && ok "--worktree 复用既有副本仍可派发" || bad "--worktree 派发被拒"
+ddir="$(grep '^dispatch:' "$M6W" | tail -1 | sed -n 's/.*dir=\([^[:space:]]*\).*/\1/p')"
+[[ "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
+  && ok "--worktree dir= 所给副本" || bad "--worktree dir 不对（${ddir}）"
+# 负例：--here 与 --worktree 同给 → 互斥拒绝
+if ( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:gp bash "$TMP/qwbuddy/bin/qwb-run.sh" --task m6reuse --worker codex --here --worktree "$GP" ) >/dev/null 2>&1; then
+  bad "--here 与 --worktree 同给竟放行"
+else
+  ok "--here 与 --worktree 互斥拒绝"
+fi
+
+echo "== 33. M5：整装默认门与入口 =="
+MI="$TMP/minst"; mkdir -p "$MI"; bash "$ROOT/bin/qwb-init.sh" "$MI" >/dev/null
+# 负例：新装项目门未声明 → qwb-test.sh fast 非 0（不是 127、不是 0）且打印声明提示
+mout="$(bash "$MI/qwbuddy/bin/qwb-test.sh" fast --project "$MI" 2>&1)"; mrc=$?
+{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && printf '%s' "$mout" | grep -q '尚未声明质量门'; } \
+  && ok "新装项目 fast 门：rc=${mrc} 且提示尚未声明质量门" || bad "新装项目 fast 门行为不对（rc=${mrc}）"
+mout="$(bash "$MI/qwbuddy/bin/qwb-test.sh" full --project "$MI" 2>&1)"; mrc=$?
+{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && printf '%s' "$mout" | grep -q '尚未声明质量门'; } \
+  && ok "新装项目 full 门：rc=${mrc} 且提示尚未声明质量门" || bad "新装项目 full 门行为不对（rc=${mrc}）"
+# 负例：门未声明的项目跑 lint → FAIL（提醒配门，不许静默当绿）
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MI" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '质量门未声明'; } \
+  && ok "门未声明 → lint FAIL" || bad "门未声明 lint 竟 PASS（rc=${rc}）"
+# 声明后恢复 → lint 过（对照）
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$MI/qwbuddy/config.sh"
+bash "$ROOT/bin/qwb-lint.sh" --project "$MI" >/dev/null 2>&1 \
+  && ok "补声明门后 lint 恢复 0（对照）" || bad "补声明后 lint 仍 FAIL"
+# 负例：历史残留的安装副本被执行 → 清晰提示母本仓，不得假装修装
+cp "$ROOT/bin/qwb-init.sh" "$MI/qwbuddy/bin/qwb-init.sh"
+mout="$(bash "$MI/qwbuddy/bin/qwb-init.sh" "$MI" 2>&1)"; mrc=$?
+{ [[ "$mrc" -ne 0 ]] && printf '%s' "$mout" | grep -q '母本仓'; } \
+  && ok "安装副本里的 qwb-init.sh 被执行 → 拒绝并提示母本仓" || bad "安装副本 init 行为不对（rc=${mrc}）"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
