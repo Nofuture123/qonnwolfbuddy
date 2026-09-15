@@ -14,6 +14,9 @@ usage() {
   5. 质量门已声明（QWB_GATE_FAST / QWB_GATE_FULL 均非空）
   6. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）；
      带 scenarios-revised: 修订记录的票，再核对最新一条记录的 new= 指纹 == 当前基线
+  7. 需独立审核的票（review-required: yes）：review-impl:/review-rev: 各行须有
+     model/family/session/evidence、family 非 unknown 且两方不同、原生 session 不同实例；
+     无标记的普通票不启用本检查
 
 布局：装了 qwbuddy/ 的项目 → qwbuddy/QWBUDDY.md + qwbuddy/bin/；
       母本仓（模板源）       → templates/QWBUDDY.md + bin/，配置回退 qwb.config.sh。
@@ -188,6 +191,58 @@ if [[ -z "$scen_bad" ]]; then
   pass "带 scenarios-fp 的任务书场景均未在派发后被改动"
 else
   fail "验收场景检查失败:${scen_bad}"
+fi
+
+echo "== 7. 需独立审核票的审核身份可核验 =="
+# 只对显式标记 review-required: yes 的票启用——普通票零新增负担、不补历史票。
+# 结构校验：review-impl:/review-rev: 两行各自 model/family/session/evidence 齐全；
+# family 非 unknown、两方 family 不同、两方原生 session 不是同一实例。
+# cli=/provider= 只是附记，绝不充当 family（同 CLI 不同家族合法，不同 CLI 同家族拒绝）。
+# 边界：只做声明与证据引用的结构校验——不访问模型服务、不猜型号、不防伪造；
+# 无法确认一律报缺证据 FAIL，不假绿。
+rid_val() { # $1=身份行原文 $2=键名 → 取「键=非空白值」（行内以空白分隔）
+  printf '%s' "$1" | sed -n "s/.*[[:space:]]${2}=\([^[:space:]]*\).*/\1/p" | head -1
+}
+rid_bad=""; rid_n=0
+for f in "$PROJECT_ROOT"/tasks/*.md; do
+  grep -q '^state:' "$f" || continue
+  grep -qE '^review-required:[[:space:]]*yes[[:space:]]*$' "$f" || continue
+  rid_n=$((rid_n+1)); n="$(basename "$f")"; b=""
+  il="$(grep -E '^review-impl:' "$f" | head -1)"
+  rl="$(grep -E '^review-rev:' "$f" | head -1)"
+  if [[ -z "$il" || -z "$rl" ]]; then
+    rid_bad="${rid_bad} ${n}(缺 review-impl/review-rev 身份行)"; continue
+  fi
+  im="$(rid_val "$il" model)";   ifam="$(rid_val "$il" family)"
+  isess="$(rid_val "$il" session)"; iev="$(rid_val "$il" evidence)"
+  rm="$(rid_val "$rl" model)";   rfam="$(rid_val "$rl" family)"
+  rsess="$(rid_val "$rl" session)"; rev="$(rid_val "$rl" evidence)"
+  [[ -n "$im" && -n "$ifam" && -n "$isess" && -n "$iev" ]] \
+    || b="${b} 实现者身份字段不全(需model/family/session/evidence)"
+  [[ -n "$rm" && -n "$rfam" && -n "$rsess" && -n "$rev" ]] \
+    || b="${b} 审核者身份字段不全(需model/family/session/evidence)"
+  ifam_l="$(printf '%s' "$ifam" | tr '[:upper:]' '[:lower:]')"
+  rfam_l="$(printf '%s' "$rfam" | tr '[:upper:]' '[:lower:]')"
+  [[ "$ifam_l" == "unknown" ]] && b="${b} 身份未确认(实现者family=unknown)"
+  [[ "$rfam_l" == "unknown" ]] && b="${b} 身份未确认(审核者family=unknown)"
+  if [[ -n "$ifam_l" && -n "$rfam_l" && "$ifam_l" != "unknown" && "$rfam_l" != "unknown" ]]; then
+    [[ "$ifam_l" == "$rfam_l" ]] && b="${b} 实现者与审核者同家族(${ifam_l})"
+  fi
+  [[ -n "$isess" && -n "$rsess" && "$isess" == "$rsess" ]] \
+    && b="${b} 两方同一原生session实例(${isess})"
+  for ev in "$iev" "$rev"; do
+    case "$ev" in
+      /*|*/*) [[ -f "$ev" || -f "$PROJECT_ROOT/$ev" ]] || b="${b} 证据位置不存在(${ev})" ;;
+    esac
+  done
+  [[ -n "$b" ]] && rid_bad="${rid_bad} ${n}(${b# })"
+done
+if [[ "$rid_n" -eq 0 ]]; then
+  pass "无 review-required 票（普通票不启用审核身份检查）"
+elif [[ -z "$rid_bad" ]]; then
+  pass "${rid_n} 张需独立审核票的身份记录可核验"
+else
+  fail "审核身份检查失败:${rid_bad}"
 fi
 
 echo

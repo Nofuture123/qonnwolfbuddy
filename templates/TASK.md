@@ -59,6 +59,21 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 - 普通 `working:` / `done:` / `dispatch:` 行**不能解除疑点**；处置之后新提的疑点重新拦截。
 - 票上有未决疑点时派发会被拒（先处置再派）；改验收场景须用 `--revise-scenarios=<原因>` 显式修订留痕，`spec-resolved:` 本身不授权改场景。
 
-## 5. 本票不允许做的事
+## 5. 审核身份（可选——仅「要求独立审核」的票；普通票整节删掉）
+
+要求独立审核的票在头部加 `review-required: yes`，验收时由**主控据真实会话证据**补记两行：
+
+```
+review-impl: model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
+review-rev:  model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
+```
+
+- `family` 只写模型家族（如 `gpt` / `claude` / `gemini`），据真实 TUI/会话记录判断；**无法可靠判断就写 `unknown`**——lint 会报缺证据不通过，不许按名字猜。
+- `cli=` / `provider=` 可附记，**绝不充当 family**：同 CLI 不同家族合法，不同 CLI 同家族会被拒。
+- 两方 `session` 不得是同一原生实例——同一会话换角色 ≠ 独立审核。
+- `evidence` 是证据位置（会话转储/审核文档路径）；写成路径时 lint 核对文件存在。
+- 不补历史票：没标记的票不需要也不许凭空补身份。
+
+## 6. 本票不允许做的事
 
 <明确的排除项，防范围蔓延>
