@@ -16,7 +16,7 @@
 | 简称 | **QW buddy**（人读场合）／`qwbuddy`（机器场合：目录、命令、文件名） |
 | 形态 | **不是独立软件**：一份说明书 + 几个 shell 脚本 + markdown 账本 |
 | 母本仓 | `qonnwolfbuddy`——存模板、脚本、安装器 |
-| 安装 | 在目标项目里执行 `qwbuddy init`（复制模板 + 建账本 + 写钩子） |
+| 安装 | 从母本仓执行 `bash bin/qwb-init.sh <项目根>`（复制模板 + 建账本 + 写钩子；幂等）。装好后先在项目的 `qwbuddy/config.sh` 声明本项目自己的质量门，再跑 `qwb-test.sh fast\|full` 验证（未声明门会明确报错，不当成通过） |
 | 启动 | 在项目里开 Claude Code / Pi / Codex，说「**你现在是 QW buddy**」→ 读 `qwbuddy/QWBUDDY.md` 变身主控 |
 
 ## 2. 三层责任
