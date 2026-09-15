@@ -19,7 +19,8 @@ usage() {
                     删 worktree，不删同名分支（它指向别的东西，不指向本工作区）。
     --keep[=原因]   不动 git，只在任务书点名保留及原因（不做脏检查——规范允许留冲突待解的）。
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
-  先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。
+  先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
+  worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
 
 选项:
   --project <根>    项目根（默认：当前目录）
@@ -98,7 +99,12 @@ WT_DIR="$WT_BASE/$TASK_ID"
 [[ -d "$WT_DIR" ]] || { echo "错误：worktree 不存在：${WT_DIR}" >&2; exit 1; }
 
 # 一切判断与归档以 worktree 当前 HEAD 的实际提交 OID 为准，不得拿同名分支当本工作区的工作
-BRANCH="$(git -C "$WT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if ! BRANCH="$(git -C "$WT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"; then
+  # 分支身份读取失败不得回退成任务 id——身份未知不删东西（仅 --keep 不动 git，可继续记账）
+  [[ "$ACTION" == "keep" ]] \
+    || { echo "错误：无法读取 ${WT_DIR} 的分支身份（非 git worktree？），拒绝收尾" >&2; exit 1; }
+  BRANCH=""
+fi
 HEAD_OID="$(git -C "$WT_DIR" rev-parse HEAD 2>/dev/null || true)"
 DETACHED=0
 if [[ "$BRANCH" == "HEAD" ]]; then
@@ -124,6 +130,26 @@ if [[ "$ACTION" != "keep" ]]; then
   fi
 fi
 
+# 删除的正当性必须在「即将删除的那一刻」成立：每个破坏性动作前复核实际 HEAD
+recheck_head() {   # 打印 worktree 当前实际 HEAD OID；读不到返回非 0
+  git -C "$WT_DIR" rev-parse HEAD 2>/dev/null
+}
+check_unchanged() {
+  local cur
+  cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
+  [[ "$cur" == "$HEAD_OID" ]] || {
+    echo "拒绝：收尾期间 ${WT_DIR} 的实际 HEAD 已变化（${HEAD_OID} → ${cur}），工作已被推进。" >&2
+    echo "${1:-未执行任何删除，}请重新收尾。" >&2
+    exit 1
+  }
+}
+# worktree 删掉之后复核分支：refs/heads/<分支> 仍指着已核实/已归档的 OID 才准删
+branch_tip_unchanged() {
+  local cur
+  cur="$(git -C "$PROJECT_ROOT" rev-parse "refs/heads/$BRANCH" 2>/dev/null)" || return 1
+  [[ "$cur" == "$HEAD_OID" ]]
+}
+
 BL="$BRANCH"
 if [[ "$DETACHED" -eq 1 ]]; then BL="detached"; fi
 TAG="-"
@@ -144,17 +170,27 @@ case "$ACTION" in
       echo "确已落地请先 git fetch / 合并；要废弃请改用 --archive。" >&2
       exit 1
     fi
+    check_unchanged    # 核实通过≠此刻仍是同一提交：删 worktree 前复核
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
     if [[ "$DETACHED" -eq 1 ]]; then
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD，无分支可删）"
-    else
+    elif branch_tip_unchanged; then
       git -C "$PROJECT_ROOT" branch -d "$BRANCH"
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删，分支 ${BRANCH} 已删"
+    else
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
     fi
     ;;
   archive)
     TAG="archive/$TASK_ID"
+    # 标签打向「即将打的那一刻」的实际 HEAD：收尾期间若已被推进，以当前真实提交为准
+    cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
+    if [[ "$cur" != "$HEAD_OID" ]]; then
+      echo "提示：收尾期间 ${WT_DIR} 的 HEAD 已推进（${HEAD_OID} → ${cur}），标签将指向当前提交" >&2
+      HEAD_OID="$cur"
+    fi
     git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID"
+    check_unchanged "标签 ${TAG}（→ ${HEAD_OID}）已打且保留；"   # tag 后到删之前再被推进 → 只留标签不删
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
     if [[ "$DETACHED" -eq 1 ]]; then
       kept=""
@@ -162,9 +198,11 @@ case "$ACTION" in
         kept="；保留分支 ${TASK_ID}（它不指向本工作区）"
       fi
       echo "已归档：tag ${TAG} → detached HEAD ${HEAD_OID}；worktree 已删${kept}"
-    else
+    elif branch_tip_unchanged; then
       git -C "$PROJECT_ROOT" branch -D "$BRANCH"
       echo "已归档：tag ${TAG} → 分支 ${BRANCH} 顶端；worktree 已删，分支已删（-D）"
+    else
+      echo "已归档：tag ${TAG} → ${HEAD_OID}；worktree 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
     fi
     ;;
   keep)
