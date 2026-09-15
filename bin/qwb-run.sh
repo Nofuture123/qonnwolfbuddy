@@ -55,7 +55,7 @@ TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
 
 # 工人须在 config.json workers 表里（herdr kind 与工人同名）
-[[ -f "$CONF" ]] || { echo "错误：找不到 $CONF（先跑 qwb-init.sh）" >&2; exit 1; }
+[[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
 grep -q "\"$WORKER\"" "$CONF" || { echo "错误：工人 '$WORKER' 不在 config.json workers 表里" >&2; exit 1; }
 START_MS="$(sed -n 's/.*"agent_start_ms"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$CONF" | head -1)"
 START_MS="${START_MS:-30000}"
@@ -89,7 +89,7 @@ NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd '
 herdr agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS"
 
 # 提示词：任务书绝对路径 + 主账本绝对路径 + 状态行规矩
-herdr agent prompt "$NAME" "你是本任务的执行者。唯一规格来源：$TASK_FILE（先完整读它，再读它点名的文档）。工作目录=$DIR，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=$TASK_FILE——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
+herdr agent prompt "$NAME" "你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
 
 # 记账：state: running 写进头部字段行（只改第一处）；派发记录追加在末尾
 tmp="$TASK_FILE.qwb.tmp"

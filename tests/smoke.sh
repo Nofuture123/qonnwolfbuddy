@@ -65,5 +65,54 @@ printf '# 假任务\nstate: verified\n' > "$FAKE"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 printf '%s' "$out" | grep -q '2099-01-01-fake' && bad "state=verified 仍列为未结项" || ok "state=verified 不再列为未结项"
 
+echo "== 7. stub herdr：qwb-wake.sh --once 有未结项退出 0（回归 Bug 2）=="
+STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
+mkdir -p "$STUB"
+cat > "$STUB/herdr" <<EOF
+#!/usr/bin/env bash
+echo "herdr \$*" >> "$STUBLOG"
+case "\${1:-}" in
+  tab) printf '%s\n' '{"result":{"root_pane":{"pane_id":"wtest:p9"}}}' ;;
+  *) printf '%s\n' '{"result":{"ok":true}}' ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB/herdr"
+
+printf '# 假任务\nstate: running\n' > "$FAKE"
+( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null \
+  && ok "wake --once 有未结项退出 0" || bad "wake --once 有未结项非 0"
+grep -q '^wake:' "$FAKE" && ok "已写 wake: 去重行" || bad "未写 wake: 去重行"
+grep -q 'pane run' "$STUBLOG" && ok "stub 日志有 pane run 叫醒" || bad "stub 日志无 pane run"
+
+echo "== 8. 变量后紧跟非 ASCII 字符扫描（回归 Bug 1）=="
+if command -v python3 >/dev/null 2>&1; then
+  if python3 - "$ROOT"/bin/*.sh <<'PYEOF'
+import re, sys
+pat = re.compile(r'\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]')
+bad = 0
+for path in sys.argv[1:]:
+    for i, line in enumerate(open(path, encoding='utf-8'), 1):
+        for m in pat.finditer(line):
+            print(f'{path}:{i}: {m.group(0)}')
+            bad += 1
+sys.exit(1 if bad else 0)
+PYEOF
+  then ok "bin/*.sh 无 \$VAR+非ASCII 写法"; else bad "bin/*.sh 存在 \$VAR+非ASCII 写法"; fi
+else
+  echo "SKIP  无 python3，跳过扫描"
+fi
+
+echo "== 9. qwb-run.sh 真实派发（stub herdr）=="
+DISP="$TMP/tasks/2099-01-02-disp.md"
+printf '# 派发测试\nstate: blocked\n' > "$DISP"
+( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null \
+  && ok "qwb-run.sh 派发退出 0" || bad "qwb-run.sh 派发非 0"
+grep -q '^state: running' "$DISP" && ok "任务书 state 变为 running" || bad "任务书 state 未变 running"
+grep -q '^dispatch:' "$DISP" && ok "任务书末尾有 dispatch: 行" || bad "任务书无 dispatch: 行"
+grep -q 'agent start' "$STUBLOG" && ok "stub 日志有 agent start" || bad "stub 日志无 agent start"
+grep -q 'agent prompt' "$STUBLOG" && ok "stub 日志有 agent prompt" || bad "stub 日志无 agent prompt"
+grep -qF "$DISP" "$STUBLOG" && ok "prompt 参数含任务书绝对路径" || bad "prompt 参数缺任务书绝对路径"
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

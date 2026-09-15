@@ -67,7 +67,7 @@ last_wake_state() {
 }
 
 check_round() {
-  local f st lw need=0 ids=""
+  local f st lw ids=""
   while IFS=$'\t' read -r f st; do
     ids="$ids $(basename "$f" .md)($st)"
     lw="$(last_wake_state "$f")"
@@ -75,7 +75,6 @@ check_round() {
       echo "跳过：$(basename "$f") state=${st}（已叫过，状态未变）"
       continue
     fi
-    need=1
     if [[ "$DRY" -eq 1 ]]; then
       echo "未结项（将叫醒）: $(basename "$f") state=$st"
     else
@@ -85,7 +84,10 @@ check_round() {
       echo "已叫醒：$(basename "$f") state=${st} → pane ${PANE}"
     fi
   done < <(open_items)
-  [[ "$need" -eq 0 && -z "$ids" ]] && echo "账本无未结项"
+  if [[ -z "$ids" ]]; then
+    echo "账本无未结项"
+  fi
+  return 0
 }
 
 wait_round() {
@@ -101,6 +103,8 @@ wait_round() {
 
 while :; do
   check_round
-  [[ "$ONCE" -eq 1 || "$DRY" -eq 1 ]] && exit 0
+  if [[ "$ONCE" -eq 1 || "$DRY" -eq 1 ]]; then
+    exit 0
+  fi
   wait_round
 done
