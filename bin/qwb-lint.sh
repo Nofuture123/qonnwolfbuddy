@@ -12,7 +12,8 @@ usage() {
   3. config 无死键（QWB_X=… 与 export QWB_X=… 都算声明；非注释行出现 $QWB_X / ${QWB_X} 才算被读取）
   4. 无「变量后紧跟非 ASCII」写法（应写成 ${VAR} 形式；扫描 bin/*.sh 全部脚本）
   5. 质量门已声明（QWB_GATE_FAST / QWB_GATE_FULL 均非空）
-  6. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）
+  6. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）；
+     带 scenarios-revised: 修订记录的票，再核对最新一条记录的 new= 指纹 == 当前基线
 
 布局：装了 qwbuddy/ 的项目 → qwbuddy/QWBUDDY.md + qwbuddy/bin/；
       母本仓（模板源）       → templates/QWBUDDY.md + bin/，配置回退 qwb.config.sh。
@@ -138,6 +139,8 @@ fi
 echo "== 6. 已派发任务书的验收场景与冻结 =="
 # 验收场景块界定与 qwb-run.sh 派发门一致；带 scenarios-fp: 的任务书（经派发门写过基线的）
 # 重算当前块指纹比对，不一致即 FAIL；有 dispatch: 但无 scenarios-fp: 的是旧制派发，警告不 FAIL。
+# 带 scenarios-revised: 修订记录的票（经 --revise-scenarios 显式改过场景）：最新一条记录的
+# new= 指纹必须等于当前基线——没有修订参数的场景差异仍然 FAIL（区分显式改票与无痕偷改）。
 scenario_block() {
   awk '
     inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
@@ -173,6 +176,13 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
   cur_fp="$(printf '%s' "$blk" | shasum | cut -d' ' -f1)"
   [[ "$cur_fp" == "$declared_fp" ]] \
     || scen_bad="${scen_bad} $(basename "$f")(验收场景在派发后被改动)"
+  # 修订记录核对：最新一条 scenarios-revised: 的 new= 指纹 == 当前基线
+  lastrev="$(grep -E '^working:[[:space:]]*scenarios-revised:' "$f" | tail -1 || true)"
+  if [[ -n "$lastrev" ]]; then
+    revnew="$(printf '%s' "$lastrev" | sed -n 's/^working:[[:space:]]*scenarios-revised:[[:space:]]*old=[0-9a-f]\{40\}[[:space:]]\{1,\}new=\([0-9a-f]\{40\}\).*/\1/p')"
+    [[ -n "$revnew" && "$revnew" == "$declared_fp" ]] \
+      || scen_bad="${scen_bad} $(basename "$f")(最新修订记录 new= 指纹与当前基线不一致)"
+  fi
 done
 if [[ -z "$scen_bad" ]]; then
   pass "带 scenarios-fp 的任务书场景均未在派发后被改动"

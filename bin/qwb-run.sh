@@ -14,19 +14,25 @@ usage() {
   --project <根>        项目根（默认：当前目录）
   --worktree <路径>     在既有 worktree 目录里派活（新窗口的 cwd）
   --create-worktree     先开 <根>/.worktrees/<任务id>（git worktree add；与默认行为同义）
+                        隔离副本的创建是幂等的：已是本任务的有效 worktree 则复用，不重建
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
   --pane <pane_id>      复用既有 pane（须为交互 shell），否则新开 herdr tab
   --name <agent名>      工人 agent 名（默认：qwb-<任务id>）
   --accept-new-scenarios  主控显式确认：曾派发但丢 scenarios-fp 基线的任务书，允许重建冻结基线（留一行说明）
+  --revise-scenarios=<原因>  主控显式修订验收场景：票内已有基线且场景块被有意改动时，
+                         更新 scenarios-fp 并追加 working: scenarios-revised: 留痕记录（原因非空，须写明条款依据）
   -h, --help            显示本帮助
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
 派发前有验收场景门：任务书必须含「验收场景」块（Given/When/Then 或 ≥2 个 user_ 场景标题）
 且至少一条失败路径场景，否则拒绝派发；通过则把场景块指纹写成 scenarios-fp: 供 lint 冻结比对。
+派发前有疑点门：最后一个 spec-defect:/spec-resolved: 相关事件是 blocked: spec-defect:（未决规格疑点）
+→ 拒绝派发，须由主控追加 working: spec-resolved: 处置后才放行；普通状态行不能解除疑点。
 EOF
 }
 
 PROJECT_ROOT="$(pwd)"; TASK=""; WORKER=""; WORKTREE=""; CREATE_WT=0; HERE=0; PANE=""; NAME=""; ACCEPT_NEW=0
+REVISE=""; REVISE_GIVEN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -39,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --pane) PANE="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
     --accept-new-scenarios) ACCEPT_NEW=1; shift ;;
+    --revise-scenarios=*) REVISE="${1#*=}"; REVISE_GIVEN=1; shift ;;
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -82,6 +89,24 @@ if [[ "$wfound" -eq 0 ]]; then
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
 
+# —— 疑点门：票上有未决「规格疑点」→ 拒绝派发，先处置后派 ——
+# 相关事件 = 两类精确前缀（blocked:…spec-defect: / working:…spec-resolved:）按出现顺序取最后一个：
+# 是 spec-defect: → 未决。普通 working:/done:/dispatch: 行不参与判定、不能解除疑点；
+# spec-resolved: 只认主控写的处置结论，覆盖其之前全部未决疑点，之后新提的疑点重新拦截。
+# 本检查在任何派发副作用（worktree/窗口/tab/state:/dispatch:）之前完成。
+last_spec_ev="$(grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$TASK_FILE" | tail -1 || true)"
+if printf '%s' "$last_spec_ev" | grep -qE '^blocked:[[:space:]]*spec-defect:'; then
+  {
+    echo "错误：任务书上有未决规格疑点，拒绝派发——疑点原文："
+    printf '  %s\n' "$last_spec_ev"
+    echo "处置：由主控逐项核对疑点（不能只回应最后一条），往任务书追加一行："
+    echo "  working: spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，或保留原票的理由>"
+    echo "之后再重新派发。不要求必须开审核窗口（实质分歧/缺反例/疑点带新证据复发时才按需审票，见 roles/审核者.md）。"
+    echo "改验收场景须用 --revise-scenarios=<原因> 显式修订留痕；spec-resolved: 本身不授权改场景。"
+  } >&2
+  exit 1
+fi
+
 # —— M1 派发门：任务书必须有「验收场景」块（先场景后代码），且至少一条失败路径场景 ——
 # 验收场景块 = 首个含「验收场景」的标题行起，到下一个一/二级标题、或首条账本状态/运行时行为止
 # （working:/done:/dispatch:/wake: 等行永远追加在文件尾，不得计入场景指纹）
@@ -110,11 +135,21 @@ SCEN_FP="$(printf '%s' "$SCEN_BLK" | shasum | cut -d' ' -f1)"
 # —— 冻结基线核对（R2-M1）：再次派发不得覆盖/丢失基线 ——
 # 已有 scenarios-fp: → 与当前场景块指纹比对：一致→正常派发且基线原样保留；不一致→拒绝（自家派发入口不得洗白改动）。
 # 无基线但有 dispatch: → 曾派发的新制任务丢了基线，默认拒绝；主控显式 --accept-new-scenarios 才允许重建并留说明行。
+# --revise-scenarios= → 显式修订通道：只处理「已有基线、场景被主控有意改动」这一种情况，指纹不比对（改动正是待留痕对象）。
 DECLARED_FP="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$TASK_FILE" | head -1 | tr -d '[:space:]')"
 REBUILD_FP=0
-if [[ -n "$DECLARED_FP" ]]; then
+if [[ "$REVISE_GIVEN" -eq 1 ]]; then
+  # 前置校验（全过才动手；场景块结构合法性已由上面的场景门校验）：
+  # 不与 --accept-new-scenarios 混用（后者只管「缺基线」）、原因非空、票内存旧指纹
+  [[ "$ACCEPT_NEW" -eq 0 ]] \
+    || { echo "错误：--revise-scenarios 与 --accept-new-scenarios 互斥（前者显式改基线留痕，后者只管重建缺失基线）" >&2; exit 1; }
+  [[ -n "$REVISE" ]] \
+    || { echo "错误：--revise-scenarios= 的原因不能为空（须写明改了哪条场景、依据哪条条款）" >&2; exit 1; }
+  [[ -n "$DECLARED_FP" ]] \
+    || { echo "错误：票内没有旧指纹（scenarios-fp 缺失），无从修订——缺基线的情况用 --accept-new-scenarios，不要用修订" >&2; exit 1; }
+elif [[ -n "$DECLARED_FP" ]]; then
   [[ "$DECLARED_FP" == "$SCEN_FP" ]] \
-    || { echo "错误：验收场景在派发后被改动：请恢复场景，或由主控确认后手动删除 scenarios-fp: 行并以 --accept-new-scenarios 再派发" >&2; exit 1; }
+    || { echo "错误：验收场景在派发后被改动：请恢复场景，或由主控用 --revise-scenarios=<原因> 显式修订留痕，或核实后删除 scenarios-fp: 行并以 --accept-new-scenarios 再派发" >&2; exit 1; }
 elif grep -q '^dispatch:' "$TASK_FILE"; then
   if [[ "$ACCEPT_NEW" -eq 1 ]]; then
     REBUILD_FP=1
@@ -138,6 +173,45 @@ if ! bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" >/dev/nu
   fi
 fi
 
+# —— 显式修订（--revise-scenarios）：锁内、任何派发副作用之前重新核对并更新指纹 ——
+# 先在临时文件写「新指纹 + 修订记录」再原子 mv 回任务书：写与换任何一步失败即退出，不留半更新状态。
+if [[ "$REVISE_GIVEN" -eq 1 ]]; then
+  recheck_fp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$TASK_FILE" | head -1 | tr -d '[:space:]')"
+  [[ "$recheck_fp" == "$DECLARED_FP" ]] \
+    || { echo "错误：取得锁后票内旧指纹已变（${DECLARED_FP} → ${recheck_fp}），放弃本次修订，请重新核对后再派" >&2; exit 1; }
+  recheck_scen_fp="$(printf '%s' "$(scenario_block "$TASK_FILE")" | shasum | cut -d' ' -f1)"
+  [[ "$recheck_scen_fp" == "$SCEN_FP" ]] \
+    || { echo "错误：取得锁后场景块已变，放弃本次修订，请重新核对后再派" >&2; exit 1; }
+  REV_OLD="$DECLARED_FP"; REV_NEW="$SCEN_FP"
+  REV_REC="working: scenarios-revised: old=${REV_OLD} new=${REV_NEW} reason=${REVISE}"
+  rev_tmp="${TASK_FILE}.revise.$$"
+  if ! perl -e '
+      my ($new, $rec, $src, $dst) = @ARGV;
+      open my $in, "<", $src or die "读任务书失败: $!\n";
+      my @lines = <$in>; close $in;
+      my $done = 0;
+      for my $l (@lines) {
+        if (!$done && $l =~ /^scenarios-fp:/) { $l = "scenarios-fp: $new\n"; $done = 1 }
+      }
+      die "任务书里没有 scenarios-fp 行\n" unless $done;
+      my $tail = @lines && $lines[-1] !~ /\n\z/ ? "\n" : "";
+      open my $out, ">", $dst or die "写修订临时文件失败: $!\n";
+      print $out @lines, $tail, "$rec\n";
+      close $out or die "写修订临时文件失败: $!\n";
+    ' "$REV_NEW" "$REV_REC" "$TASK_FILE" "$rev_tmp"; then
+    rm -f "$rev_tmp"
+    echo "错误：修订写入失败（新指纹与修订记录均未落盘），不派发" >&2; exit 1
+  fi
+  if ! mv "$rev_tmp" "$TASK_FILE"; then
+    rm -f "$rev_tmp"
+    echo "错误：修订落盘失败（新指纹与修订记录均未生效），不派发" >&2; exit 1
+  fi
+  # 修订自检：新指纹与修订记录必须都已写入，缺一即败（不继续派发）
+  { grep -q "^scenarios-fp: ${REV_NEW}" "$TASK_FILE" && grep -qF "$REV_REC" "$TASK_FILE"; } \
+    || { echo "错误：修订自检失败（新指纹/修订记录未同时写入），不派发——请人工核对任务书" >&2; exit 1; }
+  echo "已显式修订验收场景：old=${REV_OLD:0:8}… new=${REV_NEW:0:8}…（原因已留痕）"
+fi
+
 # worktree（M6：默认隔离）：--worktree 复用既有副本；--here 显式用项目根；
 # 其余情况（含 --create-worktree 与默认不给参数）一律开 <根>/.worktrees/<id> 隔离副本
 if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
@@ -152,7 +226,37 @@ if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
   fi
   WORKTREE="$PROJECT_ROOT/.worktrees/$TASK_ID"
   mkdir -p "$PROJECT_ROOT/.worktrees"
-  if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
+  # 有效 worktree 判定（两个条件都要满足）：① 该目录真的是一个 git 工作区且根就在这个路径——
+  # prunable 残留（登记还在、目录被删/被换成普通目录）会被 git 回退解析到外层仓 → 不等，拒；
+  # ② 本项目 worktree 列表能查到该路径（按物理路径比对，避开 /tmp→/private/tmp 这类符号链接差异）。
+  wt_is_valid() {
+    local want want_real top p p_real
+    want="$1"
+    want_real="$(cd "$want" 2>/dev/null && pwd -P)" || return 1
+    top="$(git -C "$want" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [[ -n "$top" && "$(cd "$top" 2>/dev/null && pwd -P)" == "$want_real" ]] || return 1
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      p_real="$(cd "$p" 2>/dev/null && pwd -P)" || continue
+      [[ "$p_real" == "$want_real" ]] && return 0
+    done < <(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+    return 1
+  }
+  # 幂等（返工 / 修订后继续派发走的就是这条路）：目标路径已存在且是本任务的有效 worktree → 复用，不重建；
+  # 存在但不是有效 worktree（脏残留 / 普通目录）→ 拒绝，不盲目复用也不删别人的东西。
+  if [[ -e "$WORKTREE" ]]; then
+    if wt_is_valid "$WORKTREE"; then
+      echo "复用既有隔离副本（幂等，不重建）：${WORKTREE}"
+    else
+      {
+        echo "错误：${WORKTREE} 已存在但不是 ${TASK_ID} 的有效 git worktree（脏残留/普通目录）——不盲目复用，请先清理："
+        echo "  1) 只是目录残留：rm -rf ${WORKTREE}"
+        echo "  2) 曾在 git 里登记过（或上面已删除）：git -C ${PROJECT_ROOT} worktree prune"
+        echo "  3) 按 worktree 规范收尾（须先确认工人已停止写入）：bash ${WT_BIN} finish ${TASK_ID} --archive|--merged"
+      } >&2
+      exit 1
+    fi
+  elif git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
     git -C "$PROJECT_ROOT" worktree add "$WORKTREE" "$TASK_ID" \
       || { echo "错误：创建 worktree 失败（确要在项目根派发请显式用 --here）" >&2; exit 1; }
   else
