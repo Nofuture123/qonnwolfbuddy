@@ -1,0 +1,11 @@
+
+ ✱ Do you trust the authors of this directory?
+   For security, devin should not be run in directories with untrusted content.
+
+ /private/tmp/qwb02probe/untrusted-dir
+
+ ❭ 1 Yes, trust
+ · 2 No, exit
+
+ ↓↑ to select · ↵ to choose · esc to quit
+

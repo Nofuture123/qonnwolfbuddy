@@ -1,0 +1,2 @@
+# 真录 2026-09-15：herdr pane get/process-info <不存在 pane>（错误在 stderr，退出码 1）
+{"error":{"code":"pane_not_found","message":"pane nonexistent:p9 not found"},"id":"cli:pane:get"}

@@ -62,6 +62,16 @@ else
 fi
 
 echo
+echo "== 值守 =="
+# 值守健康复用 qwb-wake.sh --check 的同一判定：真查 herdr 前台进程，pane 存在不算健康，查不到明说未知
+WAKE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-wake.sh"
+if [[ -f "$WAKE_BIN" ]]; then
+  bash "$WAKE_BIN" --project "$PROJECT_ROOT" --check
+else
+  echo "值守：未知（缺 qwb-wake.sh，无法判定）"
+fi
+
+echo
 echo "== Herdr 窗口 =="
 if command -v herdr >/dev/null 2>&1; then
   herdr agent list 2>/dev/null || echo "（herdr agent list 失败：无运行中的 server 或无 agent）"

@@ -1,0 +1,2 @@
+# 真录 2026-09-15：空闲 shell pane——foreground_process_group_id==shell_pid，前台仅 shell 自身
+{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":4516,"foreground_processes":[{"argv":["-zsh"],"argv0":"zsh","cmdline":"-zsh","cwd":"/private/tmp/qwb02probe/untrusted-dir","name":"zsh","pid":4516}],"pane_id":"w8Z:pY","shell_pid":4516},"type":"pane_process_info"}}

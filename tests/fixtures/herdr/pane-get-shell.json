@@ -1,0 +1,2 @@
+# 真录 2026-09-15，herdr：herdr pane get <纯shell pane>（无 agent 字段，agent_status=unknown）
+{"id":"cli:pane:get","result":{"pane":{"agent_status":"unknown","cwd":"/private/tmp/qwb02probe/untrusted-dir","focused":false,"foreground_cwd":"/private/tmp/qwb02probe/untrusted-dir","pane_id":"w8Z:pY","revision":0,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":52},"tab_id":"w8Z:tR","terminal_id":"term_65b886fb6b7ec29","workspace_id":"w8Z"},"type":"pane_info"}}
