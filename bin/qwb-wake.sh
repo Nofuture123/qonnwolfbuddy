@@ -12,8 +12,8 @@ usage() {
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
 等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval，
-     等待耗时计入预算——超时路径（已耗 ≥半个 interval）直接下轮再扫；仅立即失败（耗时≈0）
-     或无可用 pane 才 sleep 一个间隔，不得忙循环。
+     无论 wait 成功/失败/超时，已耗时间都计入预算、剩余部分补 sleep；无可用 pane 才整睡
+     一个间隔，不得忙循环。
 
 选项:
   --project <根>      项目根（默认：当前目录）
@@ -126,14 +126,15 @@ wait_round() {
     p="$(printf '%s' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
   fi
   if [[ -n "$p" ]]; then
-    # 一轮预算 = 1×interval：等待本身耗掉的时间计入预算。
-    # 耗掉 ≥ 半个 interval 视为超时路径 → 直接下轮扫描不再 sleep；
-    # 只有立即失败（耗时≈0，如 pane 不存在）才 sleep 一个间隔防忙循环。
+    # 一轮预算 = 1×interval：无论 wait 成功/失败/超时，已耗时间都计入预算，剩余补 sleep——
+    # idle 立即成功、立即失败都睡满剩余；耗尽 timeout（耗时≈interval）不再额外 sleep。
     local t0 dt
     t0="$(date +%s)"
-    if ! herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1; then
-      dt=$(( $(date +%s) - t0 ))
-      if (( dt * 2000 < INTERVAL )); then sleep_interval; fi
+    herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1 || true
+    dt=$(( $(date +%s) - t0 ))
+    if (( dt * 1000 < INTERVAL )); then
+      local remain=$(( INTERVAL - dt * 1000 ))
+      sleep "$(( remain / 1000 > 0 ? remain / 1000 : 1 ))"
     fi
   else
     sleep_interval

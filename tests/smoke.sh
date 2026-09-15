@@ -162,6 +162,17 @@ n="$(grep -c 'agent wait' "$STUBLOG" || true)"
   && ok "4 秒内 ${n} 次 agent wait（超时路径 ≈1 秒/轮 = 1×interval；旧实现会 sleep 两轮仅 ~2 次）" \
   || bad "4 秒内 ${n} 次 agent wait（超时路径仍重复 sleep 或退化成忙循环）"
 
+echo "== 12c. H2 回归：agent wait 立即成功（工人 idle）也计入等待预算，无忙循环 =="
+: > "$STUBLOG"
+( cd "$TMP" && PATH="$STUB:$PATH" exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
+WPID=$!
+sleep 4
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
+n="$(grep -c 'agent wait' "$STUBLOG" || true)"
+[[ "$n" -ge 2 && "$n" -le 6 ]] \
+  && ok "4 秒内 ${n} 次 agent wait（idle 立即成功 ≈1 秒/轮；修复前实测 4.9 秒 91 轮）" \
+  || bad "4 秒内 ${n} 次 agent wait（idle 立即成功仍忙循环或卡住）"
+
 echo "== 13. F1 回归：主控锁 =="
 LOCKD="$TMP/qwbuddy/.controller.lock"
 rm -rf "$LOCKD"
@@ -344,18 +355,95 @@ bash "$ROOT/bin/qwb-init.sh" "$PRES" >/dev/null
 grep -q 'wtest:mine' "$PRES/qwbuddy/config.sh" \
   && ok "init 不覆盖已存在 config.sh" || bad "init 覆盖了已存在 config.sh"
 MIG="$TMP/migproj"; mkdir -p "$MIG/qwbuddy"
-echo '{}' > "$MIG/qwbuddy/config.jso""n"
+echo '{}' > "$MIG/qwbuddy/config.json"
 migout="$(bash "$ROOT/bin/qwb-init.sh" "$MIG" 2>&1)"
 printf '%s' "$migout" | grep -q '旧版' && ok "init 对旧版 JSON 配置打迁移提示" || bad "init 未打迁移提示"
 assert_file "$MIG/qwbuddy/config.sh"
 
-echo "== 21. G3：bin/ tests/ templates/ 中旧配置文件名字面量零命中 =="
-if grep -rn 'config\.json' "$ROOT/bin" "$ROOT/tests" "$ROOT/templates" >/dev/null 2>&1; then
-  bad "bin/tests/templates 仍出现旧配置文件名"
-  grep -rn 'config\.json' "$ROOT/bin" "$ROOT/tests" "$ROOT/templates" || true
+echo "== 21. G3：旧配置文件名仅允许见于 qwb-init.sh 迁移逻辑，且为可读字面量 =="
+if grep -rn 'config\.json' "$ROOT/bin" | grep -v 'qwb-init\.sh' | grep -q .; then
+  bad "bin/ 中除 qwb-init.sh 外仍出现旧配置文件名："
+  grep -rn 'config\.json' "$ROOT/bin" | grep -v 'qwb-init\.sh' || true
 else
-  ok "旧配置文件名字面量零命中"
+  ok "bin/ 中旧配置文件名仅见于 qwb-init.sh"
 fi
+grep -q 'config\.json' "$ROOT/bin/qwb-init.sh" \
+  && ok "qwb-init.sh 迁移逻辑含旧名可读字面量" || bad "qwb-init.sh 缺旧名可读字面量"
+if grep -rnE "jso(\"\"|'')n" "$ROOT/bin" "$ROOT/tests" >/dev/null 2>&1; then
+  bad "bin/ tests/ 仍有拼接构造旧配置名的写法"
+  grep -rnE "jso(\"\"|'')n" "$ROOT/bin" "$ROOT/tests" || true
+else
+  ok "bin/ tests/ 无拼接构造旧配置名"
+fi
+
+echo "== 22. H1 回归：git 替身注入并发推进/读取失败 =="
+GITLOG="$TMP/git-inj.log"; : > "$GITLOG"
+GSTUB2="$TMP/gitstub2"; mkdir -p "$GSTUB2"
+cat > "$GSTUB2/git" <<EOF
+#!/usr/bin/env bash
+echo "git \$*" >> "$GITLOG"
+sub="\${3:-}"; a4="\${4:-}"
+if [[ "\$sub" == "rev-parse" && "\$a4" == "--abbrev-ref" && "\${INJ_MODE:-}" == "branchread" ]]; then
+  echo "fatal: mocked branch read failure" >&2; exit 128
+fi
+if [[ "\$sub" == "tag" && "\${INJ_MODE:-}" == "posttag" ]]; then
+  "$REAL_GIT" "\$@" || exit \$?
+  "$REAL_GIT" -C "\$INJ_WT" -c user.email=t@t.t -c user.name=t commit -qm inject --allow-empty
+  exit 0
+fi
+if [[ "\$sub" == "merge-base" && "\$a4" == "--is-ancestor" && "\${INJ_MODE:-}" == "postmerge" ]]; then
+  "$REAL_GIT" -C "\$INJ_WT" -c user.email=t@t.t -c user.name=t commit -qm inject --allow-empty
+  exit 0
+fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GSTUB2/git"
+
+# 22a：--archive 打标签之后、remove 之前 HEAD 被推进 → 拒绝删除，已打标签保留
+WTI="wtinj"; WTIF="$GP/tasks/2099-01-14-${WTI}.md"
+printf '# inj\nstate: running\n' > "$WTIF"
+git -C "$GP" worktree add -q -b "$WTI" "$GP/.worktrees/$WTI"
+: > "$GITLOG"
+if PATH="$GSTUB2:$PATH" INJ_MODE=posttag INJ_WT="$GP/.worktrees/$WTI" bash "$WTB" finish "$WTI" --archive --project "$GP" >/dev/null 2>&1; then
+  bad "打标签后 HEAD 被推进 --archive 竟放行（H1 未修）"
+else
+  ok "打标签后 HEAD 被推进 → --archive 拒绝删除"
+fi
+[[ -d "$GP/.worktrees/$WTI" ]] && ok "拒绝后 worktree 未动" || bad "拒绝后 worktree 仍被删"
+grep -q 'worktree remove' "$GITLOG" && bad "仍调用了 worktree remove" || ok "未调用 worktree remove"
+grep -q 'branch -D' "$GITLOG" && bad "仍调用了 branch -D" || ok "未调用 branch -D"
+git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTI" >/dev/null \
+  && ok "已打的 archive tag 保留" || bad "已打 tag 丢失"
+git -C "$GP" show-ref --verify --quiet "refs/heads/$WTI" && ok "分支保留" || bad "分支被误删"
+
+# 22b：--merged 核实通过之后、remove 之前 HEAD 被推进 → 同样拒绝
+WTJ="wtinjm"; WTJF="$GP/tasks/2099-01-15-${WTJ}.md"
+printf '# injm\nstate: running\n' > "$WTJF"
+git -C "$GP" worktree add -q -b "$WTJ" "$GP/.worktrees/$WTJ"
+: > "$GITLOG"
+if PATH="$GSTUB2:$PATH" INJ_MODE=postmerge INJ_WT="$GP/.worktrees/$WTJ" bash "$WTB" finish "$WTJ" --merged --project "$GP" >/dev/null 2>&1; then
+  bad "--merged 核实通过后 HEAD 被推进竟放行（H1 未修）"
+else
+  ok "--merged 核实通过后 HEAD 被推进 → 拒绝删除"
+fi
+[[ -d "$GP/.worktrees/$WTJ" ]] && ok "拒绝后 worktree 未动" || bad "拒绝后 worktree 仍被删"
+grep -q 'worktree remove' "$GITLOG" && bad "仍调用了 worktree remove" || ok "未调用 worktree remove"
+
+# 22c：分支身份读取失败 → 拒绝，不回退成任务 id 继续删
+WTK="wtinjb"; WTKF="$GP/tasks/2099-01-16-${WTK}.md"
+printf '# injb\nstate: running\n' > "$WTKF"
+git -C "$GP" worktree add -q -b "$WTK" "$GP/.worktrees/$WTK"
+: > "$GITLOG"
+if PATH="$GSTUB2:$PATH" INJ_MODE=branchread bash "$WTB" finish "$WTK" --archive --project "$GP" >/dev/null 2>&1; then
+  bad "分支名读取失败 --archive 竟放行（H1 未修）"
+else
+  ok "分支名读取失败 → 拒绝（不回退成任务 id）"
+fi
+[[ -d "$GP/.worktrees/$WTK" ]] && ok "拒绝后 worktree 未动" || bad "拒绝后 worktree 仍被删"
+grep -qE 'worktree remove|branch -D| tag ' "$GITLOG" \
+  && bad "身份未知仍执行了打标/删除" || ok "未打标未删除"
+git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTK" >/dev/null \
+  && bad "分支身份未知仍打了 tag" || ok "未打 tag"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

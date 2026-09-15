@@ -31,9 +31,8 @@ mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
 cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
 
-# config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖
-# 旧版配置文件名用拼接构造：验收门要求源码不出现其字面量（grep 零命中），运行时仍指到真名
-OLD_CONF_NAME="config.jso""n"
+# config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
+OLD_CONF_NAME="config.json"
 if [[ -f "$ROOT/qwbuddy/config.sh" ]]; then
   echo "保留：qwbuddy/config.sh 已存在，不覆盖"
 else
