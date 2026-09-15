@@ -1,0 +1,19 @@
+rocky@mymacbook-2 qwb02probe % sleep 60
+^C
+rocky@mymacbook-2 qwb02probe % cd /var
+rocky@mymacbook-2 /var % cd /tmp/qwb02probe && bash /Users/rocky/projects/qonnwolfbuddy/.worktrees
+/scenario-02-watch/bin/qwb-wake.sh --project /tmp/qwb02probe --interval 5000
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+账本无未结项
+^C
+rocky@mymacbook-2 qwb02probe % cd /tmp/qwb02probe/untrusted-dir && devin
+
+ ✗ Trust /private/tmp/qwb02probe/untrusted-dir?
+rocky@mymacbook-2 untrusted-dir %

@@ -159,6 +159,51 @@ elif grep -q '^dispatch:' "$TASK_FILE"; then
   fi
 fi
 
+# —— --pane 复用预检（在任何副作用之前：锁目录、修订写、worktree/分支创建、账本写、agent 启动）——
+# 目标目录先推导不创建：--here=项目根；--worktree=给定路径；其余=默认 .worktrees/<任务id>。
+# pane 存在、无 agent、前台空闲 shell、cwd 与目标目录物理一致，缺一即拒并给修复步骤；
+# 不往未知 TUI/异地目录发命令。目标目录不存在时也能比对（向已存在的祖先目录归一化）。
+if [[ -n "$PANE" ]]; then
+  if [[ "$HERE" -eq 1 ]]; then EDIR="$PROJECT_ROOT"
+  elif [[ -n "$WORKTREE" ]]; then EDIR="$WORKTREE"
+  else EDIR="$PROJECT_ROOT/.worktrees/$TASK_ID"; fi
+  if [[ "$EDIR" != /* ]]; then EDIR="$(pwd)/$EDIR"; fi
+  if [[ -d "$EDIR" ]]; then
+    ecd="$(cd "$EDIR" && pwd -P)"
+  else
+    base="$EDIR"; tail_=""
+    while [[ ! -d "$base" && "$base" != "/" && -n "$base" ]]; do
+      tail_="/$(basename "$base")${tail_}"; base="$(dirname "$base")"
+    done
+    ecd=""; [[ -d "$base" ]] && ecd="$(cd "$base" && pwd -P)${tail_}"
+  fi
+  pinfo="$(herdr pane get "$PANE" 2>&1)" \
+    || { echo "错误：--pane ${PANE} 无法确认（pane 不存在或查询失败）：${pinfo}" >&2; exit 1; }
+  pmeta="$(printf '%s' "$pinfo" | perl -MJSON::PP=decode_json -e '
+      my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
+      my $p = $j->{result}{pane} or exit 1;
+      printf "%s\t%s", ($p->{foreground_cwd} // $p->{cwd} // ""), ($p->{agent} // "");' || true)"
+  [[ -n "$pmeta" ]] \
+    || { echo "错误：--pane ${PANE} 的 pane get 响应无法解析，无法确认状态" >&2; exit 1; }
+  pagent="$(printf '%s' "$pmeta" | cut -f2)"
+  [[ -z "$pagent" ]] \
+    || { echo "错误：--pane ${PANE} 里跑着 agent（${pagent}），不是交互 shell——换个空闲 shell pane 或不带 --pane 新开 tab" >&2; exit 1; }
+  pproc="$(herdr pane process-info --pane "$PANE" 2>&1)" \
+    || { echo "错误：--pane ${PANE} 进程查询失败，无法确认前台空闲：${pproc}" >&2; exit 1; }
+  printf '%s' "$pproc" | perl -MJSON::PP=decode_json -e '
+      my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
+      my $pi = $j->{result}{process_info} or exit 1;
+      exit((defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
+            && $pi->{foreground_process_group_id} == $pi->{shell_pid}) ? 0 : 1);' \
+    || { echo "错误：--pane ${PANE} 前台被进程占用（非空闲 shell）——等它跑完或换个 pane" >&2; exit 1; }
+  pcwd="$(printf '%s' "$pmeta" | cut -f1)"
+  pcd="$(cd "$pcwd" 2>/dev/null && pwd -P || true)"
+  [[ -n "$ecd" ]] \
+    || { echo "错误：目标目录 ${EDIR} 尚不存在（默认 worktree 是派发时才建的），pane cwd 不可能已相符——修复：不带 --pane 先派发一次建出副本，或改用 --here / --worktree <已存在目录> 并先把 pane cd 到那里" >&2; exit 1; }
+  [[ -n "$pcd" && "$pcd" == "$ecd" ]] \
+    || { echo "错误：--pane ${PANE} 的 cwd（${pcwd:-未知}）与目标目录（${EDIR}）不符——修复：在该 pane 里先执行 cd ${EDIR} 再重跑，或不带 --pane 新开 tab" >&2; exit 1; }
+fi
+
 # 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
 LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"

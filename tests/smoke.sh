@@ -71,23 +71,54 @@ STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
 FIXDIR="$ROOT/tests/fixtures/herdr"
 mkdir -p "$STUB"
 # 契约 stub：响应全部来自 tests/fixtures/herdr/ 真录样本（剔 # 注释行），不再硬编码 JSON。
-# 可选行为：HERDR_FAIL=run|wait 让对应调用按真实错误形状失败；
-#          HERDR_WAIT_BUMP_MS + QWB_FAKE_NOW_FILE 让 agent wait 把假时钟往前推（模拟等待耗时）。
+# 可选行为：HERDR_FAIL=run|wait|list|prompt 让对应调用按真实错误形状失败；
+#          HERDR_WAIT_BUMP_MS + QWB_FAKE_NOW_FILE 让 agent wait 把假时钟往前推（模拟等待耗时）；
+#          HERDR_DYN_DIR 下放逐 pane 应答片场（pane-list.json / get-<san>.json|.err / proc-<san>.json|.err /
+#          read-<san>.txt / tab-create.json），san=pane id 剔除非字母数字；HERDR_READ_TRUST=1 让 pane read 回真录信任框。
 cat > "$STUB/herdr" <<EOF
 #!/usr/bin/env bash
 echo "herdr \$*" >> "$STUBLOG"
 fix() { sed '/^#/d' "\${HERDR_FIXDIR:-$FIXDIR}/\$1"; }
+# 动态片场：pane 级应答按 pane id 逐测试布置（HERDR_DYN_DIR，默认 \$TMP/herdr-dyn）
+DYNH="\${HERDR_DYN_DIR:-$TMP/herdr-dyn}"; mkdir -p "\$DYNH" 2>/dev/null
+san() { printf '%s' "\$1" | tr -cd 'a-zA-Z0-9'; }
+failjson() { printf '{"error":{"code":"%s","message":"%s"},"id":"cli:test"}\n' "\$1" "\$2" >&2; exit 1; }
 case "\${1:-} \${2:-}" in
   "pane run")   if [[ "\${HERDR_FAIL:-}" == *run* ]]; then fix pane-run-error.json >&2; exit 1; fi
+                # 模拟真实效果：往 shell pane 跑 qwb-wake.sh → 之后 process-info 呈现值守进程
+                # （含 --pane 目标实参；QWB_STUB_NOPROC=1 抑制写入，模拟投递后进程始终起不来）
+                if [[ "\${4:-}" == *qwb-wake.sh* && "\${QWB_STUB_NOPROC:-}" != "1" ]]; then
+                  proj="\$(printf '%s' "\${4:-}" | sed -n "s/.*--project[[:space:]]*['\\"]*\\([^ '\\"]*\\).*/\\1/p")"
+                  tgt="\$(printf '%s' "\${4:-}" | sed -n "s/.*--pane[[:space:]]*['\\"]*\\([^ '\\"]*\\).*/\\1/p")"
+                  sed "s|/tmp/qwb02probe|\$proj|g; s|/private/tmp/qwb02probe|\$proj|g" \
+                    "\${HERDR_FIXDIR:-$FIXDIR}/proc-wake.json" \
+                    | { [[ -n "\$tgt" ]] && sed -e "s|--interval 5000|--pane \$tgt --interval 5000|g" \
+                          -e "s|\\"--interval\\"|\\"--pane\\",\\"\$tgt\\",\\"--interval\\"|g" || cat; } \
+                    | sed '/^#/d' > "\$DYNH/proc-\$(san "\$3").json" 2>/dev/null || true
+                fi
                 fix pane-run.json ;;
+  "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then sleep 8; fi
+                if [[ "\${HERDR_FAIL:-}" == *list* ]]; then failjson io_error "mocked pane list failure"; fi
+                if [[ -f "\$DYNH/pane-list.json" ]]; then sed '/^#/d' "\$DYNH/pane-list.json"; else fix pane-list.json; fi ;;
+  "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json";
+                elif [[ -f "\$DYNH/get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/get-\$(san "\${3:-}").err" >&2; exit 1;
+                else failjson pane_not_found "pane \${3:-} not found"; fi ;;
+  "pane process-info") pp="\${4:-\${3:-}}"
+                if [[ -f "\$DYNH/proc-\$(san "\$pp").json" ]]; then sed '/^#/d' "\$DYNH/proc-\$(san "\$pp").json";
+                elif [[ -f "\$DYNH/proc-\$(san "\$pp").err" ]]; then cat "\$DYNH/proc-\$(san "\$pp").err" >&2; exit 1;
+                else failjson pane_not_found "pane \$pp not found"; fi ;;
+  "pane read")  if [[ "\${HERDR_READ_TRUST:-}" == "1" ]]; then cat "\${HERDR_FIXDIR:-$FIXDIR}/pane-read-trust.txt";
+                elif [[ -f "\$DYNH/read-\$(san "\${3:-}").txt" ]]; then cat "\$DYNH/read-\$(san "\${3:-}").txt";
+                else cat "\${HERDR_FIXDIR:-$FIXDIR}/pane-read-shell.txt" 2>/dev/null || fix agent-wait.json; fi ;;
   "agent wait") if [[ "\${HERDR_FAIL:-}" == *wait* ]]; then fix agent-wait-timeout.json >&2; exit 1; fi
                 if [[ -n "\${QWB_FAKE_NOW_FILE:-}" && "\${HERDR_WAIT_BUMP_MS:-0}" -gt 0 ]]; then
                   echo \$(( \$(cat "\$QWB_FAKE_NOW_FILE") + \${HERDR_WAIT_BUMP_MS} )) > "\$QWB_FAKE_NOW_FILE"
                 fi
                 fix agent-wait.json ;;
-  "tab create") fix tab-create.json ;;
+  "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
   "agent start") fix agent-start.json ;;
-  "agent prompt") fix agent-prompt.json ;;
+  "agent prompt") if [[ "\${HERDR_FAIL:-}" == *prompt* ]]; then failjson inject_failed "mocked prompt failure"; fi
+                fix agent-prompt.json ;;
   "agent list") fix agent-list.json ;;
   *) fix agent-wait.json ;;
 esac
@@ -624,9 +655,11 @@ printf '%s' "$lintout" | grep -q 'QWB_DEAD_KEY' && ok "检出血配置死键" ||
 printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写法" || bad "未检出变量写法"
 
 echo "== 26. D：herdr fixture 契约基线（真实 JSON 路径检查）=="
-for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error; do
+for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error \
+          pane-get-shell pane-get-error proc-shell proc-wake proc-busy pane-list; do
   assert_file "$FIXDIR/$fx.json"
 done
+for fx in pane-read-trust pane-read-shell; do assert_file "$FIXDIR/$fx.txt"; done
 
 # 真正的 JSON 路径检查：fixture 剔 # 注释行后按点分路径解析，路径须存在、非空且类型匹配（R2-M2）
 # 类型约定：string=必须是 JSON 字符串（encode_json 回带引号；对象/数组/数字/布尔/null/空串全拒）；
@@ -667,10 +700,17 @@ fx_paths() {
     agent-wait-timeout.json) printf 'error.code:string' ;;
     agent-list.json)         printf 'result.type:string result.agents:array' ;;
     pane-run-error.json)     printf 'error.code:string' ;;
+    pane-get-shell.json)     printf 'result.pane.pane_id:string result.pane.cwd:string' ;;
+    pane-get-error.json)     printf 'error.code:string' ;;
+    pane-list.json)          printf 'result.panes:array' ;;
+    proc-shell.json)         printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
+    proc-wake.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
+    proc-busy.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     *)                       printf '' ;;
   esac
 }
-for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error; do
+for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error \
+          pane-get-shell pane-get-error pane-list proc-shell proc-wake proc-busy; do
   for pt in $(fx_paths "$fx.json"); do
     p="${pt%%:*}"; t="${pt##*:}"
     jpath "$FIXDIR/$fx.json" "$p" "$t" \
@@ -1401,6 +1441,380 @@ out="$(sgrun --task sgidem --worker codex 2>&1)"; rc=$?
 [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '有效 git worktree' \
   && ok "已登记但目录被换掉的残留 → 拒绝（rc=${rc}）" || bad "残留目录被盲目复用（rc=${rc}）"
 [[ "$(grep -c '^dispatch:' "$SGI")" == "4" ]] && ok "残留拒绝后未追加 dispatch" || bad "残留拒绝后仍派发"
+
+echo "== 42. user_开局无需手工启动值守（qwb-wake.sh --ensure 幂等确保）=="
+# 场景（票内 user_开局无需手工启动值守 / user_失活值守明确可见）：
+#   Given 项目已安装、主控存活、尚无本项目有效值守  When 主控按开局步骤调 --ensure
+#   Then 本 workspace 内建一个可见值守 tab、记录身份、启动 qwb-wake.sh；重复调用复用不重复创建
+ENSP="$TMP/ensproj"; mkdir -p "$ENSP"; bash "$ROOT/bin/qwb-init.sh" "$ENSP" >/dev/null
+DYN="$TMP/herdr-dyn"
+wsan() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9'; }
+ensrun() { ( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID="${ENWS:-wtestW}" HERDR_PANE_ID=wtest:ctl \
+    HERDR_DYN_DIR="$DYN" bash qwbuddy/bin/qwb-wake.sh "$@" ); }
+mk_plist() { # $1=输出文件；其余参数 = "paneid[@ws]"（纯 shell）或 "paneid[@ws],agent"（agent pane）；ws 缺省 wtestW
+  local out="$1"; shift; local spec pid pws first=1
+  { printf '{"result":{"panes":['
+    for spec in "$@"; do
+      pid="${spec%%,agent*}"; pws="${pid##*@}"; [[ "$pws" == "$pid" ]] && pws=wtestW; pid="${pid%%@*}"
+      [[ $first -eq 0 ]] && printf ','; first=0
+      if [[ "$spec" == *,agent ]]; then
+        printf '{"pane_id":"%s","workspace_id":"%s","agent":"devin","agent_status":"idle"}' "$pid" "$pws"
+      else
+        printf '{"pane_id":"%s","workspace_id":"%s","agent_status":"unknown"}' "$pid" "$pws"
+      fi
+    done
+    printf '],"type":"pane_list"}}'; } > "$out"
+}
+mk_get() { # $1=pane $2=cwd(物理) [$3=agent名] [$4=workspace] → $DYN/get-<san>.json
+  local pid="$1" cwd="$2" ag="${3:-}" ws="${4:-wtestW}" sj
+  sj="$(wsan "$pid")"
+  sed "s|w8Z:pY|$pid|g; s|/private/tmp/qwb02probe/untrusted-dir|$cwd|g; s|/private/tmp/qwb02probe|$cwd|g; s|\"w8Z\"|\"$ws\"|g" "$FIXDIR/pane-get-shell.json" \
+    | { [[ -n "$ag" ]] && sed 's|"agent_status":"unknown"|"agent":"'"$ag"'","agent_status":"idle"|' || cat; } \
+    > "$DYN/get-$sj.json"
+}
+mk_proc() { # $1=pane $2=shell|wake|busy [$3=项目根] [$4=值守 --pane 目标] → $DYN/proc-<san>.json
+  local pid="$1" shape="$2" proj="${3:-}" tp="${4:-}" sj
+  sj="$(wsan "$pid")"
+  sed "s|w8Z:pY|$pid|g" "$FIXDIR/proc-$shape.json" \
+    | { [[ -n "$proj" ]] && sed "s|/tmp/qwb02probe|$proj|g; s|/private/tmp/qwb02probe|$proj|g" || cat; } \
+    | { [[ -n "$tp" ]] && sed -e "s|--interval 5000|--pane $tp --interval 5000|g" \
+          -e "s|\"--interval\"|\"--pane\",\"$tp\",\"--interval\"|g" || cat; } \
+    > "$DYN/proc-$sj.json"
+}
+ensreset() { rm -rf "$DYN" "$ENSP/qwbuddy/.controller.lock"; mkdir -p "$DYN"; rm -f "$ENSP/qwbuddy/.watch"; : > "$STUBLOG";
+  mk_get wtest:ctl "$ENSP" "" "${ENWS:-wtestW}"; }  # 目标主控 pane 默认存在且同 workspace（个别用例再覆盖/删除）
+
+# 42a 正例：无值守 → ensure 建可见 tab + 起值守 + 写身份记录
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create.*--workspace wtestW' "$STUBLOG" \
+   && grep -q "pane run w93:p7.*qwb-wake.sh.*--project.*$ENSP" "$STUBLOG"; } \
+  && ok "ensure 在调用者 workspace 建 tab 并启动值守（rc=${rc}）" \
+  || { bad "ensure 建值守失败（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+grep -q 'pane=w93:p7' "$ENSP/qwbuddy/.watch" && ok "ensure 写了 .watch 身份记录" || bad ".watch 未写或缺 pane"
+
+# 42b 幂等：值守进程活着 → 再 ensure 复用，不新建
+mk_plist "$DYN/pane-list.json" "w93:p7" "w93:p1,agent"   # stub 的 pane run 已把 proc-w93p7 写成 wake 形
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c 'tab create' "$STUBLOG")" == "1" ]] && printf '%s' "$out" | grep -q '复用'; } \
+  && ok "重复 ensure 复用不新建（rc=${rc}）" || { bad "重复 ensure 行为不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42c 负例：值守退出 shell 仍在 → 同 pane 重启（不新开 tab），且此前 status 不得报运行
+ensreset
+printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w93:p7"
+mk_get w93:p7 "$ENSP"; mk_proc w93:p7 shell "$ENSP"
+sout="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" bash qwbuddy/bin/qwb-status.sh )"
+printf '%s' "$sout" | grep -q '值守：未运行' \
+  && ok "值守退出 shell 仍在 → status 报未运行（不报运行）" || { bad "status 把活 pane 当成值守健康"; printf '%s\n' "$sout"; }
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c 'tab create' "$STUBLOG")" == "0" ]] && grep -q 'pane run w93:p7' "$STUBLOG"; } \
+  && ok "shell 空闲 → 同一 pane 重启值守（rc=${rc}）" || { bad "原 pane 重启失败（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42d 负例：登记 pane 被其他进程占用 → 新开 tab，不动旧 pane
+ensreset
+printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w93:p7"
+mk_get w93:p7 "$ENSP"; mk_proc w93:p7 busy "$ENSP"
+printf '{"result":{"root_pane":{"pane_id":"w9E:p2","cwd":"%s","workspace_id":"wtestW"},"tab":{"tab_id":"w9E:t2"}}}\n' "$ENSP" > "$DYN/tab-create.json"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run w93:p7' "$STUBLOG" \
+   && grep -q 'pane=w9E:p2' "$ENSP/qwbuddy/.watch"; } \
+  && ok "登记 pane 被占用 → 新开 tab 并改记 .watch（rc=${rc}）" \
+  || { bad "占用 pane 处理不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42e 负例：登记 pane 已不存在 → 新开 tab
+ensreset
+printf 'pane=w8Z:pGONE workspace=wtestW pid=1 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create' "$STUBLOG" && grep -q 'pane=w93:p7' "$ENSP/qwbuddy/.watch"; } \
+  && ok "登记 pane 消失 → 新开 tab 重建（rc=${rc}）" || { bad "pane 消失处理不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42f 负例（第二轮规格反转）：登记 pane 在别的 workspace → 不认领/不重启，拒绝给步骤；
+#   且该 pane 上真有本项目值守进程也不许跨 workspace 行动
+ensreset
+printf 'pane=w8Z:pZ workspace=w8Z pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w8Z:pZ@w8Z" "w93:p1,agent"
+mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run w8Z:pZ' "$STUBLOG"; } \
+  && ok "登记 pane 属别的 workspace → 拒绝不认领（rc=${rc}）" \
+  || { bad "跨 workspace 竟认领/重启（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42g 负例：发现两个本项目值守实例 → 报错，不新建不杀不占
+ensreset
+mk_plist "$DYN/pane-list.json" "w8Z:pZ1" "w8Z:pZ2"
+mk_get w8Z:pZ1 "$ENSP" "" w8Z; mk_proc w8Z:pZ1 wake "$ENSP"
+mk_get w8Z:pZ2 "$ENSP" "" w8Z; mk_proc w8Z:pZ2 wake "$ENSP"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z:pZ1' && printf '%s' "$out" | grep -q 'w8Z:pZ2' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
+  && ok "双值守实例 → 报错且零副作用（rc=${rc}）" || { bad "双实例未拦住（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42h 负例：无 Herdr 上下文（两 env 皆无）→ 明确拒绝
+out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" env -u HERDR_WORKSPACE_ID -u HERDR_PANE_ID \
+    bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'herdr'; } \
+  && ok "无 Herdr 上下文 → 拒绝（rc=${rc}）" || bad "无上下文竟执行（rc=${rc}）"
+# 42h2 正例变体：只有 HERDR_PANE_ID 时从 pane get 推导 workspace
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+mk_get wtest:ctl "$ENSP" "" wtestW
+out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl env -u HERDR_WORKSPACE_ID \
+    bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create.*--workspace wtestW' "$STUBLOG"; } \
+  && ok "仅 HERDR_PANE_ID → 推导 workspace 后正常建（rc=${rc}）" || { bad "workspace 推导失败（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+# 42i 负例：herdr 查询失败（pane list 挂）→ 报错，不擅自开实例
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl \
+    HERDR_FAIL=list bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && ! grep -q 'tab create' "$STUBLOG"; } \
+  && ok "pane list 失败 → 报错不开新实例（rc=${rc}）" || bad "查询失败仍乱动（rc=${rc}）"
+
+# 42j 负例：--ensure 与 --once/--dry-run 互斥
+for mx in --once --dry-run; do
+  ensrun --ensure "$mx" >/dev/null 2>&1 && bad "--ensure $mx 竟放行" || ok "--ensure $mx 互斥拒绝"
+done
+
+echo "== 43. user_失活值守明确可见（status 值守段）=="
+# 场景（票内 user_失活值守明确可见）：Given 账本记录的值守已退出或 pane 在但进程不在
+#   When status/开局检查  Then 明确显示未运行或未知，不把「pane 存在」当健康
+statrun() { ( cd "$ENSP" && PATH="${SPATH_OVERRIDE:-$STUB:$PATH}" HERDR_DYN_DIR="$DYN" \
+    HERDR_WORKSPACE_ID="${ENWS:-wtestW}" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-status.sh ); }
+ensreset
+# 43a 运行：登记 pane + 进程在
+printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w93:p7"; mk_get w93:p7 "$ENSP"; mk_proc w93:p7 wake "$ENSP"
+out="$(statrun)"
+{ printf '%s' "$out" | grep -q '值守：运行' && printf '%s' "$out" | grep -q 'w93:p7'; } \
+  && ok "status 值守显示运行+pane" || { bad "status 未显示运行"; printf '%s\n' "$out"; }
+# 43b 进程退出、shell 仍在 → 未运行（不得只凭 pane 存在报健康）
+mk_proc w93:p7 shell "$ENSP"
+out="$(statrun)"
+{ printf '%s' "$out" | grep -q '值守：未运行' && printf '%s' "$out" | grep -qi '退出\|不在'; } \
+  && ok "pane 在进程不在 → 未运行" || { bad "进程不在仍报运行"; printf '%s\n' "$out"; }
+# 43c 登记 pane 已不存在 → 未运行
+rm -f "$DYN/get-$(wsan w93:p7).json" "$DYN/proc-$(wsan w93:p7).json"
+out="$(statrun)"
+printf '%s' "$out" | grep -q '值守：未运行' \
+  && ok "登记 pane 消失 → 未运行" || { bad "pane 消失仍报非未运行"; printf '%s\n' "$out"; }
+# 43d 登记 pane 被其他进程占用 → 未运行
+mk_get w93:p7 "$ENSP"; mk_proc w93:p7 busy "$ENSP"
+out="$(statrun)"
+printf '%s' "$out" | grep -q '值守：未运行' \
+  && ok "pane 被占用 → 未运行" || { bad "占用 pane 报非未运行"; printf '%s\n' "$out"; }
+# 43e 无登记但扫到活的本项目值守（手工启动）→ 运行 + 标明未登记
+rm -f "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w93:p1,agent"; mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP"
+out="$(statrun)"
+{ printf '%s' "$out" | grep -q '值守：运行' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
+  && ok "未登记值守被扫到 → 运行" || { bad "未登记值守漏检"; printf '%s\n' "$out"; }
+# 43f 无登记也扫不到 → 未运行
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(statrun)"
+printf '%s' "$out" | grep -q '值守：未运行' \
+  && ok "无记录无进程 → 未运行" || { bad "空值守未报未运行"; printf '%s\n' "$out"; }
+# 43g 无 herdr → 未知（不许静默报未运行）
+out="$(SPATH_OVERRIDE="/usr/bin:/bin" statrun)"
+printf '%s' "$out" | grep -q '值守：未知' \
+  && ok "无 herdr → 值守状态未知" || { bad "无 herdr 未报未知"; printf '%s\n' "$out"; }
+# 43h 登记 pane 存在但进程查询失败 → 未知
+ensreset
+printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w93:p7"; mk_get w93:p7 "$ENSP"
+printf '{"error":{"code":"io_error","message":"mocked proc failure"}}\n' > "$DYN/proc-$(wsan w93:p7).err"
+out="$(statrun)"
+printf '%s' "$out" | grep -q '值守：未知' \
+  && ok "进程查询失败 → 未知" || { bad "查询失败未报未知"; printf '%s\n' "$out"; }
+
+echo "== 44. --pane 复用先核对 cwd 与 pane 状态（派发副作用前拒）=="
+# 场景（票内落地要求 3）：--pane 复用要在派发副作用前核对 cwd 与目标 worktree，
+#   无法确认或不一致则拒绝并给明确修复步骤；不往未知 TUI 发命令
+rm -rf "$TMP/qwbuddy/.controller.lock"
+PDIR="$(cd "$TMP" && pwd -P)"
+# 44a 正例：pane cwd == DIR 且 shell 空闲 → 放行
+mk_plist "$DYN/pane-list.json" "w8Z:pY"
+mk_get w8Z:pY "$PDIR"; mk_proc w8Z:pY shell "$PDIR"
+dbefore="$(grep -c '^dispatch:' "$DISP")"
+out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
+    bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c '^dispatch:' "$DISP")" == "$((dbefore+1))" ]] \
+   && grep -q 'pane process-info' "$STUBLOG"; } \
+  && ok "--pane cwd 相符+空闲 shell → 放行（rc=${rc}）" || { bad "--pane 正常路径被拒（rc=${rc}）"; printf '%s\n' "$out"; }
+grep "^dispatch:" "$DISP" | tail -1 | grep -q 'pane=w8Z:pY' \
+  && ok "dispatch 行记录复用 pane" || bad "dispatch 未记 pane"
+# 44b 负例：pane cwd 不符 → 拒派，零副作用，报错给修复步骤
+mk_get w8Z:pY "/somewhere/else"; mk_proc w8Z:pY shell "/somewhere/else"
+dbefore="$(grep -c '^dispatch:' "$DISP")"; : > "$STUBLOG"
+out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
+    bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'cwd' && printf '%s' "$out" | grep -q 'cd ' \
+   && [[ "$(grep -c '^dispatch:' "$DISP")" == "$dbefore" ]] \
+   && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "--pane cwd 不符 → 拒派+给 cd 修复步骤+零副作用（rc=${rc}）" || { bad "cwd 不符竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
+# 44c 负例：pane 查询不到 → 拒派
+rm -f "$DYN/get-$(wsan w8Z:pY).json"
+dbefore="$(grep -c '^dispatch:' "$DISP")"
+out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
+    bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '无法确认\|不存在' \
+   && [[ "$(grep -c '^dispatch:' "$DISP")" == "$dbefore" ]]; } \
+  && ok "--pane 不可查询 → 拒派（rc=${rc}）" || { bad "pane 不存在竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
+# 44d 负例：pane 前台有进程在跑（非空闲 shell）→ 拒派
+mk_get w8Z:pY "$PDIR"; mk_proc w8Z:pY busy "$PDIR"
+out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
+    bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '占用\|非空闲\|进程'; } \
+  && ok "--pane 前台非空闲 → 拒派（rc=${rc}）" || { bad "忙 pane 竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
+# 44e 负例：pane 里跑着 agent TUI → 拒派（不往 TUI 发命令）
+mk_get w8Z:pY "$PDIR" devin; mk_proc w8Z:pY busy "$PDIR"
+out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
+    bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'agent'; } \
+  && ok "--pane 跑着 agent → 拒派（rc=${rc}）" || { bad "agent pane 竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
+
+echo "== 45. 主控返修：换主控不复用错误目标 / cwd预检不造资源 / 未确认不算成功 =="
+# 场景（返修票 user_切换主控不能复用错误目标）：值守在跑但指向旧主控 → 拒绝给步骤，非0零副作用
+ensreset
+mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w93:p1,agent"
+mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP" "wold:pA"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'wold:pA' && printf '%s' "$out" | grep -q 'wtest:ctl' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
+  && ok "值守指向旧主控 → 拒绝不复用+给修复步骤（rc=${rc}）" \
+  || { bad "指向旧主控竟静默复用（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 45a2 反转对照：同一 pane 值守指向本次要求的目标 → 正常复用
+mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用' && ! grep -q 'tab create' "$STUBLOG"; } \
+  && ok "值守目标一致 → 正常复用（rc=${rc}）" || { bad "目标一致竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 45b 负例：候选 pane 查询失败 → 不得忽略失败新开实例
+ensreset
+mk_plist "$DYN/pane-list.json" "w8Z:pQ" "w93:p1,agent"
+printf '{"error":{"code":"io_error","message":"mocked proc failure"}}\n' > "$DYN/proc-$(wsan w8Z:pQ).err"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
+  && ok "候选查询失败 → 拒绝不新开（rc=${rc}）" || { bad "查询失败竟新开实例（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 45c 负例：启动命令投递了但进程始终不可确认 → 非0、不登记、不算成功
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl \
+    HERDR_DYN_DIR="$DYN" QWB_STUB_NOPROC=1 bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && [[ ! -f "$ENSP/qwbuddy/.watch" ]] && grep -q 'pane run' "$STUBLOG"; } \
+  && ok "投递后不可确认 → 非0且不登记（rc=${rc}）" || { bad "未确认竟报成功（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 45d 负例：pane run 投递失败 → 非0
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl \
+    HERDR_DYN_DIR="$DYN" HERDR_FAIL=run bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && [[ ! -f "$ENSP/qwbuddy/.watch" ]]; } \
+  && ok "投递失败 → 非0（rc=${rc}）" || { bad "投递失败竟成功（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 45e 反转：cwd 预检必须早于 worktree 创建——默认派发目标=.worktrees/<id>，pane cwd=项目根 → 拒绝且不建目录/分支/改动任务书
+SGP="$SG3/tasks/2099-01-62-sgpwt.md"
+cat > "$SGP" <<'EOF'
+# sgpwt
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given pane cwd 与目标一致
+When  派发
+Then  放行
+### user_失败
+Given pane cwd 与目标 worktree 不符
+When  派发
+Then  在创建任何资源之前拒绝
+EOF
+rm -rf "$SG3/qwbuddy/.controller.lock"
+SG3P="$(cd "$SG3" && pwd -P)"
+mk_plist "$DYN/pane-list.json" "w8Z:pY"; mk_get w8Z:pY "$SG3P"; mk_proc w8Z:pY shell "$SG3P"
+sha_before="$(shasum "$SGP" | cut -d' ' -f1)"; : > "$STUBLOG"
+out="$(sgrun --task sgpwt --worker codex --pane w8Z:pY 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'cwd' \
+   && [[ ! -e "$SG3/.worktrees/sgpwt" ]] \
+   && ! git -C "$SG3" show-ref --verify --quiet "refs/heads/sgpwt" \
+   && ! grep -q 'tab create\|agent start' "$STUBLOG" \
+   && [[ "$(shasum "$SGP" | cut -d' ' -f1)" == "$sha_before" ]] \
+   && ! grep -q '^dispatch:' "$SGP"; } \
+  && ok "--pane cwd 不符（默认worktree未建）→ 拒绝且零资源零改动（rc=${rc}）" \
+  || { bad "cwd 预检发生在副作用之后或放行（rc=${rc}）"; printf '%s\n' "$out"; }
+# 45f 反转：预检也必须早于显式修订写——场景已改+坏 pane → 拒绝且不留 scenarios-revised 记录
+sed -i '' 's/Then  复用隔离副本/Then  再改措辞/' "$SGI"
+fp_before="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGI" | head -1)"
+rev_before="$(grep -c 'scenarios-revised:' "$SGI")"
+out="$(sgrun --task sgidem --worker codex --pane w8Z:pY --revise-scenarios="测试：预检应先于修订写" 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && [[ "$(grep -c 'scenarios-revised:' "$SGI")" == "$rev_before" ]] \
+   && [[ "$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGI" | head -1)" == "$fp_before" ]]; } \
+  && ok "--pane 预检失败 → 修订写也被拦下（rc=${rc}）" || { bad "预检晚于修订写（rc=${rc}）"; printf '%s\n' "$out"; }
+
+echo "== 46. 第二轮返修：workspace 边界 / 混合不确定态 / 中断清锁 =="
+# 46a 负例：一个活实例 + 一个查询失败候选 → ensure 必须先判未知拒绝，不能抢复用成功
+ensreset
+mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w8Z:pQ"
+mk_get w8Z:pZ "$ENSP" "" wtestW; mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
+printf '{"error":{"code":"io_error","message":"mocked proc failure"}}\n' > "$DYN/proc-$(wsan w8Z:pQ).err"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '无法排除\|未知' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
+   && ! printf '%s' "$out" | grep -q '复用已'; } \
+  && ok "活实例+查询失败 → ensure 拒绝（不抢先复用，rc=${rc}）" \
+  || { bad "混合不确定态竟报成功（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 46a2 同一布局下 status 必须明确未知，不保证单实例
+out="$(statrun)"
+{ printf '%s' "$out" | grep -q '值守：未知' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
+  && ok "活实例+查询失败 → status 明确未知不保证单实例" || { bad "混合态 status 误报（输出见上）"; printf '%s\n' "$out"; }
+# 46b 正例反转：活实例目标一致且无查询失败 → 仍正常复用
+rm -f "$DYN/proc-$(wsan w8Z:pQ).err"; mk_proc w8Z:pQ shell "$ENSP"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用'; } \
+  && ok "无查询失败 → 正常复用（rc=${rc}）" || { bad "无失败竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 46c 真实 SIGTERM：持锁期间被 TERM → 锁清、退出码非0、下一次 ensure 可用
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl \
+    HERDR_DYN_DIR="$DYN" QWB_STUB_SLOW_LIST=1 exec bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl ) &
+termpid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -d "$ENSP/qwbuddy/.watch.lock" ]] && break; sleep 0.2; done
+[[ -d "$ENSP/qwbuddy/.watch.lock" ]] || bad "慢 list 期间未见 .watch.lock（信号时序没锁住）"
+kill -TERM "$termpid" 2>/dev/null; wait "$termpid"; rc=$?
+{ [[ "$rc" -ne 0 ]] && [[ ! -d "$ENSP/qwbuddy/.watch.lock" ]]; } \
+  && ok "真实 SIGTERM → 锁已清且非0（rc=${rc}）" || { bad "TERM 后锁残留（rc=${rc}）"; ls -la "$ENSP/qwbuddy/"; }
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ ! -d "$ENSP/qwbuddy/.watch.lock" ]]; } \
+  && ok "TERM 后下一次 ensure 正常可用（rc=${rc}）" || { bad "TERM 后续跑失败（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 46d 负例：目标主控 pane 不存在 → 获锁前拒绝，零副作用（无锁/无登记/无 herdr 动作）
+ensreset
+rm -f "$DYN/get-$(wsan wtest:ctl).json"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '不存在' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
+   && ! grep -q 'pane list' "$STUBLOG" \
+   && [[ ! -f "$ENSP/qwbuddy/.watch" ]] && [[ ! -d "$ENSP/qwbuddy/.watch.lock" ]]; } \
+  && ok "目标 pane 不存在 → 拒绝零副作用（rc=${rc}）" \
+  || { bad "目标 pane 不存在竟执行（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 46e 负例：目标主控 pane 在别的 workspace → 拒绝，零副作用
+ensreset
+mk_get wtest:ctl "$ENSP" "" w8Z   # 目标 pane 属 w8Z，调用者 ws=wtestW
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z' \
+   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
+   && [[ ! -f "$ENSP/qwbuddy/.watch" ]]; } \
+  && ok "目标 pane 异 workspace → 拒绝零副作用（rc=${rc}）" \
+  || { bad "目标 pane 异 workspace 竟执行（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+# 46f 对照：目标 pane 存在且同 workspace → 正常建
+ensreset
+mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create' "$STUBLOG" && grep -q 'pane=' "$ENSP/qwbuddy/.watch"; } \
+  && ok "目标 pane 同 workspace → 正常建（rc=${rc}）" || { bad "同 ws 目标竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

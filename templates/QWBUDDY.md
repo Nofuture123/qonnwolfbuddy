@@ -14,6 +14,7 @@
 4. 读每个未结项末尾的状态行，搞清楚活到哪了。
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
 6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
+7. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
 
 如果账本为空：报「账本无任务」，等使用者提需求。
 
@@ -116,14 +117,14 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根） |
-| `qwb-wake.sh [--dry-run|--once]` | 值守：查未结项 → 叫醒你的 pane |
+| `qwb-wake.sh [--dry-run|--once|--ensure|--check]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守在跑（开局必跑），`--check` 只报值守健康 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
 | `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §7） |
 | `qwb-test.sh fast|full` | 快门/全门执行器：跑 config 声明的 QWB_GATE_*（见 §6） |
 | `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法、质量门已声明、已派发任务书场景冻结 |
 
-所有脚本支持 `--help`。值守脚本由使用者（或你）启动；它叫不醒**已退出**的你。
+所有脚本支持 `--help`。值守脚本由开局 `--ensure` 幂等确保（无需使用者手工启动）；它叫不醒**已退出**的你，你活着时它可以被 `--ensure` 重启。
 
 ## 10. 硬规矩（不可违反）
 
@@ -137,5 +138,6 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ## 11. MVP 边界
 
 - ✅ 保证：**存活且空闲的你**能被 qwb-wake.sh 叫醒，继续处理账本。
-- ❌ 不保证：你进程退出 / 整机重启后自动恢复。这种情况使用者重启你，你按 §1 开局点名、从账本续接。
-- ❌ 不保证：值守脚本自己长期存活。
+- ✅ 保证：你活着时，开局 `--ensure` 保证恰好一个本项目值守在跑（失活可重启）。
+- ❌ 不保证：你进程退出 / 整机重启后自动恢复（值守也随 shell 死）。这种情况使用者重启你，你按 §1 开局点名、从账本续接。
+- ❌ 不保证：值守进程离开你的存活期后仍被看护——没有守护进程。
