@@ -1,0 +1,2 @@
+# 真录 2026-09-15，herdr 0.8.2：herdr pane run w93:p7 "echo qwb-fixture-probe"
+# 契约：成功时 stdout 为空、退出码 0（本文件剔注释后为空即为真实输出）

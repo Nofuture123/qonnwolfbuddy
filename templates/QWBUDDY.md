@@ -54,7 +54,7 @@ needs-decision: <需要判断的选项>
 ## 4. 派发流程
 
 ```
-写任务书（写好即 state: running，见 §3） 
+写任务书（模板 qwbuddy/TASK.md；写好即 state: running，见 §3；必须有「验收场景」块，见 §6） 
   → 开 worktree（herdr worktree create，或让 qwb-run.sh --create-worktree 代劳）
   → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree]
        （它负责：查主控锁、开窗口、起工人、发提示词、记账：窗口 + 派发时间 + state: running；
@@ -71,7 +71,13 @@ needs-decision: <需要判断的选项>
 - 通过 → 把 `state:` 改为 `verified`，走 worktree 收尾；不通过 → 返工或记错题（`tasks/lessons/`）。
 - **你可自干小活**（改动一行这类、无独立验收价值的），同样留一行「怎么验证的」。
 
-## 6. worktree 四步规范
+## 6. 测试纪律——先场景后代码
+
+- **先场景后代码**：派发前任务书**必须**有「验收场景」块（模板：`qwbuddy/TASK.md`）；场景用 Given/When/Then；**至少一条失败路径场景**——只写 happy path 的任务书不完整。
+- **场景冻结**：场景定稿后才许可提交实现；实现完成后**不得**回头改写场景以迎合实现——那是自证。
+- **测试分级**：项目要在 `qwbuddy/config.sh` 声明**快门** `QWB_GATE_FAST`（快、无外部依赖，改一行跑它）与**全门** `QWB_GATE_FULL`（完整）；派活/自检跑快门，**合并前跑全门**。执行：`bash qwbuddy/bin/qwb-test.sh fast|full`。
+
+## 7. worktree 四步规范
 
 - **开**：只在派工时开；`<项目>/.worktrees/<任务id>/`，一任务一个；开之前先清点——有已完成任务的残留就先收掉。
 - **收·成功**：验收通过 → 合并/推送 → `git worktree remove` + `git branch -d` → 记账。
@@ -80,7 +86,7 @@ needs-decision: <需要判断的选项>
 - 补充：谁派生谁收尾；`git worktree prune` 清元数据残留。
 - 实现：`qwb-worktree.sh list` 清点（标出残留）、`qwb-worktree.sh finish <id> --merged|--archive|--keep[=原因]` 收尾并往任务书追加 `worktree:` 记账行；`qwb-run.sh --create-worktree` 开新 worktree 前会自动清点，有残留打警告但不阻塞。
 
-## 7. 身份切换
+## 8. 身份切换
 
 - 角色文件在 `qwbuddy/roles/`：`主控.md` / `审核者.md` / `执行者.md` / `咨询师.md`。
 - 使用者说「切到<角色>」→ 读该角色文件 → **明确声明当前身份**，产出物标注角色。
@@ -88,7 +94,7 @@ needs-decision: <需要判断的选项>
 - **同一会话换角色 ≠ 独立审核**——审核必须换模型家族（另一个 AI 产品/模型来审）。
 - 不单独记切换流水。
 
-## 8. 运行时脚本（`qwbuddy/bin/`）
+## 9. 运行时脚本（`qwbuddy/bin/`）
 
 | 脚本 | 干什么 |
 |---|---|
@@ -97,11 +103,13 @@ needs-decision: <需要判断的选项>
 | `qwb-wake.sh [--dry-run|--once]` | 值守：查未结项 → 叫醒你的 pane |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
-| `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §6） |
+| `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §7） |
+| `qwb-test.sh fast|full` | 快门/全门执行器：跑 config 声明的 QWB_GATE_*（见 §6） |
+| `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法 |
 
 所有脚本支持 `--help`。值守脚本由使用者（或你）启动；它叫不醒**已退出**的你。
 
-## 9. 硬规矩（不可违反）
+## 10. 硬规矩（不可违反）
 
 1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是 `herdr` 叫醒主控窗口。
 2. 无队列、无 ACK 协议、无数据库、无守护进程、无 cron——账本承担这些职责。
@@ -110,7 +118,7 @@ needs-decision: <需要判断的选项>
 5. 工人一律 Herdr 窗口**交互式**运行，**禁 headless**（`-p` / `--print` / `--exec` / `codex exec` 等）。
 6. 审核必须换模型家族。
 
-## 10. MVP 边界
+## 11. MVP 边界
 
 - ✅ 保证：**存活且空闲的你**能被 qwb-wake.sh 叫醒，继续处理账本。
 - ❌ 不保证：你进程退出 / 整机重启后自动恢复。这种情况使用者重启你，你按 §1 开局点名、从账本续接。

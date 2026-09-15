@@ -111,13 +111,19 @@ check_round() {
   return 0
 }
 
-# 毫秒级计时：macOS 的 date 不支持 %N，用 perl Time::HiRes（硬约束允许的基础工具，无新依赖）
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time()*1000'; }
+# 毫秒级计时：macOS 的 date 不支持 %N，用 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
+# 测试注入点：QWB_NOW_MS_CMD 非空时执行它取毫秒值，否则用 perl 实现——默认行为不变。
+now_ms() {
+  if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
+  perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+}
 
-# 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转
+# 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转。
+# 测试注入点：QWB_SLEEP_CMD 非空时把毫秒传给它执行，不真睡——默认行为不变。
 sleep_ms() {
   local ms="$1"
   (( ms > 0 )) || ms=1
+  if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
   sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
 }
 

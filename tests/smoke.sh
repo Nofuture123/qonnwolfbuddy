@@ -65,16 +65,28 @@ printf '%s' "$out" | grep -q '2099-01-01-fake' && bad "state=verified 仍列为�
 
 echo "== 7. stub herdr：qwb-wake.sh --once 有未结项退出 0（回归 Bug 2）=="
 STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
+FIXDIR="$ROOT/tests/fixtures/herdr"
 mkdir -p "$STUB"
+# 契约 stub：响应全部来自 tests/fixtures/herdr/ 真录样本（剔 # 注释行），不再硬编码 JSON。
+# 可选行为：HERDR_FAIL=run|wait 让对应调用按真实错误形状失败；
+#          HERDR_WAIT_BUMP_MS + QWB_FAKE_NOW_FILE 让 agent wait 把假时钟往前推（模拟等待耗时）。
 cat > "$STUB/herdr" <<EOF
 #!/usr/bin/env bash
 echo "herdr \$*" >> "$STUBLOG"
+fix() { sed '/^#/d' "\${HERDR_FIXDIR:-$FIXDIR}/\$1"; }
 case "\${1:-} \${2:-}" in
-  "pane run")   [[ "\${HERDR_FAIL:-}" == *run*  ]] && exit 1; printf '%s\n' '{"result":{"ok":true}}' ;;
-  "agent wait") if [[ "\${HERDR_WAIT_SLEEP:-0}" -gt 0 ]]; then sleep "\$HERDR_WAIT_SLEEP"; exit 1; fi
-                [[ "\${HERDR_FAIL:-}" == *wait* ]] && exit 1; printf '%s\n' '{"result":{"ok":true}}' ;;
-  "tab create") printf '%s\n' '{"result":{"root_pane":{"pane_id":"wtest:p9"}}}' ;;
-  *) printf '%s\n' '{"result":{"ok":true}}' ;;
+  "pane run")   if [[ "\${HERDR_FAIL:-}" == *run* ]]; then fix pane-run-error.json >&2; exit 1; fi
+                fix pane-run.json ;;
+  "agent wait") if [[ "\${HERDR_FAIL:-}" == *wait* ]]; then fix agent-wait-timeout.json >&2; exit 1; fi
+                if [[ -n "\${QWB_FAKE_NOW_FILE:-}" && "\${HERDR_WAIT_BUMP_MS:-0}" -gt 0 ]]; then
+                  echo \$(( \$(cat "\$QWB_FAKE_NOW_FILE") + \${HERDR_WAIT_BUMP_MS} )) > "\$QWB_FAKE_NOW_FILE"
+                fi
+                fix agent-wait.json ;;
+  "tab create") fix tab-create.json ;;
+  "agent start") fix agent-start.json ;;
+  "agent prompt") fix agent-prompt.json ;;
+  "agent list") fix agent-list.json ;;
+  *) fix agent-wait.json ;;
 esac
 exit 0
 EOF
@@ -141,37 +153,96 @@ printf '# F4\nstate: running\n' > "$F4F"
   && ok "投递失败时 --once 退出码 0" || bad "投递失败时 --once 非 0"
 grep -q '^wake:' "$F4F" && bad "投递失败仍写了 wake 行" || ok "投递失败未写 wake 行"
 
-echo "== 12. F2 回归：dispatch pane 失效 → 按 interval 退化等待，无忙循环 =="
-: > "$STUBLOG"
-( cd "$TMP" && PATH="$STUB:$PATH" HERDR_FAIL=wait exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
-WPID=$!
-sleep 4
-kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
-n="$(grep -c 'agent wait' "$STUBLOG" || true)"
-[[ "$n" -ge 2 && "$n" -le 8 ]] \
-  && ok "4 秒内 ${n} 次 agent wait（≈1 秒/轮，无忙循环）" || bad "4 秒内 ${n} 次 agent wait（忙循环或未等待）"
+# —— 假时钟装置（QWB_NOW_MS_CMD / QWB_SLEEP_CMD 注入）：预算断言不再真 sleep ——
+# now.sh 每次调用 +STEP；sleep.sh 记参数不真睡，满 N 次杀掉 wake.sh 截断循环；看门狗防死循环。
+FKN="$TMP/fake-now"; FKS="$TMP/fake-sleep.log"
+mk_fakeclock() { # $1=STEP $2=截断次数
+  echo 0 > "$FKN"; : > "$FKS"
+  cat > "$TMP/now.sh" <<EOF
+#!/usr/bin/env bash
+cur="\$(( \$(cat "$FKN") + $1 ))"; echo "\$cur" > "$FKN"; echo "\$cur"
+EOF
+  cat > "$TMP/sleep.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$1" >> "$FKS"
+[[ "\$(wc -l < "$FKS" | tr -d ' ')" -ge $2 ]] && kill "\$PPID" 2>/dev/null
+exit 0
+EOF
+  chmod +x "$TMP/now.sh" "$TMP/sleep.sh"
+}
+run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外环境变量
+  ( cd "$TMP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$TMP/now.sh" QWB_SLEEP_CMD="$TMP/sleep.sh" \
+      QWB_FAKE_NOW_FILE="$FKN" HERDR_FAIL="${HERDR_FAIL:-}" HERDR_WAIT_BUMP_MS="${HERDR_WAIT_BUMP_MS:-0}" \
+      exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
+  WPID=$!
+  ( sleep 5; kill "$WPID" 2>/dev/null ) & WD=$!
+  wait "$WPID" 2>/dev/null || true
+  kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
+}
+# 等待预算需要一个带 dispatch: pane 的未结项
+FCF="$TMP/tasks/2099-01-20-fakeclock.md"
+printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
+all_eq() { # 全部行 == $1 且非空
+  local want="$1" l
+  [[ -s "$FKS" ]] || return 1
+  while IFS= read -r l; do [[ "$l" == "$want" ]] || return 1; done < "$FKS"; return 0
+}
 
-echo "== 12b. G2：agent wait 超时路径不再重复 sleep（一轮 ≈1×interval）=="
+echo "== 12. F2 回归（假时钟）：agent wait 失败 → 每轮恰 1 次 wait + 补睡满 1×interval，无忙循环 =="
+mk_fakeclock 250 3
 : > "$STUBLOG"
-( cd "$TMP" && PATH="$STUB:$PATH" HERDR_WAIT_SLEEP=1 exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
-WPID=$!
-sleep 4
-kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
-n="$(grep -c 'agent wait' "$STUBLOG" || true)"
-[[ "$n" -ge 3 && "$n" -le 6 ]] \
-  && ok "4 秒内 ${n} 次 agent wait（超时路径 ≈1 秒/轮 = 1×interval；旧实现会 sleep 两轮仅 ~2 次）" \
-  || bad "4 秒内 ${n} 次 agent wait（超时路径仍重复 sleep 或退化成忙循环）"
+HERDR_FAIL=wait run_wake_fakeclock
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+[[ "$nsl" == "3" && "$nwt" == "3" ]] \
+  && ok "3 轮 = 3 次 agent wait + 3 次补睡（每轮恰一次）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
+all_eq 750 && ok "每轮补睡 750ms（interval 1000 − wait 已耗 250 = 恰 1×interval）" \
+  || { bad "补睡值不对（应全 750）:"; cat "$FKS"; }
 
-echo "== 12c. H2 回归：agent wait 立即成功（工人 idle）也计入等待预算，无忙循环 =="
+echo "== 12b. G2 回归（假时钟）：agent wait 耗时计入预算，超时路径不重复 sleep =="
+mk_fakeclock 50 3
 : > "$STUBLOG"
-( cd "$TMP" && PATH="$STUB:$PATH" exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
+HERDR_WAIT_BUMP_MS=600 run_wake_fakeclock   # wait 烧掉 600ms → dt=650 → 应补睡 350，旧实现会再睡 1000
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+[[ "$nsl" == "3" && "$nwt" == "3" ]] \
+  && ok "3 轮 = 3 次 wait + 3 次补睡" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
+all_eq 350 && ok "wait 耗 650ms 后只补睡 350ms（已耗计入预算；旧实现会睡满 1000）" \
+  || { bad "补睡值不对（应全 350）:"; cat "$FKS"; }
+grep -qx '1000' "$FKS" && bad "出现整睡 1000——超时路径仍重复 sleep（G2 未修）" \
+  || ok "无整睡 1000：超时路径未重复 sleep"
+
+echo "== 12c. H2 回归（假时钟）：agent wait 立即成功也计入预算，无忙循环 =="
+mk_fakeclock 1 3                          # 每次读钟仅 +1ms → wait 视为瞬时 → 应补睡 999
+: > "$STUBLOG"
+run_wake_fakeclock
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+[[ "$nsl" == "3" && "$nwt" == "3" ]] \
+  && ok "3 轮 = 3 次 wait + 3 次补睡（不真睡也不忙循环）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
+all_eq 999 && ok "瞬时 wait 每轮补睡 999ms ≈1×interval（修复前实测 4.9 秒 91 轮）" \
+  || { bad "补睡值不对（应全 999）:"; cat "$FKS"; }
+
+echo "== 12d. 无 dispatch pane 路径：整睡一个 interval =="
+NP="$TMP/nopane"; mkdir -p "$NP/tasks" "$NP/qwbuddy"
+printf '# np\nstate: running\n' > "$NP/tasks/2099-01-21-np.md"
+cp "$TMP/qwbuddy/config.sh" "$NP/qwbuddy/config.sh"
+mk_fakeclock 100 2
+( cd "$NP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$TMP/now.sh" QWB_SLEEP_CMD="$TMP/sleep.sh" \
+    exec bash "$TMP/qwbuddy/bin/qwb-wake.sh" --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
 WPID=$!
-sleep 4
+( sleep 5; kill "$WPID" 2>/dev/null ) & WD=$!
+wait "$WPID" 2>/dev/null || true
+kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
+all_eq 1000 && ok "无可用 pane 时每轮整睡 1000ms（=1×interval 退化等待）" \
+  || { bad "整睡值不对（应全 1000）:"; cat "$FKS"; }
+
+echo "== 12e. 真时钟轻量冒烟：真跑一轮 =="
+: > "$STUBLOG"
+( cd "$TMP" && PATH="$STUB:$PATH" exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 600 ) >/dev/null 2>&1 &
+WPID=$!
+sleep 1.3
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
 n="$(grep -c 'agent wait' "$STUBLOG" || true)"
-[[ "$n" -ge 2 && "$n" -le 6 ]] \
-  && ok "4 秒内 ${n} 次 agent wait（idle 立即成功 ≈1 秒/轮；修复前实测 4.9 秒 91 轮）" \
-  || bad "4 秒内 ${n} 次 agent wait（idle 立即成功仍忙循环或卡住）"
+[[ "$n" -ge 1 && "$n" -le 4 ]] \
+  && ok "1.3 秒内 ${n} 次 agent wait（真时钟真跑，节奏正常）" || bad "1.3 秒内 ${n} 次 agent wait（异常）"
 
 echo "== 13. F1 回归：主控锁 =="
 LOCKD="$TMP/qwbuddy/.controller.lock"
@@ -444,6 +515,98 @@ grep -qE 'worktree remove|branch -D| tag ' "$GITLOG" \
   && bad "身份未知仍执行了打标/删除" || ok "未打标未删除"
 git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTK" >/dev/null \
   && bad "分支身份未知仍打了 tag" || ok "未打 tag"
+
+echo "== 23. A：qwb-test.sh 快门/全门 =="
+assert_file "$ROOT/qwb.config.sh"
+bash "$ROOT/bin/qwb-test.sh" --help >/dev/null && ok "qwb-test.sh --help 退出 0" || bad "--help 非 0"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$ROOT" >/dev/null 2>&1 \
+  && ok "母本仓 fast 门退出 0" || bad "母本仓 fast 门非 0"
+# 门命令覆盖：往临时项目配置追加可用门
+printf 'QWB_GATE_FAST="echo fastgate-ok"\nQWB_GATE_FULL="exit 7"\n' >> "$TMP/qwbuddy/config.sh"
+out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$TMP" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q 'fastgate-ok' \
+  && ok "fast 门原样转发输出且退出 0" || bad "fast 门输出/退出码不对（rc=${rc}）"
+out="$(bash "$ROOT/bin/qwb-test.sh" full --project "$TMP" 2>&1)"; rc=$?
+[[ "$rc" -eq 7 ]] && ok "full 门失败退出码透传（7）" || bad "退出码未透传（rc=${rc}，应 7）"
+printf '%s' "$out" | grep -qF '门失败（full）：exit 7 退出码=7' \
+  && ok "门失败行格式正确且到 stderr/输出可见" || bad "缺「门失败（full）：…退出码=7」行"
+# qwb.config.sh 回退（无 qwbuddy/ 的母本仓形态）
+FB="$TMP/fallback"; mkdir -p "$FB"
+printf 'QWB_GATE_FAST="echo fb-fast-ok"\n' > "$FB/qwb.config.sh"
+out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$FB" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q 'fb-fast-ok' \
+  && ok "无 qwbuddy/ 时回退 qwb.config.sh" || bad "qwb.config.sh 回退失效（rc=${rc}）"
+# 优先级：qwbuddy/config.sh 先于 qwb.config.sh
+mkdir -p "$FB/qwbuddy"; printf 'QWB_GATE_FAST="echo qwbuddy-wins"\n' > "$FB/qwbuddy/config.sh"
+out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$FB" 2>&1)"
+printf '%s' "$out" | grep -q 'qwbuddy-wins' \
+  && ok "qwbuddy/config.sh 优先于 qwb.config.sh" || bad "配置优先级不对"
+# 未声明门：报错并给出正确写法
+out="$(bash "$ROOT/bin/qwb-test.sh" full --project "$FB" 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'QWB_GATE_FULL' && printf '%s' "$out" | grep -q 'QWB_GATE_FULL="bash tests/smoke.sh'; } \
+  && ok "未声明门时报错并给出声明写法" || bad "未声明门处理不对（rc=${rc}）"
+# 无配置项目：报错
+MT="$TMP/empty-proj"; mkdir -p "$MT"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$MT" >/dev/null 2>&1 \
+  && bad "无配置项目 fast 竟成功" || ok "无配置项目报错非 0"
+
+echo "== 24. B：先场景后代码（模板 + 规范）=="
+assert_file "$ROOT/templates/TASK.md"
+assert_file "$TMP/qwbuddy/TASK.md"
+for kw in '验收场景' 'Given' 'When' 'Then' '失败路径' '验收门'; do
+  grep -q "$kw" "$ROOT/templates/TASK.md" && ok "TASK.md 含「${kw}」" || bad "TASK.md 缺「${kw}」"
+done
+grep -q '先场景后代码' "$TMP/qwbuddy/QWBUDDY.md" && ok "QWBUDDY.md 有先场景后代码规范" || bad "QWBUDDY.md 缺规范节"
+grep -q '场景冻结' "$TMP/qwbuddy/QWBUDDY.md" && ok "QWBUDDY.md 有场景冻结条款" || bad "缺场景冻结"
+grep -q 'QWB_GATE_FAST' "$TMP/qwbuddy/config.sh" && grep -q 'QWB_GATE_FULL' "$TMP/qwbuddy/config.sh" \
+  && ok "安装的 config.sh 含快门/全门声明" || bad "config.sh 缺门声明"
+grep -q '自证' "$TMP/qwbuddy/roles/执行者.md" && grep -q '契约校验' "$TMP/qwbuddy/roles/执行者.md" \
+  && ok "执行者.md 新增两条禁止事项" || bad "执行者.md 缺新禁止事项"
+
+echo "== 25. C：qwb-lint.sh 自身 lint =="
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
+  && ok "母本仓 lint 全过（LINT PASS）" || { bad "母本仓 lint FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
+printf '%s' "$lintout" | grep -c '^PASS' | grep -qE '^[4-9]' \
+  && ok "lint 逐项 PASS 输出可见" || bad "lint 无逐项 PASS 输出"
+HL="$TMP/healthy"; mkdir -p "$HL"; bash "$ROOT/bin/qwb-init.sh" "$HL" >/dev/null
+bash "$ROOT/bin/qwb-lint.sh" --project "$HL" >/dev/null 2>&1 \
+  && ok "健康安装项目 lint 退出 0" || bad "健康项目 lint 非 0"
+# 坏项目：四条检查各踩一条
+BD="$TMP/badproj"; mkdir -p "$BD/qwbuddy/bin" "$BD/tasks"
+printf '# doc\nqwb-ghost.sh 必须在\n' > "$BD/qwbuddy/QWBUDDY.md"
+printf '# t\nstate: pending\n' > "$BD/tasks/2099-01-30-bad.md"
+printf 'QWB_DEAD_KEY=1\n' > "$BD/qwbuddy/config.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo $X你好' > "$BD/qwbuddy/bin/qwb-foo.sh"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$BD" 2>&1)"; rc=$?
+[[ "$rc" -eq 1 ]] && ok "坏项目 lint 退出 1" || bad "坏项目 lint 未失败（rc=${rc}）"
+printf '%s' "$lintout" | grep -q 'qwb-ghost.sh' && ok "检出文档承诺缺失脚本" || bad "未检出缺失脚本"
+printf '%s' "$lintout" | grep -q 'pending' && ok "检出非法 state" || bad "未检出非法 state"
+printf '%s' "$lintout" | grep -q 'QWB_DEAD_KEY' && ok "检出血配置死键" || bad "未检出死键"
+printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写法" || bad "未检出变量写法"
+
+echo "== 26. D：herdr fixture 契约基线 =="
+for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error; do
+  assert_file "$FIXDIR/$fx.json"
+done
+tc="$(sed '/^#/d' "$FIXDIR/tab-create.json")"
+{ printf '%s' "$tc" | grep -q '"result"' && printf '%s' "$tc" | grep -q '"root_pane"' && printf '%s' "$tc" | grep -q '"pane_id"'; } \
+  && ok "tab-create fixture 含 .result.root_pane.pane_id 契约字段" || bad "tab-create 契约字段缺失"
+for fx in agent-start agent-prompt agent-wait agent-list; do
+  sed '/^#/d' "$FIXDIR/$fx.json" | grep -q '"result"' \
+    && ok "$fx fixture 含 .result 字段" || bad "$fx fixture 缺 .result"
+done
+sed '/^#/d' "$FIXDIR/agent-wait-timeout.json" | grep -q '"error"' \
+  && ok "agent-wait-timeout fixture 为真实 error 形状" || bad "timeout fixture 非 error 形状"
+[[ -z "$(sed '/^#/d' "$FIXDIR/pane-run.json")" ]] \
+  && ok "pane-run fixture 契约=空输出（与真录一致）" || bad "pane-run fixture 非空，与真录契约不符"
+# 行为证明：stub 确实读 fixture——换掉 fixture 内容，派发结果跟着变
+FIXDIR2="$TMP/fix2"; mkdir -p "$FIXDIR2"; cp "$FIXDIR"/*.json "$FIXDIR2/"
+sed 's/"pane_id":"[^"]*"/"pane_id":"contract:p99"/' "$FIXDIR/tab-create.json" > "$FIXDIR2/tab-create.json"
+DISP2="$TMP/tasks/2099-01-22-disp2.md"; printf '# d2\nstate: blocked\n' > "$DISP2"
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_FIXDIR="$FIXDIR2" bash qwbuddy/bin/qwb-run.sh --task disp2 --worker codex --worktree "$TMP" ) >/dev/null 2>&1
+grep -qF 'pane=contract:p99' "$DISP2" \
+  && ok "改 fixture 后派发 pane 跟着变（stub 真读 fixture，非硬编码）" || bad "stub 未读 fixture（pane 未变）"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
