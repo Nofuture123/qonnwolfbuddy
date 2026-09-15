@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # qwb-worktree.sh —— worktree 清点与收尾：list 标出残留；finish 按 --merged/--archive/--keep 收尾并记账
+# 收尾前提：该 worktree 的写入者（工人/agent）已停止写入。删前复核与删除是两次 Git 调用，
+# 之间的窗口在 Git 层面无法封死——无法确认写入者已停时，先确认再收尾。
 set -euo pipefail
 
 usage() {
@@ -21,6 +23,10 @@ usage() {
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
   先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
   worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
+
+前提：收尾前确认该 worktree 的写入者已停止——删前复核与删除是两次 Git 调用，之间
+  仍有窗口（Git 层面无法封死）；窗口内的新提交会成为未引用对象（dangling），可用
+  git fsck --lost-found 找回。无法确认写入者已停时，先确认再收尾。
 
 选项:
   --project <根>    项目根（默认：当前目录）
@@ -138,7 +144,9 @@ check_unchanged() {
   local cur
   cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
   [[ "$cur" == "$HEAD_OID" ]] || {
-    echo "拒绝：收尾期间 ${WT_DIR} 的实际 HEAD 已变化（${HEAD_OID} → ${cur}），工作已被推进。" >&2
+    echo "拒绝：收尾期间 ${WT_DIR} 的实际 HEAD 已变化，工作已被推进。" >&2
+    echo "  原 OID：  ${HEAD_OID}" >&2
+    echo "  当前 OID：${cur}" >&2
     echo "${1:-未执行任何删除，}请重新收尾。" >&2
     exit 1
   }
@@ -147,7 +155,17 @@ check_unchanged() {
 branch_tip_unchanged() {
   local cur
   cur="$(git -C "$PROJECT_ROOT" rev-parse "refs/heads/$BRANCH" 2>/dev/null)" || return 1
-  [[ "$cur" == "$HEAD_OID" ]]
+  [[ "$cur" == "$HEAD_OID" ]] || {
+    echo "提示：分支 ${BRANCH} 顶端已推进（${HEAD_OID} → ${cur}），不删该分支" >&2
+    return 1
+  }
+}
+# 删前复核与删除仍是两次独立 Git 调用，之间窗口在 Git 层面无法封死（detached HEAD 上的
+# 新提交不更新任何 ref，任何检查都读不到）；但窗口内对象不消失，可 fsck 找回。
+race_note() {
+  echo "注意：删前复核与删除是两次 Git 调用，之间仍有窗口（Git 层面无法封死）；"
+  echo "      若收尾时该副本仍在被写入，窗口内的新提交会成为未引用对象（dangling），"
+  echo "      可用 git fsck --lost-found 找回。收尾前提是工人已停止写入。"
 }
 
 BL="$BRANCH"
@@ -173,13 +191,14 @@ case "$ACTION" in
     check_unchanged    # 核实通过≠此刻仍是同一提交：删 worktree 前复核
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
     if [[ "$DETACHED" -eq 1 ]]; then
-      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD，无分支可删）"
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD ${HEAD_OID}，无分支可删）"
     elif branch_tip_unchanged; then
       git -C "$PROJECT_ROOT" branch -d "$BRANCH"
-      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删，分支 ${BRANCH} 已删"
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}），分支 ${BRANCH} 已删"
     else
-      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
+      echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}）；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
     fi
+    race_note
     ;;
   archive)
     TAG="archive/$TASK_ID"
@@ -200,10 +219,11 @@ case "$ACTION" in
       echo "已归档：tag ${TAG} → detached HEAD ${HEAD_OID}；worktree 已删${kept}"
     elif branch_tip_unchanged; then
       git -C "$PROJECT_ROOT" branch -D "$BRANCH"
-      echo "已归档：tag ${TAG} → 分支 ${BRANCH} 顶端；worktree 已删，分支已删（-D）"
+      echo "已归档：tag ${TAG} → ${HEAD_OID}（分支 ${BRANCH} 顶端）；worktree 已删，分支已删（-D）"
     else
       echo "已归档：tag ${TAG} → ${HEAD_OID}；worktree 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
     fi
+    race_note
     ;;
   keep)
     echo "已保留：worktree ${WT_DIR} 原样不动，原因记入任务书${REASON:+：${REASON}}"
