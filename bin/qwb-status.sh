@@ -37,9 +37,9 @@ if [[ ${#files[@]} -eq 0 ]]; then
   echo "（无任务书）"
 else
   for f in "${files[@]}"; do
+    grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
     name="$(basename "$f")"
     st="$(sed -n 's/^state:[[:space:]]*//p' "$f" | head -1 | tr -d '[:space:]')"
-    st="${st:-无state字段}"
     case "$st" in
       running|blocked|needs-decision) mark="未结" ;;
       done|verified) mark="已结" ;;

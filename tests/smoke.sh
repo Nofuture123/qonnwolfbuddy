@@ -229,7 +229,7 @@ run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外
       QWB_FAKE_NOW_FILE="$FKN" HERDR_FAIL="${HERDR_FAIL:-}" HERDR_WAIT_BUMP_MS="${HERDR_WAIT_BUMP_MS:-0}" \
       exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
   WPID=$!
-  ( sleep 5; kill "$WPID" 2>/dev/null ) & WD=$!
+  ( sleep 15; kill "$WPID" 2>/dev/null ) & WD=$!
   wait "$WPID" 2>/dev/null || true
   kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
 }
@@ -346,6 +346,14 @@ out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
 printf '%s' "$out" | grep -q 'state=pending 非法' && ok "wake 对 state=pending 发 stderr 警告" || bad "wake 未警告非法 state"
 printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-06-illegal' \
   && bad "非法 state 被列为未结项" || ok "非法 state 不算未结项"
+# 对照：无 state: 字段行的说明文档（如 lessons.md）不算任务书，status 跳过不标 [非法]
+DOCF="$TMP/tasks/lessons.md"
+printf '# 错题本\n只是说明文档，无 state 字段\n' > "$DOCF"
+out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep '非法' | grep -q 'lessons\.md' \
+  && bad "无 state 字段文档被误标 [非法]" || ok "无 state 字段文档 status 不标 [非法]"
+printf '%s' "$out" | grep -q '非法' \
+  && ok "有非法值任务书仍报 [非法]" || bad "有非法值任务书未报 [非法]"
 
 echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
 GP="$TMP/gitp"
