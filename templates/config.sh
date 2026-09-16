@@ -1,6 +1,13 @@
 # QW buddy 配置——bash 可直接 source；这就是唯一来源，直接改这里
 QWB_WORKERS="codex pi claude"          # 工人表（空格分隔；启动方式可由下一项按工人覆盖）
 QWB_WORKER_LAUNCH=""                   # 可选：工人名=herdr|pane-run:<交互命令>；值可含空格，遇下一个工人名= 才结束
+# 启动参数：默认让所有 herdr-kind 工人以最高权限启动——工人在隔离 worktree 里干活、产物由主控验收，
+# 审批提示没人点只会卡死流程（见 docs/DECISIONS.md「为什么最高权限」）。格式与 QWB_WORKER_LAUNCH 同款：
+# 「工人名=参数串」，值可含空格、遇下一个工人名= 才结束；参数按空格切词追加到 herdr agent start 的 `--` 之后
+# （未列出/空值不加 `--`）。参数串同样禁 headless（-p/--print/--exec/exec）。
+# pane-run 工人的参数写在 QWB_WORKER_LAUNCH 的命令行里（如 cmd=pane-run:cmd --yolo --trust）——
+# 在这里再给它配值会被拒绝派发，一个工人的启动参数只能有一处。
+QWB_WORKER_ARGS="codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous omp=--auto-approve pi=--approve"
 QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
 QWB_WAKE_INTERVAL_MS=120000            # 值守每轮等待预算（毫秒）
 QWB_REWAKE_MS=1800000                  # 时间兜底重叫：距上次叫醒超过它仍未结项就再叫一次（0 = 关闭）

@@ -390,3 +390,37 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **既有安装副本要更新**：`qwb-lib.sh` 是新增文件，已装过的项目需重跑母本仓 `bin/qwb-init.sh`（幂等，按 `bin/qwb-*.sh` 全量复制）才补得上；没补上时 run/wake 直接**报错退出并指名重跑 init**，不退回旧行为（宁可不派发，也不把工人静默送到别处）。
 
 **验证**：`tests/smoke.sh` 新增第 48 节（10 条断言：票 §1 的 8 条场景 + 查询失败/错型响应两条负例，含 `--ensure` 同款与「恰一行警告」计数断言）；`fast` 门 rc=0；`full` 门 rc=0、**440 PASS / 0 FAIL**（smoke 418 + review-identity 15 + lint 7）。真机 E2E 由执行者跑（工人 tab 实测落在 `QWB_WORKSPACE` 声明的 wAC，而执行者在 wA3），主控复验见任务书状态行。
+
+## 二十八、工人与审核者一律最高权限启动（`QWB_WORKER_ARGS`）——为什么最高权限、为什么两个键（2026-09-16）
+
+**缺陷（实测）**：`qwb-run.sh` 起工人是裸命令——`herdr agent start <NAME> --kind <工人> --pane <PANE>` 不带任何 agent 参数。工人因此在**默认权限模式**下跑：每个写文件、每条命令都可能弹审批框，而窗口里**没有人点**，工人就卡在那里不动。2026-09-16 主控手工派 cmd 时先卡在信任框上，Rocky 当场要求改成 `cmd --yolo --trust` 重开。
+
+**决定**：**工人与审核者一律最高权限启动**（Rocky 2026-09-16：「所有工人和审核全部按最高权限开启 cli」）。herdr-kind 工人在 `QWB_WORKER_ARGS` 里按工人配参数，pane-run 工人在 `QWB_WORKER_LAUNCH` 命令行里配。
+
+| 工人 | 参数 | 备注 |
+|---|---|---|
+| codex | `--dangerously-bypass-approvals-and-sandbox` | 等价 `-s danger-full-access -a never` |
+| claude | `--dangerously-skip-permissions` | |
+| devin | `--permission-mode dangerous` | dangerous 自动批准全部工具 |
+| omp | `--auto-approve` | |
+| pi | `--approve` | 只有「信任项目文件」；pi 是否另有工具审批由执行者真机核实 |
+| cmd | `--yolo --trust` | 写在 pane-run 命令行里；`--trust` 同时消掉新目录信任框 |
+| zcode | 无 | `zcodecli chat` 本身是 yolo 模式 |
+
+**为什么最高权限是对的（审批在这里没有增益）**：工人跑在**隔离 worktree** 副本里，改动由主控合并落地；产物**由主控独立验收**（`QWBUDDY.md` §5：不采信工人自述）。审批的收益是「拦下不该做的动作」，而这个动作的**实际效力**已经被两道门拿走了：可回滚的隔离副本 + 主控验收。剩下能拦住的只有**工人自己的手滑**，代价却是**整条流程被一个没人看的提示框冻住**——而冻住本身是不安全的：它让「工人卡死」与「工人在干活」在账本上长得一样，靠 `QWB_REWAKE_MS` 兜底才发现。所以这里是**用「可回滚 + 独立验收」换「无人值守能跑通」**，不是省事。
+
+**不做的事**：不给**主控**自己加权限参数——主控是使用者自己起的会话，不归 QW buddy 管（`qwb-run.sh` 只起工人；审核者作为工人被派发时同样走这张参数表）。
+
+**为什么与 `QWB_WORKER_LAUNCH` 分成两个键**（同一份解析实现、两个用途）：
+
+1. **一个管「起什么」，一个管「带什么参数」**。`QWB_WORKER_LAUNCH` 回答「这个工人用 `herdr agent start` 还是 `pane-run:<命令>`」，`QWB_WORKER_ARGS` 回答「以什么参数起」。这两件事的**变化节奏**不同：权限参数是全局一致的默认值，启动方式只在某家 CLI 不被 herdr kind 支持时才需要覆盖。
+2. **herdr 模式的起法固定，只差参数**。`herdr agent start <NAME> --kind <工人> --pane <PANE> --timeout <ms> -- <参数>` 对每个 `--kind` 都是同一条命令；把参数挤进 `QWB_WORKER_LAUNCH` 只会让「启动方式」这个字段同时承担两种语义，`herdr` 这个默认值也没法再表达「用 herdr 起、但带参数」。
+3. **pane-run 的参数必须在命令行里**。pane-run 跑的是配置写的**一整条命令**（`cmd --yolo --trust`），参数与命令不可分，塞进 `QWB_WORKER_ARGS` 反而要再造一套「往命令行尾部插词」的规则。因此**一个工人的启动参数只能有一处**：pane-run 工人在 `QWB_WORKER_ARGS` 里配了值 → **拒绝派发**并指回去写 LAUNCH（配置错了就报错，不猜、不合并、不静默忽略）。
+
+**实现要点**：两张表**共用同一个解析函数**（`worker_map_get`，格式 `工人名=值`，值可含空格、遇下一个「工人名=」前缀才结束，同一工人取最后一项），不写第二份；解析结果经全局回带（`WORKER_MAP_FOUND` / `WORKER_MAP_VALUE`）而不用命令替换，以便区分「未列出」与「列出但值为空」。参数串**按空格切词**追加到 `--` 之后，**不做 shell 引号解析**（需要带空格的单个参数时用 pane-run 命令行）；空值 → 不加 `--`，与不配置时**字节一致**。herdr 与 pane-run 两条路的 headless 禁令（`-p`/`--print`/`--exec`/`exec`）**共用同一条检查函数**；两类拒绝都发生在**锁/worktree/tab/账本写之前**（零副作用）。
+
+**格式的隐含耦合（真机实测发现）**：「值遇下一个 `工人名=` 才结束」里的**工人名取自 `QWB_WORKERS`**，因此一条 `QWB_WORKER_ARGS` 表只有在该表用到的名字**都在工人表里**时才切得对——名字不在工人表里的那一项会被当成上一个值的续词。模板默认工人表是 `codex pi claude`，而票定下的默认 ARGS 表还含 `devin=`/`omp=`，两者不自洽时 `claude` 会多收到 `devin=--permission-mode dangerous omp=--auto-approve` 两个废词（真机 pane 回显可证）。此项**已在任务书账本上记 `blocked: spec-defect:`**，如何收敛（改默认表、扩工人表、或加配置校验）由主控裁决，实现侧不擅自改语义。
+
+**不动的**：`qwb-init.sh` 不改——新装项目直接拿模板默认值；已装项目由主控手工往 `config.sh` 补键（`qwb-init` 不覆盖已有 `config.sh` 是既定行为）。`dispatch:` 行格式不变；参数不写进账本（要审计看 `config.sh`）。`QWBUDDY.md` §10 硬规矩不加条——这是配置默认值，不是禁令。
+
+**验证**：`tests/smoke.sh` 新增第 49 节；`fast` / `full` 门结果与真机 E2E（codex / claude / pi 真派票、贴 `herdr pane read` 原文确认无审批框、临时项目用完即清）见 `tasks/2026-09-16-worker-max-permission.md` 的状态行。

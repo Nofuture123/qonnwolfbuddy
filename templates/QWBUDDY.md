@@ -82,6 +82,8 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 工人选择看 `qwbuddy/config.sh` 的 `QWB_WORKERS` 工人表与其下方派工规则注释；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
 需要覆盖默认 Herdr kind 启动时，在 `QWB_WORKER_LAUNCH` 写 `工人名=pane-run:<交互命令>`；命令值可含空格、到下一个 `工人名=` 前缀才结束，未列出的工人仍走 `herdr agent start`。pane-run 检测并改名后用 `herdr pane run` 直打提示词，不走只支持官方 kind 的 `agent prompt`；若 300ms 内没有进入 working/done/blocked（Command Code 长文本可能只粘贴未提交），再补一次 Enter。
 
+**工人与审核者一律最高权限启动**（`QWB_WORKER_ARGS` / pane-run 命令行）：herdr 模式在 `QWB_WORKER_ARGS` 写 `工人名=参数串`（模板默认已按工人填好，参数按空格切词追加到 `herdr agent start` 的 `--` 之后），pane-run 模式把权限参数写进 `QWB_WORKER_LAUNCH` 的命令行（如 `cmd=pane-run:cmd --yolo --trust`）。一个工人的启动参数只能有一处——两处都配会被拒绝派发。理由见 `docs/DECISIONS.md` 的「为什么最高权限」。
+
 ## 5. 验货门
 
 - **不采信工人自述**。验收由你独立跑**项目自己的检查命令**（typecheck / test / lint 等）。

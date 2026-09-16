@@ -2437,5 +2437,167 @@ bi_out="$(bi_run)"; bi_rc=$?
   || bad "附页目录拒绝不对（rc=${bi_rc}，out=${bi_out}）"
 rmdir "$BIF"; rm -f "$BI_T.snap"
 
+echo "== 51. 工人最高权限启动：QWB_WORKER_ARGS 按工人追加 herdr agent start 的 -- 参数 =="
+# 场景（票 §1）：herdr 模式带参数｜参数含空格按词切｜未配置的工人不加 --（字节一致）｜
+#   pane-run 工人在 ARGS 里配了值则拒绝（零副作用）｜pane-run 命令行带权限参数照常且过 headless 检查｜
+#   参数里混入 headless 形式则拒绝（零副作用）｜模板默认值可被 lint 与 source 接受。
+# 真实调用序列仍全部经 stub herdr；stub 应答取自 tests/fixtures/herdr/ 真录（agent-start.json 等）。
+MPX="$TMP/maxperm"; mkdir -p "$MPX"; bash "$ROOT/bin/qwb-init.sh" "$MPX" >/dev/null
+printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' \
+  'QWB_WORKERS="codex claude devin omp pi cmd"' >> "$MPX/qwbuddy/config.sh"
+MPXT="$MPX/tasks/2099-04-01-"
+
+mp_task() { # $1=任务 id（短小写，便于断言 agent 名 qwb-<id>）
+  cat > "${MPXT}$1.md" <<EOF
+# $1
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书与工人配置合法
+When  主控派发
+Then  工人以配置的启动参数被拉起
+
+### user_失败
+Given 工人参数配错或含 headless 形式
+When  主控派发
+Then  在任何副作用之前拒绝
+EOF
+}
+mp_set() { # $1=键名 $2=值（空 = 删掉该键，即未声明）
+  sed -i '' "/^$1=/d" "$MPX/qwbuddy/config.sh"
+  [[ -n "$2" ]] && printf '%s="%s"\n' "$1" "$2" >> "$MPX/qwbuddy/config.sh"
+  return 0
+}
+mp_pre() { rm -rf "$MPX/qwbuddy/.controller.lock"; : > "$STUBLOG"; }
+mp_run() { ( cd "$MPX" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp HERDR_WORKSPACE_ID=wtestW \
+  bash qwbuddy/bin/qwb-run.sh "$@" ); }
+mp_clean() { # $1=任务 id：断言拒绝路径零副作用（无 herdr 调用/无 dispatch/无基线/state 未动/无锁）
+  local f="${MPXT}$1.md"
+  [[ -s "$STUBLOG" ]] && return 1
+  grep -q '^dispatch:' "$f" && return 1
+  grep -q '^scenarios-fp:' "$f" && return 1
+  grep -q '^state: blocked' "$f" || return 1
+  [[ -d "$MPX/qwbuddy/.controller.lock" ]] && return 1
+  return 0
+}
+# 参数未声明时默认走 herdr；QWB_WORKER_LAUNCH 只在个别用例里覆盖
+mp_set QWB_WORKER_LAUNCH ""; mp_set QWB_WORKER_ARGS ""
+
+# 51a herdr 模式带参数：agent start 行以 `-- <参数>` 结尾，agent prompt 照常，退出码 0
+mp_task mpstart; mp_set QWB_WORKER_ARGS "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions"
+mp_pre
+out="$(mp_run --task mpstart --worker codex --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "带 QWB_WORKER_ARGS 的 herdr 派发退出 0" || { bad "带参数派发非 0（rc=${rc}）"; printf '%s\n' "$out"; }
+grep -qxF 'herdr agent start qwb-mpstart --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG" \
+  && ok "agent start 行以「-- --dangerously-bypass-approvals-and-sandbox」结尾" \
+  || { bad "agent start 行未按预期追加参数："; grep '^herdr agent start' "$STUBLOG"; }
+grep -q '^herdr agent prompt qwb-mpstart ' "$STUBLOG" && ok "带参数时 agent prompt 照常" || bad "带参数时 agent prompt 缺失"
+grep -qF -e '--dangerously-bypass-approvals-and-sandbox --dangerously-skip-permissions' "$STUBLOG" \
+  && bad "claude 的参数串串进了 codex 的参数（切分越界）" || ok "claude 的参数未串进 codex 的参数"
+
+# 51b 参数含空格按词切：devin 得两个词，omp 的参数不串进来；换工人取各自的参数
+mp_task mpdev; mp_task mpomp
+mp_set QWB_WORKER_ARGS "devin=--permission-mode dangerous omp=--auto-approve"
+mp_pre
+out="$(mp_run --task mpdev --worker devin --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "含空格参数（devin）派发退出 0" || { bad "devin 派发非 0（rc=${rc}）"; printf '%s\n' "$out"; }
+grep -qxF 'herdr agent start qwb-mpdev --kind devin --pane w93:p7 --timeout 300 -- --permission-mode dangerous' "$STUBLOG" \
+  && ok "agent start 行以「-- --permission-mode dangerous」结尾（两个词）" \
+  || { bad "含空格参数未按词切："; grep '^herdr agent start' "$STUBLOG"; }
+grep -q 'omp=' "$STUBLOG" && bad "omp= 串进了 devin 的参数" || ok "stub 日志不含 omp=（切分到下一个工人名= 为止）"
+mp_pre
+out="$(mp_run --task mpomp --worker omp --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && grep -qxF 'herdr agent start qwb-mpomp --kind omp --pane w93:p7 --timeout 300 -- --auto-approve' "$STUBLOG" \
+  && ok "--worker omp 只带自己的「-- --auto-approve」" \
+  || { bad "omp 参数不对（rc=${rc}）："; grep '^herdr agent start' "$STUBLOG"; }
+
+# 51c 未配置的工人不加 --：整行与现状字节一致（无 `--`、无尾随空格）
+mp_task mpbare
+mp_set QWB_WORKER_ARGS ""
+mp_pre
+out="$(mp_run --task mpbare --worker codex --here 2>&1)"; rc=$?
+sl="$(grep '^herdr agent start' "$STUBLOG")"
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c '^herdr agent start' "$STUBLOG")" == "1" ]] \
+   && [[ "$sl" == "herdr agent start qwb-mpbare --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "QWB_WORKER_ARGS 未声明 → agent start 行与现状字节一致（无 --）" \
+  || { bad "未声明时 agent start 行变了（rc=${rc}）：${sl}"; }
+# 对照：ARGS 非空但不含该工人 → 该工人同样不加 --
+mp_task mpother
+mp_set QWB_WORKER_ARGS "claude=--dangerously-skip-permissions"
+mp_pre
+out="$(mp_run --task mpother --worker codex --here 2>&1)"; rc=$?
+sl="$(grep '^herdr agent start' "$STUBLOG")"
+{ [[ "$rc" -eq 0 ]] && [[ "$sl" == "herdr agent start qwb-mpother --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "ARGS 不含 codex= → codex 仍不加 --（逐工人生效）" \
+  || { bad "未列出的工人被加了参数（rc=${rc}）：${sl}"; }
+
+# 51d pane-run 工人在 ARGS 里配了值 → 在锁/worktree/tab/账本写之前拒绝并指回 LAUNCH
+mp_task mpcollide
+mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd"; mp_set QWB_WORKER_ARGS "cmd=--yolo"
+mp_pre
+out="$(mp_run --task mpcollide --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'QWB_WORKER_LAUNCH' \
+   && printf '%s' "$out" | grep -q '只能有一处' && mp_clean mpcollide; } \
+  && ok "pane-run 工人在 ARGS 里配值 → 拒绝且零副作用（rc=${rc}）" \
+  || { bad "pane-run 冲突未拦住或留了副作用（rc=${rc}）"; printf '%s\n' "$out"; }
+
+# 51e pane-run 命令行带权限参数照常，且不被 headless 检查误拒
+mp_task mppane
+mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd --yolo --trust"; mp_set QWB_WORKER_ARGS ""
+mp_pre
+out="$(mp_run --task mppane --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -qxF 'herdr pane run w93:p7 cmd --yolo --trust' "$STUBLOG" \
+   && grep -q '^herdr agent rename w93:p7 qwb-mppane' "$STUBLOG" \
+   && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "pane-run 命令行带 --yolo --trust 照常启动且未被误判 headless（rc=${rc}）" \
+  || { bad "pane-run 权限参数路径不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr ' "$STUBLOG"; }
+
+# 51f 参数里混入 headless 形式 → 拒绝；四种形式同一条检查，且只对配了该形式的工人生效
+# （任务 id 不互为前缀：--task 是按 id 模糊匹配的）
+mp_task mphead; mp_task mpfine
+mp_set QWB_WORKER_LAUNCH ""
+for hform in '-p' '--print' '--exec' 'exec'; do
+  mp_set QWB_WORKER_ARGS "claude=--dangerously-skip-permissions ${hform}"
+  mp_pre
+  out="$(mp_run --task mphead --worker claude --here 2>&1)"; rc=$?
+  { [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'headless' && mp_clean mphead; } \
+    && ok "ARGS 含 headless 形式「${hform}」→ 拒绝且零副作用（rc=${rc}）" \
+    || { bad "headless 形式「${hform}」未被拦（rc=${rc}）"; printf '%s\n' "$out"; }
+done
+# 对照：同一份配置里没配该形式的工人照常派发——检查逐工人生效，不整表拒绝
+mp_pre
+out="$(mp_run --task mpfine --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep '^herdr agent start' "$STUBLOG")" == "herdr agent start qwb-mpfine --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "对照：同表里未配 headless 形式的工人照常派发" \
+  || { bad "对照失败——检查整表拒绝而非逐工人（rc=${rc}）"; printf '%s\n' "$out"; }
+
+# 51g 模板默认值：可被 source 与 bash -n 接受、被 lint 认作活键，且真派发时按工人生效
+mp_task mptmpl
+tmpl_args="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
+mp_set QWB_WORKER_ARGS "$tmpl_args"
+bash -n "$ROOT/templates/config.sh" && ok "bash -n templates/config.sh 退出 0" || bad "templates/config.sh 语法错误"
+if ( . "$ROOT/templates/config.sh"; [[ "$QWB_WORKER_ARGS" == "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous omp=--auto-approve pi=--approve" ]] ); then
+  ok "模板默认 QWB_WORKER_ARGS 与票 §0 一致（5 个 herdr-kind 工人）"
+else
+  bad "模板默认 QWB_WORKER_ARGS 与票不符"
+fi
+grep -q '^QWB_WORKER_ARGS="codex=' "$TMP/qwbuddy/config.sh" \
+  && ok "qwb-init 装出的 config.sh 带默认 QWB_WORKER_ARGS" || bad "安装的 config.sh 缺默认 QWB_WORKER_ARGS"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
+   && printf '%s' "$lintout" | grep -q '键全部被.*引用'; } \
+  && ok "lint 过且「config 无死键」PASS（QWB_WORKER_ARGS 是活键）" \
+  || { bad "lint 未过或无死键检查 PASS（rc=${rc}）"; printf '%s\n' "$lintout"; }
+mp_pre
+out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && grep -qxF 'herdr agent start qwb-mptmpl --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG"; } \
+  && ok "用模板默认值真派发：codex 拿到自己的最高权限参数（rc=${rc}）" \
+  || { bad "模板默认值派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr agent start' "$STUBLOG"; }
+rm -rf "$MPX"
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
