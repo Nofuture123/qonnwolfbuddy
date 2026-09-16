@@ -25,6 +25,9 @@ usage() {
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
 启动方式：config.sh 的 QWB_WORKER_LAUNCH 可按工人覆盖为 pane-run:<交互命令>；未列出走 herdr。
+工人 tab 落在哪个 workspace：config.sh 的 QWB_WORKSPACE（非空即用，本机 herdr 查不到就拒绝派发，不静默回退）；
+未声明时按 herdr workspace list 的 worktree.repo_root 与项目根物理路径匹配（多个匹配取 focused 的）；
+都没有则落调用者 workspace 并在 stderr 警告。--pane 复用路径不建 tab，不受影响。
 派发前有验收场景门：任务书必须含「验收场景」块（Given/When/Then 或 ≥2 个 user_ 场景标题）
 且至少一条失败路径场景，否则拒绝派发；通过则把场景块指纹写成 scenarios-fp: 供 lint 冻结比对。
 派发前有疑点门：最后一个 spec-defect:/spec-resolved: 相关事件是 blocked: spec-defect:（未决规格疑点）
@@ -59,6 +62,11 @@ command -v herdr >/dev/null 2>&1 || { echo "错误：找不到 herdr 命令" >&2
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 LEDGER="$PROJECT_ROOT/tasks"
 CONF="$PROJECT_ROOT/qwbuddy/config.sh"
+# 共享库（resolve_workspace 等；qwb-wake.sh 用同一份，两处不各写一份）
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
+[[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整（旧版安装缺此文件），请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$LIB"
 
 # 定位任务书：路径直接用；id 在 tasks/ 里唯一匹配
 if [[ -f "$TASK" ]]; then
@@ -244,6 +252,14 @@ if [[ -n "$PANE" ]]; then
     || { echo "错误：--pane ${PANE} 的 cwd（${pcwd:-未知}）与目标目录（${EDIR}）不符——修复：在该 pane 里先执行 cd ${EDIR} 再重跑，或不带 --pane 新开 tab" >&2; exit 1; }
 fi
 
+# —— 工人 tab 的 workspace（F：跨项目派活时工人窗口必须开在项目自己的 workspace）——
+# 解析失败（声明了但 herdr 查不到 / workspace list 查询失败 / 响应不合契约）→ 在这里就拒绝，
+# 早于锁、worktree、tab、账本写等一切副作用。--pane 复用路径不建 tab（pane 已定），不解析。
+TAB_WS=""
+if [[ -z "$PANE" ]]; then
+  TAB_WS="$(resolve_workspace "$PROJECT_ROOT")" || exit 1
+fi
+
 # 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
 LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
@@ -377,9 +393,13 @@ DIR_NOTE=""
 [[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
 PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
 
-# 窗口：复用 --pane 或新开 tab。
+# 窗口：复用 --pane 或新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
 if [[ -z "$PANE" ]]; then
-  out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
+  if [[ -n "$TAB_WS" ]]; then
+    out="$(herdr tab create --workspace "$TAB_WS" --cwd "$DIR" --label "$TASK_ID" --no-focus)"
+  else
+    out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
+  fi
   # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
   PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
     my $j = eval { decode_json(<STDIN>) };

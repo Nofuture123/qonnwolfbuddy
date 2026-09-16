@@ -370,3 +370,23 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **Command Code 提交时序**：真机长提示词实测出现“文字已粘进输入框但同次 Enter 未提交”，agent 保持 idle；额外按一次 Enter 后立即进入 working。为避免对已开始工作或已弹权限询问的 agent 误输入，pane run 后先等待 300ms 的 `working|done|blocked` 转换，仅超时才补一次 Enter；zcode 正常转态时不会补键。
 
 **F2 与安全边界**：pane 在启动前已经由 tab create 或 `--pane` 确定，故先写完整 `dispatch:` 再启动工人；`pane-run` 拒绝 `-p`、`--print`、`--exec`、`exec` 等 headless 形式。外部响应由 2026-09-16 真录的 Herdr cmd 检测 fixtures 约束，超时通过 `QWB_NOW_MS_CMD` / `QWB_SLEEP_CMD` 注入验证，不用真实 sleep 拉长门禁。
+
+## 二十七、工人 tab 落在项目 workspace，不是主控所在的 workspace（2026-09-16）
+
+**缺陷**：`qwb-run.sh` 与 `qwb-wake.sh --ensure` 调 `herdr tab create` 时不传 `--workspace`，herdr 把 tab 落在**调用者所在** workspace。主控与项目同 workspace 时无感；主控跨项目派活（在 wA2 给 wA3 的项目派）时，工人窗口出现在主控身边，**项目的 workspace 里什么都看不到**。2026-09-16 实测：`worker-launch-modes` 的工人开在 `wA2:t3`，两次 E2E 临时项目的工人开去了 `w8Z`。
+
+**决定**：新增 `qwbuddy/bin/qwb-lib.sh`（**库文件，不直接运行**，被 run/wake source）提供 `resolve_workspace <项目根>`，三级解析、取第一个命中：
+
+1. `config.sh` 的 `QWB_WORKSPACE` 非空即用；**本机 herdr 查不到该 id → 拒绝派发**并提示改 config。不静默回退——声明写错了就把错误暴露出来，别把工人送到别处。
+2. 空 → `herdr workspace list` 里 `worktree.repo_root` **物理路径**（`realpath` 归一，吃掉 `/tmp`↔`/private/tmp` 这类符号链接差异）等于项目根的那一项。多于一个匹配取 `focused` 的；都不 focused 取第一个并 stderr 警告。
+3. 都没有 → 现状（不带 `--workspace`，即调用者 workspace）+ stderr 一行警告「未声明 QWB_WORKSPACE」。
+
+**为什么按 repo_root 匹配只能当次选**：真录（`tests/fixtures/herdr/workspace-list.json`）显示 `worktree` 字段**只有部分 workspace 有**（w8Z/wAB 有，wA2/wA3 没有——取决于该 workspace 怎么建的），所以「按 cwd 猜」不可靠，只能当 `QWB_WORKSPACE` 未声明时的兜底。**主路径是靠声明**。
+
+**接线范围**：`qwb-run.sh` 在**任何副作用（锁/worktree/tab/账本写）之前**解析，失败即拒绝；`--pane` 复用路径不建 tab（pane 已定），不解析、不受影响。`qwb-wake.sh` 只改 `--ensure` 里唯一的 `tab create` 那一处（复用既有 pane / 原地重启的分支不建 tab，不解析），并把解析出的 id 记进 `.watch` 的 `workspace=`。**不做**自动建 workspace——找不到就按上面三级规则处理。
+
+**响应防御**：`workspace list` 用 `perl -MJSON::PP` 解析，`workspace_id` 必须是非空 JSON 字符串（对象/数组/数字/布尔/null 一律判整体失败，R2-M2 同款）；查询失败与响应不合契约都在副作用之前非 0 退出（fail-closed）。stub 应答取自真录，测试用 `perl` 以真录为底稿只改 `repo_root` 指向来构造「唯一匹配/多匹配/都不 focused」三形态，不硬编码 JSON。
+
+**既有安装副本要更新**：`qwb-lib.sh` 是新增文件，已装过的项目需重跑母本仓 `bin/qwb-init.sh`（幂等，按 `bin/qwb-*.sh` 全量复制）才补得上；没补上时 run/wake 直接**报错退出并指名重跑 init**，不退回旧行为（宁可不派发，也不把工人静默送到别处）。
+
+**验证**：`tests/smoke.sh` 新增第 48 节（10 条断言：票 §1 的 8 条场景 + 查询失败/错型响应两条负例，含 `--ensure` 同款与「恰一行警告」计数断言）；`fast` 门 rc=0；`full` 门 rc=0、**440 PASS / 0 FAIL**（smoke 418 + review-identity 15 + lint 7）。真机 E2E 由执行者跑（工人 tab 实测落在 `QWB_WORKSPACE` 声明的 wAC，而执行者在 wA3），主控复验见任务书状态行。

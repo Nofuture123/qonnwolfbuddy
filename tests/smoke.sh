@@ -29,7 +29,7 @@ bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
 for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
 assert_file "$TMP/qwbuddy/config.sh"
-for s in run wake status lock worktree test lint; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
+for s in run wake status lock worktree test lint lib; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
 # M5：qwb-init.sh 是母本仓专用安装器，不得复制进目标项目
 [[ -f "$TMP/qwbuddy/bin/qwb-init.sh" ]] \
   && bad "qwb-init.sh 被复制进目标项目（应母本仓专用）" || ok "qwb-init.sh 不复制进目标项目"
@@ -49,8 +49,8 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && -z "$QWB_WORKER_LAUNCH" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
-  ok "config.sh source 后启动方式默认空且既有配置值正确"
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+  ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
 fi
@@ -101,6 +101,8 @@ case "\${1:-} \${2:-}" in
   "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then sleep 8; fi
                 if [[ "\${HERDR_FAIL:-}" == *list* ]]; then failjson io_error "mocked pane list failure"; fi
                 if [[ -f "\$DYNH/pane-list.json" ]]; then sed '/^#/d' "\$DYNH/pane-list.json"; else fix pane-list.json; fi ;;
+  "workspace list") if [[ "\${HERDR_FAIL:-}" == *wslist* ]]; then failjson io_error "mocked workspace list failure"; fi
+                if [[ -f "\$DYNH/workspace-list.json" ]]; then sed '/^#/d' "\$DYNH/workspace-list.json"; else fix workspace-list.json; fi ;;
   "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json";
                 elif [[ -f "\$DYNH/get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/get-\$(san "\${3:-}").err" >&2; exit 1;
                 else failjson pane_not_found "pane \${3:-} not found"; fi ;;
@@ -670,7 +672,7 @@ printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写�
 
 echo "== 26. D：herdr fixture 契约基线（真实 JSON 路径检查）=="
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error \
-          pane-get-shell pane-get-error proc-shell proc-wake proc-busy pane-list; do
+          pane-get-shell pane-get-error proc-shell proc-wake proc-busy pane-list workspace-list; do
   assert_file "$FIXDIR/$fx.json"
 done
 for fx in pane-read-trust pane-read-shell; do assert_file "$FIXDIR/$fx.txt"; done
@@ -717,6 +719,7 @@ fx_paths() {
     pane-get-shell.json)     printf 'result.pane.pane_id:string result.pane.cwd:string' ;;
     pane-get-error.json)     printf 'error.code:string' ;;
     pane-list.json)          printf 'result.panes:array' ;;
+    workspace-list.json)     printf 'result.type:string result.workspaces:array' ;;
     proc-shell.json)         printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     proc-wake.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     proc-busy.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
@@ -724,7 +727,7 @@ fx_paths() {
   esac
 }
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error \
-          pane-get-shell pane-get-error pane-list proc-shell proc-wake proc-busy; do
+          pane-get-shell pane-get-error pane-list proc-shell proc-wake proc-busy workspace-list; do
   for pt in $(fx_paths "$fx.json"); do
     p="${pt%%:*}"; t="${pt##*:}"
     jpath "$FIXDIR/$fx.json" "$p" "$t" \
@@ -826,6 +829,7 @@ cat > "$F2STUB/herdr" <<EOF
 fix() { sed '/^#/d' "$FIXDIR/\$1"; }
 case "\${1:-} \${2:-}" in
   "tab create")   fix tab-create.json ;;
+  "workspace list") fix workspace-list.json ;;
   "agent start")  printf 'done: worker-appended-at-start\n' >> "$F2T"; fix agent-start.json ;;
   "agent prompt") fix agent-prompt.json ;;
   *)              fix pane-run.json ;;
@@ -1948,6 +1952,178 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAI
   || { bad "zcode 空格命令被截断或走错提示词入口"; cat "$STUBLOG"; }
 grep -q '^dispatch: .* worker=zcode agent=qwb-disp pane=w93:p7 ' "$LM/tasks/2099-02-01-zspace.md" \
   && ok "zcode pane-run dispatch 记录最终 pane" || bad "zcode pane-run dispatch 内容错误"
+
+echo "== 48. F：工人 tab 落在项目 workspace（QWB_WORKSPACE 三级解析 + --ensure 同款）=="
+# 场景（票 §1）：显式声明优先｜声明了但 herdr 查不到即拒绝（任何副作用之前）｜未声明按 worktree.repo_root 匹配｜
+#   未声明且无匹配回退调用者 workspace 并警告｜多匹配取 focused（都不 focused 取第一个+警告）｜--ensure 同款｜
+#   workspace list 查询失败即拒绝｜响应不合契约即拒绝。workspace list 应答取自真录 workspace-list.json。
+WSJ="$TMP/wsproj"; mkdir -p "$WSJ"; bash "$ROOT/bin/qwb-init.sh" "$WSJ" >/dev/null
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$WSJ/qwbuddy/config.sh"
+WSDYN="$TMP/ws-dyn"; mkdir -p "$WSDYN"
+WSERR="$TMP/ws-err.log"; WST="$WSJ/tasks/2099-03-01-"
+
+mk_ws_task() { # $1=任务 id（唯一；避免互为前缀，--task 是按 id 模糊匹配的）
+  cat > "${WST}$1.md" <<EOF
+# $1
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书与配置合法
+When  主控派发
+Then  工人 tab 落在解析出的 workspace
+
+### user_失败
+Given QWB_WORKSPACE 声明了本机不存在的 id
+When  主控派发
+Then  在任何副作用之前拒绝
+EOF
+}
+# 以真录 workspace-list.json 为底稿改 repo_root 指向（其余字段原样）：
+#   one            = 只有 focused 的那个 workspace 指向本项目（另一个去掉 worktree，验证不误匹配）
+#   multi          = 带 worktree 的两个都指向本项目（其中 focused 的是 w8Z）
+#   multi-nofocus  = 同上但都不 focused（验证「取第一个 + 警告」）
+mk_wslist() { # $1=one|multi|multi-nofocus $2=本项目根路径（故意给未归一化的真路径）
+  perl -MJSON::PP=decode_json,encode_json -e '
+    my ($mode, $root, $src) = @ARGV;
+    open my $fh, "<", $src or die "读真录失败: $!";
+    my $raw = do { local $/; <$fh> }; close $fh;
+    $raw =~ s/^#.*\n//mg;
+    my $j = decode_json($raw);
+    my $n = 0;
+    for my $w (@{ $j->{result}{workspaces} }) {
+      next unless ref $w->{worktree} eq "HASH";
+      $n++;
+      if ($mode eq "one") {
+        if ($w->{focused}) { $w->{worktree}{repo_root} = $root }
+        else { delete $w->{worktree} }
+      } else {
+        $w->{worktree}{repo_root} = $root;
+        if ($mode eq "multi-nofocus") { $w->{focused} = $JSON::PP::false }
+      }
+    }
+    die "真录里没有带 worktree 的 workspace，无法构造场景\n" if $n == 0;
+    print encode_json($j), "\n";
+  ' "$1" "$2" "$FIXDIR/workspace-list.json" > "$WSDYN/workspace-list.json"
+}
+wsrun_in() { # $1=派发目录 $2=任务 id，其余=额外参数；调用者自行重定向输出
+  local d="$1" t="$2"; shift 2
+  ( cd "$d" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WSDYN" HERDR_PANE_ID=wtest:ws HERDR_WORKSPACE_ID="${WS_CALLER:-wY}" \
+      bash qwbuddy/bin/qwb-run.sh --task "$t" --worker codex --here "$@" )
+}
+wsrun() { wsrun_in "$WSJ" "$@"; }
+ws_clean() { # $1=任务 id：断言拒绝路径零副作用（无 tab/agent/账本写/锁，state 未动）
+  local f="${WST}$1.md"
+  grep -q 'tab create' "$STUBLOG" && return 1
+  grep -q 'agent start' "$STUBLOG" && return 1
+  grep -q '^dispatch:' "$f" && return 1
+  grep -q '^scenarios-fp:' "$f" && return 1
+  grep -q '^state: blocked' "$f" || return 1
+  [[ -d "$WSJ/qwbuddy/.controller.lock" ]] && return 1
+  return 0
+}
+ws_set_ws() { # $1=QWB_WORKSPACE 的值（空 = 删掉该键，即未声明）
+  sed -i '' '/^QWB_WORKSPACE=/d' "$WSJ/qwbuddy/config.sh"
+  [[ -n "$1" ]] && printf 'QWB_WORKSPACE="%s"\n' "$1" >> "$WSJ/qwbuddy/config.sh"
+  return 0
+}
+
+# 48a 显式声明优先：QWB_WORKSPACE=wA3 存在，调用者在 wY → tab 落 wA3，无警告
+mk_ws_task wsAdecl; ws_set_ws wA3
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+wsrun wsAdecl >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace wA3' "$STUBLOG" && [[ ! -s "$WSERR" ]]; } \
+  && ok "显式 QWB_WORKSPACE=wA3 → tab create --workspace wA3 且 stderr 无警告（rc=${rc}）" \
+  || { bad "显式声明未生效（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48b 声明了但查不到 → 在任何副作用之前拒绝（失败路径）
+mk_ws_task wsBmiss; ws_set_ws wZ
+rm -rf "$WSJ/qwbuddy/.controller.lock"; : > "$STUBLOG"; : > "$WSERR"
+wsrun wsBmiss >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -ne 0 ]] && grep -q 'wZ' "$WSERR" && grep -q 'QWB_WORKSPACE' "$WSERR" && ws_clean wsBmiss; } \
+  && ok "QWB_WORKSPACE=wZ 不存在 → 拒绝且零副作用（rc=${rc}）" \
+  || { bad "不存在的声明未被拒或留了副作用（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48c 未声明：按 worktree.repo_root 匹配（项目根经符号链接 → 必须归一成物理路径才匹配得上）
+mk_ws_task wsCmatch; ws_set_ws ""
+ln -sfn "$WSJ" "$TMP/wslink"
+mk_wslist one "$WSJ"            # 真录底稿里 focused 的 w8Z 指向本项目（路径未归一）
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+wsrun_in "$TMP/wslink" wsCmatch >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace w8Z' "$STUBLOG" \
+   && ! grep -q 'tab create.*--workspace wY' "$STUBLOG" && [[ ! -s "$WSERR" ]]; } \
+  && ok "未声明 → 按 repo_root 匹配到 w8Z（/var 与 /private/var 符号链接差异被归一）" \
+  || { bad "repo_root 匹配失败（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48d 未声明且无匹配 → 回退调用者 workspace + 恰一行警告；退出码 0
+mk_ws_task wsDfall
+rm -f "$WSDYN/workspace-list.json"   # 回退真录原样：没有任何 workspace 指向本项目
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+WS_CALLER=wY wsrun wsDfall >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c '未声明 QWB_WORKSPACE' "$WSERR")" == "1" ]] \
+   && grep -q '未声明 QWB_WORKSPACE' "$WSERR" && grep -q 'wY' "$WSERR" \
+   && grep -q '^dispatch:' "${WST}wsDfall.md" \
+   && ! grep -q 'tab create.*--workspace' "$STUBLOG"; } \
+  && ok "无匹配 → 落调用者 workspace wY 且恰一行「未声明 QWB_WORKSPACE」警告（rc=${rc}）" \
+  || { bad "回退路径不对（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48e 多匹配取 focused（无警告）；都不 focused → 取第一个 + 警告
+mk_ws_task wsEmulti; mk_wslist multi "$WSJ"
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+wsrun wsEmulti >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace w8Z' "$STUBLOG" && [[ ! -s "$WSERR" ]]; } \
+  && ok "两项 repo_root 都匹配 → 取 focused 的 w8Z 且无警告" \
+  || { bad "多匹配未取 focused（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+mk_ws_task wsFnofocus; mk_wslist multi-nofocus "$WSJ"
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+wsrun wsFnofocus >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace w8Z' "$STUBLOG" \
+   && grep -q '多个 workspace 匹配' "$WSERR"; } \
+  && ok "多匹配都不 focused → 取第一项 w8Z 且警告「多个 workspace 匹配」" \
+  || { bad "都不 focused 时的兜底不对（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48f workspace list 查询失败 → 拒绝并带出原始错误（失败路径，零副作用）
+mk_ws_task wsGfail
+rm -f "$WSDYN/workspace-list.json"; : > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+( cd "$WSJ" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WSDYN" HERDR_FAIL=wslist HERDR_PANE_ID=wtest:ws \
+    HERDR_WORKSPACE_ID=wY bash qwbuddy/bin/qwb-run.sh --task wsGfail --worker codex --here ) >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -ne 0 ]] && grep -q 'mocked workspace list failure' "$WSERR" && ws_clean wsGfail; } \
+  && ok "workspace list 查询失败 → 拒绝且 stderr 含原始错误、零副作用（rc=${rc}）" \
+  || { bad "查询失败路径不对（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48f2 响应不合契约（workspace_id 为对象）→ 拒绝（R2-M2：运行时边界也拦）
+mk_ws_task wsHbad
+perl -MJSON::PP=decode_json,encode_json -e '
+  open my $fh, "<", $ARGV[0] or die;
+  my $raw = do { local $/; <$fh> }; close $fh; $raw =~ s/^#.*\n//mg;
+  my $j = decode_json($raw);
+  $j->{result}{workspaces}[0]{workspace_id} = { bad => 1 };
+  print encode_json($j), "\n";
+' "$FIXDIR/workspace-list.json" > "$WSDYN/workspace-list.json"
+: > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
+wsrun wsHbad >/dev/null 2>"$WSERR"; rc=$?
+{ [[ "$rc" -ne 0 ]] && grep -q '契约' "$WSERR" && ws_clean wsHbad; } \
+  && ok "workspace_id 为对象（错型）→ 拒绝且零副作用（rc=${rc}）" \
+  || { bad "错型响应未被拦（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
+
+# 48g --ensure 同款：建 tab 带 --workspace、.watch 记该 workspace
+printf 'QWB_WORKSPACE="wA3"\n' >> "$ENSP/qwbuddy/config.sh"   # 调用者是 wtestW，声明的是 wA3
+ensreset; mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace wA3' "$STUBLOG" \
+   && grep -q 'workspace=wA3' "$ENSP/qwbuddy/.watch" && ! printf '%s' "$out" | grep -q '未声明 QWB_WORKSPACE'; } \
+  && ok "--ensure 建 tab 带 --workspace wA3，.watch 记 workspace=wA3（rc=${rc}）" \
+  || { bad "--ensure 未用项目 workspace（rc=${rc}）"; printf '%s\n' "$out"; cat "$ENSP/qwbuddy/.watch" 2>/dev/null; }
+# 48g2 负例：ensure 声明的 workspace 不存在 → 拒绝，不建 tab、不登记
+sed -i '' 's/^QWB_WORKSPACE=.*/QWB_WORKSPACE="wZ"/' "$ENSP/qwbuddy/config.sh"
+ensreset; mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && ! grep -q 'tab create' "$STUBLOG" && [[ ! -f "$ENSP/qwbuddy/.watch" ]] \
+   && ! grep -q 'pane run' "$STUBLOG"; } \
+  && ok "--ensure 声明的 wZ 不存在 → 拒绝且不建 tab 不登记（rc=${rc}）" \
+  || { bad "ensure 未校验声明的 workspace（rc=${rc}）"; printf '%s\n' "$out"; }
+sed -i '' '/^QWB_WORKSPACE=/d' "$ENSP/qwbuddy/config.sh"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
