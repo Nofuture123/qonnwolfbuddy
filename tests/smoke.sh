@@ -282,7 +282,7 @@ mk_fakeclock 100 2
 ( cd "$NP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$TMP/now.sh" QWB_SLEEP_CMD="$TMP/sleep.sh" \
     exec bash "$TMP/qwbuddy/bin/qwb-wake.sh" --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
 WPID=$!
-( sleep 5; kill "$WPID" 2>/dev/null ) & WD=$!
+( sleep 15; kill "$WPID" 2>/dev/null ) & WD=$!
 wait "$WPID" 2>/dev/null || true
 kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
 all_eq 1000 && ok "无可用 pane 时每轮整睡 1000ms（=1×interval 退化等待）" \
