@@ -2,7 +2,7 @@
 
 ```
 任务 id:  worker-tab-workspace
-state:    running
+state:    verified
 scenarios-fp: 9eb0465201721561334c0f2744ab24b823544730
 来源:     Rocky 2026-09-16「母仓我也没看到有 herdr 窗口」——主控在 wA2（qonnwolf-sites）给母仓 wA3 派活，工人 tab 开在了 wA2
 派发:     主控 claude-opus-5（Claude Code，pane wA2:p1） → cmd（改派，原 pi）
@@ -123,3 +123,6 @@ working: 2026-09-16T19:45:24Z 主控改派：Rocky 指定 cmd 为快档首选，
 dispatch: 2026-09-16T19:45:36Z worker=cmd agent=qwb-worker-tab-workspace pane=wA3:pD dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
 working: 2026-09-16T19:46:54Z 主控重派：Rocky 要求 cmd 以最高权限启动；wA3:pD 关窗，改动回滚（保留真录 fixture），改用 `cmd --yolo --trust` 重开（--trust 同时消掉新目录信任框）
 dispatch: 2026-09-16T19:46:54Z worker=cmd agent=qwb-worker-tab-workspace pane=wA3:pE dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
+working: 2026-09-16T19:48:45Z worker=cmd 阶段=规格已读（task/QWBUDDY/执行者/lessons/run/wake/lint/smoke）真机核实 tab create --workspace 存在；复用上一位执行者的真录 workspace-list.json；计划=qwb-lib.sh resolve_workspace + run 派发前解析 + wake --ensure 建 tab 处 + config/QWBUDDY/DECISIONS + smoke 场景
+done: 2026-09-16T20:04:57Z worker=cmd 实现+验收完成，commit=4940d98（分支 worker-tab-workspace，未合并/未推送）。改动=bin/qwb-lib.sh（新增库：resolve_workspace 三级解析）+ qwb-run.sh（锁/worktree/tab/账本写之前解析，tab create 带 --workspace；--pane 路径不解析不受影响）+ qwb-wake.sh（--ensure 唯一 tab create 处同款，.watch 记 workspace=）+ templates/config.sh 新键 QWB_WORKSPACE + QWBUDDY §1第6步/§9表 + tests/smoke.sh 第48节 + tests/fixtures/herdr/workspace-list.json 真录 + DECISIONS §27。跑了什么：(1) bash tests/smoke.sh → SMOKE PASS，418 PASS / 0 FAIL（新增第48节10条断言全绿：显式声明优先/声明不存在拒绝零副作用/repo_root 匹配(符号链接归一)/无匹配回退+恰一行警告/多匹配取focused/都不focused取第一+警告/workspace list 查询失败拒绝/workspace_id 错型拒绝/--ensure 带--workspace且.watch记/ensure 声明不存在拒绝）(2) bash bin/qwb-test.sh fast → rc=0 (3) bash bin/qwb-test.sh full → rc=0，440 PASS / 0 FAIL（=smoke 418 + review-identity 15 + lint 7），SMOKE PASS + LINT PASS，sha=4940d98 上复跑。(4) shellcheck bin/*.sh 干净。(5) 真机 E2E：herdr workspace create 临时 wAC（执行者自己在 wA3）、临时 git 项目 QWB_WORKSPACE=wAC、从我自己的 pane 派 pi 工人只写 done: hello 的票 → 派发 rc=0 且 stderr 空；herdr agent get wAC:p2 原始回执 name=qwb-e2e-hello kind=pi pane=wAC:p2 tab=wAC:t2 workspace_id=wAC（== 所填 wAC，≠ 调用者 wA3）；账本尾行 done: hello（工人自写）；TEMP_CLEANUP=PASS（herdr tab close wAC:t2 + herdr workspace close wAC + rm -rf 临时项目，复核 workspace list 只剩 w8Z/wA2/wA3/wAB、无 wAC pane、临时目录已删）。(6) 顺带修的测试设施：第28节 F2 专用 herdr 替身补 workspace list 分支（否则新调用落到 fallback 应答被拒）。未决：stub 的 workspace list 应答取真录 + perl 只改 repo_root 指向构造三形态（无硬编码 JSON）；既有安装副本需重跑母本仓 bin/qwb-init.sh 才补上 qwb-lib.sh（缺文件时 run/wake 报错指名修复，DECISIONS §27 已记）。
+working: 2026-09-16T20:08:31Z 主控验货：worktree 4940d98 上独立跑 qwb-test.sh fast exit=0；tests/smoke.sh ×2 均 SMOKE PASS（418 PASS，§48 十条全绿）；qwb-lint.sh LINT PASS。审读 qwb-lib.sh / qwb-run.sh / qwb-wake.sh diff 无异议（解析在一切副作用之前，--pane 路径不受影响，形状防御与 realpath 归一齐全）。真机复验：临时项目 QWB_WORKSPACE=wA3，主控从 wA2（HERDR_WORKSPACE_ID=wA2）以 cmd=pane-run:cmd --yolo --trust 派发 → rc=0，herdr agent get 回 workspace_id=wA3 agent=cmd，工人无审批无信任框直接写入 done: hello；pane wA3:pF 已关（pane_not_found），临时项目已删。结论：通过。
