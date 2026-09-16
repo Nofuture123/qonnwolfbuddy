@@ -49,8 +49,8 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
-  ok "config.sh source 后三个配置值正确"
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && -z "$QWB_WORKER_LAUNCH" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+  ok "config.sh source 后启动方式默认空且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
 fi
@@ -97,6 +97,7 @@ case "\${1:-} \${2:-}" in
                     | sed '/^#/d' > "\$DYNH/proc-\$(san "\$3").json" 2>/dev/null || true
                 fi
                 fix pane-run.json ;;
+  "pane send-keys") fix pane-run.json ;;
   "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then sleep 8; fi
                 if [[ "\${HERDR_FAIL:-}" == *list* ]]; then failjson io_error "mocked pane list failure"; fi
                 if [[ -f "\$DYNH/pane-list.json" ]]; then sed '/^#/d' "\$DYNH/pane-list.json"; else fix pane-list.json; fi ;;
@@ -115,6 +116,11 @@ case "\${1:-} \${2:-}" in
                   echo \$(( \$(cat "\$QWB_FAKE_NOW_FILE") + \${HERDR_WAIT_BUMP_MS} )) > "\$QWB_FAKE_NOW_FILE"
                 fi
                 fix agent-wait.json ;;
+  "agent get")  nfile="\${HERDR_AGENT_GET_COUNT_FILE:-$TMP/herdr-agent-get.count}"
+                n=\$(( \$(cat "\$nfile" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "\$nfile"
+                if [[ "\$n" -le "\${HERDR_AGENT_GET_FAILS:-0}" ]]; then fix agent-get-error.json >&2; exit 1; fi
+                fix agent-get-cmd.json ;;
+  "agent rename") fix agent-get-cmd.json ;;
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
   "agent start") fix agent-start.json ;;
   "agent prompt") if [[ "\${HERDR_FAIL:-}" == *prompt* ]]; then failjson inject_failed "mocked prompt failure"; fi
@@ -1823,6 +1829,125 @@ mk_plist "$DYN/pane-list.json" "w93:p1,agent"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 { [[ "$rc" -eq 0 ]] && grep -q 'tab create' "$STUBLOG" && grep -q 'pane=' "$ENSP/qwbuddy/.watch"; } \
   && ok "目标 pane 同 workspace → 正常建（rc=${rc}）" || { bad "同 ws 目标竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
+
+echo "== 47. worker launch modes：herdr 默认 / pane-run（cmd 与 zcode）=="
+assert_file "$ROOT/tests/fixtures/herdr/agent-get-cmd.json"
+assert_file "$ROOT/tests/fixtures/herdr/agent-get-error.json"
+LM="$TMP/launch-modes"; mkdir -p "$LM"; bash "$ROOT/bin/qwb-init.sh" "$LM" >/dev/null
+printf '%s\n' 'QWB_WORKERS="codex cmd zcode"' 'QWB_AGENT_START_MS=300' >> "$LM/qwbuddy/config.sh"
+
+mk_launch_task() {
+  local id="$1"
+  cat > "$LM/tasks/2099-02-01-${id}.md" <<EOF
+# ${id}
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务与工人配置合法
+When 主控派发
+Then 工人在最终 pane 收到提示词
+
+### user_失败
+Given 启动方式非法或检测超时
+When 主控派发
+Then 拒绝或失败且不发送提示词
+EOF
+}
+
+LMNOW="$TMP/launch-now"; LMSLEEP="$TMP/launch-sleep.log"
+cat > "$TMP/launch-now.sh" <<EOF
+#!/usr/bin/env bash
+cat "$LMNOW"
+EOF
+cat > "$TMP/launch-sleep.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$1" >> "$LMSLEEP"
+echo \$(( \$(cat "$LMNOW") + \$1 )) > "$LMNOW"
+EOF
+chmod +x "$TMP/launch-now.sh" "$TMP/launch-sleep.sh"
+
+# 47a pane-run：检测延迟两次后成功；顺序、寻址目标与 dispatch pane 均取 tab create 的 pane。
+printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd"' >> "$LM/qwbuddy/config.sh"
+mk_launch_task paneok
+: > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"; echo 0 > "$LMNOW"; : > "$LMSLEEP"
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_FAIL=wait HERDR_AGENT_GET_FAILS=2 \
+  HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
+  QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task paneok --worker cmd --here --name qwb-disp 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "pane-run 检测延迟后派发成功" || { bad "pane-run 成功路径 rc=${rc}"; printf '%s\n' "$out"; }
+calls="$(cat "$STUBLOG")"
+{ [[ "$(grep -c 'agent get w93:p7' "$STUBLOG" || true)" -ge 3 ]] \
+   && grep -q 'pane run w93:p7 cmd' "$STUBLOG" \
+   && grep -q 'agent rename w93:p7 qwb-disp' "$STUBLOG" \
+   && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-paneok.md" "$STUBLOG" \
+   && grep -q '写完状态行再收工' "$STUBLOG" \
+   && grep -q 'agent wait w93:p7 --until working --until done --until blocked --timeout 300' "$STUBLOG" \
+   && grep -q 'pane send-keys w93:p7 enter' "$STUBLOG" \
+   && ! grep -q 'agent start' "$STUBLOG" && ! grep -q 'agent prompt' "$STUBLOG"; } \
+  && ok "pane-run 直打后无状态转换会补 Enter，且不走 agent start/prompt" \
+  || { bad "pane-run 调用序列不完整"; printf '%s\n' "$calls"; }
+tabln="$(grep -n 'tab create' "$STUBLOG" | head -1 | cut -d: -f1)"
+runln="$(grep -n 'pane run w93:p7 cmd' "$STUBLOG" | head -1 | cut -d: -f1)"
+getln="$(grep -n 'agent get w93:p7' "$STUBLOG" | head -1 | cut -d: -f1)"
+renln="$(grep -n 'agent rename w93:p7 qwb-disp' "$STUBLOG" | head -1 | cut -d: -f1)"
+prmln="$(grep -n 'pane run w93:p7 你是本任务的执行者' "$STUBLOG" | head -1 | cut -d: -f1)"
+[[ "$tabln" -lt "$runln" && "$runln" -lt "$getln" && "$getln" -lt "$renln" && "$renln" -lt "$prmln" ]] \
+  && ok "pane-run 调用顺序为 tab→run→get→rename→pane run 提示词" || bad "pane-run 调用顺序错误"
+grep -q '^dispatch: .* worker=cmd agent=qwb-disp pane=w93:p7 ' "$LM/tasks/2099-02-01-paneok.md" \
+  && ok "pane-run dispatch 记录最终 pane" || bad "pane-run dispatch 内容错误"
+
+# 47b pane-run：假时钟推进到 300ms 仍未检测到 agent，保留 dispatch，不发送 prompt。
+mk_launch_task panetimeout
+: > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"; echo 0 > "$LMNOW"; : > "$LMSLEEP"
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=99 \
+  HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
+  QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task panetimeout --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '检测超时' && printf '%s' "$out" | grep -q 'w93:p7' \
+   && printf '%s' "$out" | grep -q '手工排查'; } \
+  && ok "pane-run 300ms 检测超时给出 pane 与手工排查" || { bad "pane-run 超时输出不对（rc=${rc}）"; printf '%s\n' "$out"; }
+[[ "$(cat "$LMNOW")" -eq 300 ]] && ok "pane-run 超时由假时钟精确推进 300ms" || bad "pane-run 假时钟未停在 300ms"
+grep -q '^dispatch: .* worker=cmd .* pane=w93:p7 ' "$LM/tasks/2099-02-01-panetimeout.md" \
+  && ok "pane-run 超时仍保留完整 dispatch" || bad "pane-run 超时丢失 dispatch"
+[[ "$(grep -c 'pane run w93:p7' "$STUBLOG" || true)" -eq 1 ]] \
+  && ok "pane-run 超时后无第二次 pane run（未发提示词）" || bad "pane-run 超时后仍发送提示词"
+
+# 47c 非法方式在锁/窗口/账本之前拒绝。
+printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=teleport"' >> "$LM/qwbuddy/config.sh"
+mk_launch_task badmode
+rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task badmode --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'herdr' && printf '%s' "$out" | grep -q 'pane-run:<命令行>' \
+   && ! printf '%s' "$out" | grep -q 'zcodecli-chat' && [[ ! -s "$STUBLOG" ]] \
+   && [[ ! -d "$LM/qwbuddy/.controller.lock" ]] && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-badmode.md"; } \
+  && ok "非法启动方式在全部副作用前拒绝并列出合法方式" || { bad "非法启动方式拒绝不完整（rc=${rc}）"; printf '%s\n' "$out"; }
+
+printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd -p"' >> "$LM/qwbuddy/config.sh"
+mk_launch_task headless
+rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task headless --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '只允许交互式' && [[ ! -s "$STUBLOG" ]] \
+   && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-headless.md"; } \
+  && ok "pane-run 拒绝 -p 等 headless 命令且零副作用" \
+  || { bad "pane-run headless 禁令未生效（rc=${rc}）"; printf '%s\n' "$out"; }
+
+# 47d 值含空格：按下一个「工人名=」切分，zcode 启动命令保持完整的 zcodecli chat。
+printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd zcode=pane-run:zcodecli chat"' >> "$LM/qwbuddy/config.sh"
+mk_launch_task zspace
+rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=1 \
+  HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
+  QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task zspace --worker zcode --here --name qwb-disp 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "含空格的 zcode pane-run 派发成功" || { bad "zcode 空格命令 rc=${rc}"; printf '%s\n' "$out"; }
+{ grep -qx 'herdr pane run w93:p7 zcodecli chat' "$STUBLOG" \
+   && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-zspace.md" "$STUBLOG" \
+   && grep -q 'agent wait w93:p7 --until working --until done --until blocked --timeout 300' "$STUBLOG" \
+   && ! grep -q 'pane send-keys w93:p7 enter' "$STUBLOG" \
+   && ! grep -q 'agent start' "$STUBLOG" && ! grep -q 'agent prompt' "$STUBLOG"; } \
+  && ok "zcode pane-run 保留整条命令并在状态已转换时不补 Enter" \
+  || { bad "zcode 空格命令被截断或走错提示词入口"; cat "$STUBLOG"; }
+grep -q '^dispatch: .* worker=zcode agent=qwb-disp pane=w93:p7 ' "$LM/tasks/2099-02-01-zspace.md" \
+  && ok "zcode pane-run dispatch 记录最终 pane" || bad "zcode pane-run dispatch 内容错误"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

@@ -79,6 +79,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ```
 
 工人选择看 `qwbuddy/config.sh` 的 `QWB_WORKERS` 工人表与其下方派工规则注释；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
+需要覆盖默认 Herdr kind 启动时，在 `QWB_WORKER_LAUNCH` 写 `工人名=pane-run:<交互命令>`；命令值可含空格、到下一个 `工人名=` 前缀才结束，未列出的工人仍走 `herdr agent start`。pane-run 检测并改名后用 `herdr pane run` 直打提示词，不走只支持官方 kind 的 `agent prompt`；若 300ms 内没有进入 working/done/blocked（Command Code 长文本可能只粘贴未提交），再补一次 Enter。
 
 ## 5. 验货门
 
@@ -129,7 +130,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | 脚本 | 干什么 |
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
-| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根） |
+| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖） |
 | `qwb-wake.sh [--dry-run|--once|--ensure|--check]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守在跑（开局必跑），`--check` 只报值守健康 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |

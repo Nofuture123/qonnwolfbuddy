@@ -1,0 +1,2 @@
+# 真录 2026-09-16，herdr 0.8.2：cmd 刚由 pane run 启动但尚未被检测时，herdr agent get wAB:p3（stderr，退出码 1）
+{"error":{"code":"agent_not_found","message":"agent target wAB:p3 not found"},"id":"cli:agent:get"}

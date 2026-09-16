@@ -360,3 +360,13 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **不做的**：不新建脚本/lint 项（这五条是判断类守则，当前无机械检查手段；按尺子③的反面——无法自动检查的判断类规范写进说明书是对的）。不影响筛选/影子运行等 CI 专属机制（QW buddy 的门就是执行链，405 断言 45s 不是瓶颈）。原文不整体入库——守则全文 2KB 面向具体项目的 CI 初始化场景，QW buddy 装进项目后主控按 §6 小节执行即可；原文由使用者保留在其他项目的 docs/plans/ 里。
 
 **验证**：文档改动，跑 fast=0 / full=407 PASS 无回归。
+
+## 二十六、非 herdr-kind 工人的启动适配（2026-09-16）
+
+**决定**：工人资格仍由 `QWB_WORKERS` 控制，新增 `QWB_WORKER_LAUNCH` 只覆盖启动方式；未配置时保持 `herdr agent start`。`pane-run:<交互命令>` 在 shell pane 启动进程、用毫秒假时钟可测地轮询 `herdr agent get`，检测后改名并用 `herdr pane run` 直打提示词。配置值允许含空格，以后续 `工人名=` 前缀作为下一项边界，不按单个空格截断。
+
+**zcode 归一**：`zcodecli chat-open` 内部本来就是 Herdr tab create 加当前 pane 运行 `zcodecli chat`，所以不保留专用启动分支；配置为 `zcode=pane-run:zcodecli chat` 即可。cmd 与 zcode 都是检测型非官方 kind：`agent get` / `wait` 可用，但实测 rename 后 `agent prompt` 仍返回 `agent_not_ready`，所以提示词必须走 pane run。
+
+**Command Code 提交时序**：真机长提示词实测出现“文字已粘进输入框但同次 Enter 未提交”，agent 保持 idle；额外按一次 Enter 后立即进入 working。为避免对已开始工作或已弹权限询问的 agent 误输入，pane run 后先等待 300ms 的 `working|done|blocked` 转换，仅超时才补一次 Enter；zcode 正常转态时不会补键。
+
+**F2 与安全边界**：pane 在启动前已经由 tab create 或 `--pane` 确定，故先写完整 `dispatch:` 再启动工人；`pane-run` 拒绝 `-p`、`--print`、`--exec`、`exec` 等 headless 形式。外部响应由 2026-09-16 真录的 Herdr cmd 检测 fixtures 约束，超时通过 `QWB_NOW_MS_CMD` / `QWB_SLEEP_CMD` 注入验证，不用真实 sleep 拉长门禁。

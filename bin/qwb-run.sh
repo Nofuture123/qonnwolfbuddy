@@ -24,6 +24,7 @@ usage() {
   -h, --help            显示本帮助
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
+启动方式：config.sh 的 QWB_WORKER_LAUNCH 可按工人覆盖为 pane-run:<交互命令>；未列出走 herdr。
 派发前有验收场景门：任务书必须含「验收场景」块（Given/When/Then 或 ≥2 个 user_ 场景标题）
 且至少一条失败路径场景，否则拒绝派发；通过则把场景块指纹写成 scenarios-fp: 供 lint 冻结比对。
 派发前有疑点门：最后一个 spec-defect:/spec-resolved: 相关事件是 blocked: spec-defect:（未决规格疑点）
@@ -72,10 +73,10 @@ fi
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
 
-# 工人须在 config.sh 的 QWB_WORKERS 里（herdr kind 与工人同名）。
+# 工人须在 config.sh 的 QWB_WORKERS 里；QWB_WORKER_LAUNCH 只覆盖启动方式。
 # 配置唯一来源是 bash 文件：直接 source，不再解析 JSON。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-QWB_WORKERS=""; QWB_AGENT_START_MS=""
+QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_AGENT_START_MS=""
 # shellcheck source=/dev/null
 . "$CONF"
 # 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(codex)' 这类都混不过）
@@ -88,6 +89,45 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
+LAUNCH_MODE="herdr"
+launch_worker=""; launch_value=""
+for launch_part in ${QWB_WORKER_LAUNCH:-}; do
+  launch_prefix="${launch_part%%=*}"; launch_is_worker=0
+  if [[ "$launch_part" == *=* ]]; then
+    for launch_known_worker in $QWB_WORKERS; do
+      [[ "$launch_prefix" == "$launch_known_worker" ]] && launch_is_worker=1 && break
+    done
+  fi
+  if [[ "$launch_is_worker" -eq 1 ]]; then
+    [[ "$launch_worker" == "$WORKER" ]] && LAUNCH_MODE="$launch_value"
+    launch_worker="$launch_prefix"
+    launch_value="${launch_part#*=}"
+  elif [[ -n "$launch_worker" ]]; then
+    launch_value="${launch_value} ${launch_part}"
+  fi
+done
+[[ "$launch_worker" == "$WORKER" ]] && LAUNCH_MODE="$launch_value"
+PANE_COMMAND=""
+case "$LAUNCH_MODE" in
+  herdr) ;;
+  pane-run:*)
+    PANE_COMMAND="${LAUNCH_MODE#pane-run:}"
+    if [[ -z "$PANE_COMMAND" ]]; then
+      echo "错误：工人 '${WORKER}' 的 pane-run 命令行为空；合法启动方式：herdr / pane-run:<命令行>" >&2
+      exit 1
+    fi
+    if [[ "$PANE_COMMAND" =~ (^|[[:space:]])(-p|--print|--exec|exec)(=|[[:space:]]|$) ]]; then
+      echo "错误：pane-run 只允许交互式命令，禁止 -p/--print/--exec/exec：${PANE_COMMAND}" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "错误：工人 '${WORKER}' 的启动方式 '${LAUNCH_MODE}' 非法；合法启动方式：herdr / pane-run:<命令行>" >&2
+    exit 1
+    ;;
+esac
+NAME="${NAME:-qwb-$TASK_ID}"
+NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 
 # —— 疑点门：票上有未决「规格疑点」→ 拒绝派发，先处置后派 ——
 # 相关事件 = 两类精确前缀（blocked:…spec-defect: / working:…spec-resolved:）按出现顺序取最后一个：
@@ -315,7 +355,29 @@ if [[ -n "$WORKTREE" ]]; then
   DIR="$(cd "$WORKTREE" && pwd)"
 fi
 
-# 窗口：复用 --pane 或新开 tab（tab create 返回 JSON，pane id 按契约取 .result.root_pane.pane_id）
+# —— 记账（F2）：state/场景基线在起任何工人前写；dispatch 在最终 pane 已知后、提示词发出前写 ——
+# 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
+lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"
+if grep -q '^state:' "$TASK_FILE"; then
+  perl -i -pe 'if (!$done && /^state:/) { $_ = "state: running\n"; $done = 1 }' "$TASK_FILE"
+else
+  perl -i -pe 'if ($. == 1 && !$done) { $_ = "state: running\n\n$_"; $done = 1 }' "$TASK_FILE"
+fi
+# 首次派发或 --accept-new-scenarios 重建才写 scenarios-fp:；已有基线原样保留（不重写、不改值，R2-M1）
+grep -q '^scenarios-fp:' "$TASK_FILE" \
+  || perl -i -pe 'if (!$ins && /^state:/) { $_ .= "scenarios-fp: '"$SCEN_FP"'\n"; $ins = 1 }' "$TASK_FILE"
+{ grep -q '^state: running' "$TASK_FILE" && grep -q "^scenarios-fp: ${SCEN_FP}" "$TASK_FILE"; } \
+  || { echo "错误：state/scenarios-fp 未正确写入 ${TASK_FILE}" >&2; exit 1; }
+[[ "$REBUILD_FP" -eq 1 ]] \
+  && printf 'working: %s 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）\n' \
+       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TASK_FILE"
+
+# 提示词：任务书绝对路径 + 主账本绝对路径 + 状态行规矩；--here 时写明这是显式选择的非隔离目录
+DIR_NOTE=""
+[[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
+PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
+
+# 窗口：复用 --pane 或新开 tab。
 if [[ -z "$PANE" ]]; then
   out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
   # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
@@ -329,39 +391,57 @@ if [[ -z "$PANE" ]]; then
   [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
 fi
 
-NAME="${NAME:-qwb-$TASK_ID}"
-NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-
-# —— 记账（F2）：工人一启动就被允许往任务书追加，所以所有账本写入必须在 agent start 之前完成 ——
-# 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
-lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"
-if grep -q '^state:' "$TASK_FILE"; then
-  perl -i -pe 'if (!$done && /^state:/) { $_ = "state: running\n"; $done = 1 }' "$TASK_FILE"
-else
-  perl -i -pe 'if ($. == 1 && !$done) { $_ = "state: running\n\n$_"; $done = 1 }' "$TASK_FILE"
-fi
-# 首次派发或 --accept-new-scenarios 重建才写 scenarios-fp:；已有基线原样保留（不重写、不改值，R2-M1）
-grep -q '^scenarios-fp:' "$TASK_FILE" \
-  || perl -i -pe 'if (!$ins && /^state:/) { $_ .= "scenarios-fp: '"$SCEN_FP"'\n"; $ins = 1 }' "$TASK_FILE"
-{ grep -q '^state: running' "$TASK_FILE" && grep -q "^scenarios-fp: ${SCEN_FP}" "$TASK_FILE"; } \
-  || { echo "错误：state/scenarios-fp 未正确写入 ${TASK_FILE}" >&2; exit 1; }
-# 追加前保证文件以换行结尾，新行不粘连到原末行
+# 最终 pane 已知后追加完整 dispatch，随后才启动工人并发送提示词。
 [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && printf '\n' >> "$TASK_FILE"
 printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR" >> "$TASK_FILE"
-[[ "$REBUILD_FP" -eq 1 ]] \
-  && printf 'working: %s 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）\n' \
-       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TASK_FILE"
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR" >> "$TASK_FILE" \
+  || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
 # 自检：任务书原有行不得丢失（行数只增不减）
 lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
 (( lines_after >= lines_before )) \
   || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
 
-herdr agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS"
+now_ms() {
+  if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
+  perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+}
+sleep_ms() {
+  local ms="$1"
+  (( ms > 0 )) || ms=1
+  if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
+  sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
+}
 
-# 提示词：任务书绝对路径 + 主账本绝对路径 + 状态行规矩；--here 时写明这是显式选择的非隔离目录
-DIR_NOTE=""
-[[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
-herdr agent prompt "$NAME" "你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
+case "$LAUNCH_MODE" in
+  herdr)
+    herdr agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS"
+    herdr agent prompt "$NAME" "$PROMPT"
+    ;;
+  pane-run:*)
+    herdr pane run "$PANE" "$PANE_COMMAND"
+    detect_started="$(now_ms)"
+    while ! herdr agent get "$PANE" >/dev/null 2>&1; do
+      detect_elapsed=$(( $(now_ms) - detect_started ))
+      if (( detect_elapsed >= START_MS )); then
+        {
+          echo "错误：pane-run 工人检测超时（${START_MS}ms），pane=${PANE}"
+          echo "手工排查：herdr pane read ${PANE} --source recent-unwrapped --lines 120"
+          echo "          herdr pane process-info --pane ${PANE}"
+          echo "          herdr agent get ${PANE}"
+        } >&2
+        exit 1
+      fi
+      detect_left=$(( START_MS - detect_elapsed ))
+      (( detect_left > 100 )) && detect_left=100
+      sleep_ms "$detect_left"
+    done
+    herdr agent rename "$PANE" "$NAME"
+    # 非官方 kind 只有进程检测，没有 herdr prompt adapter；直接向交互 pane 输入一行。
+    herdr pane run "$PANE" "$PROMPT"
+    # Command Code 对长文本可能先完成粘贴、同次 Enter 未提交；只有状态未转换时才补一次 Enter。
+    herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout 300 >/dev/null 2>&1 \
+      || herdr pane send-keys "$PANE" enter
+    ;;
+esac
 
 echo "已派发：${TASK_ID} → ${WORKER}（agent=${NAME} pane=${PANE} dir=${DIR}）"

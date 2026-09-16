@@ -1,0 +1,2 @@
+# 真录 2026-09-16，herdr 0.8.2：在 shell pane 运行 cmd、接受 /tmp workspace trust 后，herdr agent get wAB:p3
+{"id":"cli:agent:get","result":{"agent":{"agent":"cmd","agent_status":"idle","cwd":"/private/tmp","display_agent":"cmd","focused":false,"foreground_cwd":"/private/tmp","pane_id":"wAB:p3","revision":1,"state_change_seq":2921,"tab_id":"wAB:t3","terminal_id":"term_65b9da87252d4fa","terminal_title":"⌘ Command Code · tmp","terminal_title_stripped":"⌘ Command Code · tmp","workspace_id":"wAB"},"type":"agent_info"}}
