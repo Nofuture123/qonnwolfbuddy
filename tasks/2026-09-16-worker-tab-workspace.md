@@ -5,7 +5,7 @@
 state:    running
 scenarios-fp: 9eb0465201721561334c0f2744ab24b823544730
 来源:     Rocky 2026-09-16「母仓我也没看到有 herdr 窗口」——主控在 wA2（qonnwolf-sites）给母仓 wA3 派活，工人 tab 开在了 wA2
-派发:     主控 claude-opus-5（Claude Code，pane wA2:p1） → <待派>
+派发:     主控 claude-opus-5（Claude Code，pane wA2:p1） → cmd（改派，原 pi）
 主账本:   /Users/rocky/projects/qonnwolfbuddy/tasks/2026-09-16-worker-tab-workspace.md
 工作目录: /Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
 分支:     worker-tab-workspace
@@ -117,3 +117,9 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 - 不改 herdr；不给 herdr 提需求。
 - 不动 `--pane` 复用路径与 pane-run 启动逻辑。
 - 不做「自动建 workspace」——找不到就按上面三级规则处理。
+dispatch: 2026-09-16T19:31:57Z worker=pi agent=qwb-worker-tab-workspace pane=wA3:pC dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
+working: 2026-09-16T19:40:53Z worker=pi 阶段=规格已读/真录已取 实现开始：真录 workspace list 已存 tests/fixtures/herdr/workspace-list.json；计划=qwb-lib.sh 共享 resolve_workspace + run/wake ensure 接线 + config/QWBUDDY/DECISIONS 文档 + smoke 场景
+working: 2026-09-16T19:45:24Z 主控改派：Rocky 指定 cmd 为快档首选，pi（wA3:pC）在读票阶段停下并关窗，worktree 保留原样（如有 pi 的改动见上一行 git status）
+dispatch: 2026-09-16T19:45:36Z worker=cmd agent=qwb-worker-tab-workspace pane=wA3:pD dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
+working: 2026-09-16T19:46:54Z 主控重派：Rocky 要求 cmd 以最高权限启动；wA3:pD 关窗，改动回滚（保留真录 fixture），改用 `cmd --yolo --trust` 重开（--trust 同时消掉新目录信任框）
+dispatch: 2026-09-16T19:46:54Z worker=cmd agent=qwb-worker-tab-workspace pane=wA3:pE dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-tab-workspace
