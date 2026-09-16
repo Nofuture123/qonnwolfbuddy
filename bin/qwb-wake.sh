@@ -23,7 +23,9 @@ usage() {
   --interval <毫秒>   事件等待的超时（默认：config.sh QWB_WAKE_INTERVAL_MS，否则 120000）
   --once              只检查一轮就退出
   --dry-run           只报告未结项，不叫、不写 wake 行
-  --ensure            幂等确保值守在跑：调用者所在 workspace 内建/复用一个可见 shell tab；
+  --ensure            幂等确保值守在跑：建/复用一个可见 shell tab；新建时 tab 落在项目自己的
+                      workspace（config.sh 的 QWB_WORKSPACE 优先，查不到即拒绝；未声明则按
+                      worktree.repo_root 匹配项目根；都没有才落调用者 workspace 并警告）；
                       判定依据是 pane 前台进程组里真实的 qwb-wake.sh 进程 + 项目路径，
                       不凭 pane 存在或名字相似；查不到/多实例明确报错，不擅自多开
   --check             只报告本项目值守健康并退出：运行 / 未运行 / 未知（不写账本不改状态）
@@ -54,6 +56,11 @@ fi
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 LEDGER="$PROJECT_ROOT/tasks"
 CONF="$PROJECT_ROOT/qwbuddy/config.sh"
+# 共享库（resolve_workspace 等；与 qwb-run.sh 同一份，两处不各写一份）
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
+[[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整（旧版安装缺此文件），请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$LIB"
 
 if [[ "$DRY" -eq 0 && "$CHECK" -eq 0 ]]; then
   command -v herdr >/dev/null 2>&1 || { echo "错误：找不到 herdr 命令，无法叫醒主控" >&2; exit 1; }
@@ -340,8 +347,16 @@ _ensure_body() {
       gone) echo "登记 pane ${rp} 已不存在，另开新 tab" ;;
     esac
   fi
+  # 建 tab 的 workspace：项目声明的 QWB_WORKSPACE 优先，未声明按 worktree.repo_root 匹配项目根，
+  # 都没有才回退调用者 workspace。解析失败（声明了但查不到 / 查询失败 / 响应不合契约）→ 不建 tab、
+  # 不登记、不算确保成功。（复用既有 pane / 原地重启的分支不建 tab，pane 的 workspace 已定，不解析。）
+  local tabws
+  if ! tabws="$(resolve_workspace "$PROJECT_ROOT")"; then
+    return 1
+  fi
+  [[ -n "$tabws" ]] || tabws="$ws"
   local tout
-  tout="$(herdr tab create --workspace "$ws" --cwd "$PROJECT_ROOT" --label "qwb-值守" --no-focus 2>&1)" \
+  tout="$(herdr tab create --workspace "$tabws" --cwd "$PROJECT_ROOT" --label "qwb-值守" --no-focus 2>&1)" \
     || { echo "错误：herdr tab create 失败：${tout}" >&2; return 1; }
   np="$(printf '%s' "$tout" | perl -MJSON::PP=decode_json -e '
     my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
@@ -357,9 +372,9 @@ _ensure_body() {
     echo "错误：已建值守 tab ${np} 并投递启动命令，但连续探测未确认进程出现——不算确保成功，未登记 .watch；请到 pane ${np} 看实际报错后重跑" >&2
     return 1; }
   local wpid="${nv#wake:}"; wpid="${wpid%@*}"
-  watch_write "$np" "$ws" "$wpid" \
+  watch_write "$np" "$tabws" "$wpid" \
     || { echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1; }
-  echo "已在本 workspace 新建值守 tab 并启动（pane ${np} pid ${wpid}）"
+  echo "已在 workspace ${tabws} 新建值守 tab 并启动（pane ${np} pid ${wpid}）"
   return 0
 }
 

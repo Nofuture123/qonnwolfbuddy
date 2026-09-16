@@ -13,7 +13,7 @@
 3. **未结项** = `state` ∈ {`running`, `blocked`, `needs-decision`}。列出未结项清单。
 4. 读每个未结项末尾的状态行，搞清楚活到哪了。
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
-6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。
+6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。**同一步**把 `HERDR_WORKSPACE_ID` 写进 `QWB_WORKSPACE`：工人与值守的 tab 靠它开在**项目自己的 workspace**（而不是你这个主控身边）；跨项目派活的主控不要写自己的，改填**目标项目**的 workspace id。
 7. （仅新项目首次）派发前先在工人 CLI 的 tab 里手工接受一次 workspace 信任提示——首次 trust 对话框会吞掉派发提示词，属一次性人工授权（见 docs/E2E-RUNBOOK.md 现象A）。
 8. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
 
@@ -130,7 +130,8 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | 脚本 | 干什么 |
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
-| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖） |
+| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；工人 tab 落在 `QWB_WORKSPACE` 声明的项目 workspace——见下一行） |
+| `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
 | `qwb-wake.sh [--dry-run|--once|--ensure|--check]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守在跑（开局必跑），`--check` 只报值守健康 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |

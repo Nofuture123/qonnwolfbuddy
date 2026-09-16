@@ -5,6 +5,10 @@ QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
 QWB_WAKE_INTERVAL_MS=120000            # 值守每轮等待预算（毫秒）
 QWB_REWAKE_MS=1800000                  # 时间兜底重叫：距上次叫醒超过它仍未结项就再叫一次（0 = 关闭）
 QWB_CONTROLLER_PANE=""                 # 主控 pane id；开局点名时填入
+QWB_WORKSPACE=""                       # 本项目的 herdr workspace id（如 wA3）；主控开局把 HERDR_WORKSPACE_ID 填在这里，
+                                       # 跨项目派活的主控改填目标项目的 id。非空即用——本机 herdr 查不到该 id 就拒绝派发
+                                       # （不静默回退）；留空则按 herdr workspace list 的 worktree.repo_root 匹配项目根
+                                       # （多个匹配取 focused 的），都没有才落调用者 workspace 并在 stderr 警告
 # —— 质量门：qwb-test.sh fast|full 读取执行；命令在项目根下跑，按本项目布局调路径 ——
 # 默认留空：未声明（空值）时 qwb-test.sh 拒绝执行并提示、qwb-lint.sh 报 FAIL——新项目必配，不许静默当绿。
 # 示例（QW buddy 母本仓的写法，路径须换成你项目的）：
