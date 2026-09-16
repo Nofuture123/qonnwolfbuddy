@@ -419,7 +419,7 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 
 **实现要点**：两张表**共用同一个解析函数**（`worker_map_get`，格式 `工人名=值`，值可含空格、遇下一个「工人名=」前缀才结束，同一工人取最后一项），不写第二份；解析结果经全局回带（`WORKER_MAP_FOUND` / `WORKER_MAP_VALUE`）而不用命令替换，以便区分「未列出」与「列出但值为空」。参数串**按空格切词**追加到 `--` 之后，**不做 shell 引号解析**（需要带空格的单个参数时用 pane-run 命令行）；空值 → 不加 `--`，与不配置时**字节一致**。herdr 与 pane-run 两条路的 headless 禁令（`-p`/`--print`/`--exec`/`exec`）**共用同一条检查函数**；两类拒绝都发生在**锁/worktree/tab/账本写之前**（零副作用）。
 
-**格式的隐含耦合（真机实测发现）**：「值遇下一个 `工人名=` 才结束」里的**工人名取自 `QWB_WORKERS`**，因此一条 `QWB_WORKER_ARGS` 表只有在该表用到的名字**都在工人表里**时才切得对——名字不在工人表里的那一项会被当成上一个值的续词。模板默认工人表是 `codex pi claude`，而票定下的默认 ARGS 表还含 `devin=`/`omp=`，两者不自洽时 `claude` 会多收到 `devin=--permission-mode dangerous omp=--auto-approve` 两个废词（真机 pane 回显可证）。此项**已在任务书账本上记 `blocked: spec-defect:`**，如何收敛（改默认表、扩工人表、或加配置校验）由主控裁决，实现侧不擅自改语义。
+**格式的隐含耦合（真机实测发现）**：「值遇下一个 `工人名=` 才结束」里的**工人名取自 `QWB_WORKERS`**，因此一条 `QWB_WORKER_ARGS` 表只有在该表用到的名字**都在工人表里**时才切得对——名字不在工人表里的那一项会被当成上一个值的续词。模板默认工人表原是 `codex pi claude`，而默认 ARGS 表还含 `devin=`/`omp=`，两者不自洽时 `claude` 会多收到 `devin=--permission-mode dangerous omp=--auto-approve` 两个废词（真机 pane 回显可证：`claude --dangerously-skip-permissions devin=--permission-mode dangerous omp=--auto-approve`）。**处置（主控裁定 spec）**：默认工人表同步扩为 `codex pi claude devin omp`——两条默认值必须自洽，装出来的项目才对这五家都成立。否掉的替代：**少列**（默认 ARGS 只写 `codex=`/`claude=`/`pi=`）等于装出来的项目一旦加用 devin/omp 就裸跑；**加解析后校验**（值里出现 `名字=` 而该名字不在工人表就拒绝）会误杀合法参数——`codex -c model=o3` 这种值本身就含 `name=` 形式。耦合本身留作格式的既定语义（值里带 `名=` 的单个参数要用 pane-run 命令行写）。
 
 **不动的**：`qwb-init.sh` 不改——新装项目直接拿模板默认值；已装项目由主控手工往 `config.sh` 补键（`qwb-init` 不覆盖已有 `config.sh` 是既定行为）。`dispatch:` 行格式不变；参数不写进账本（要审计看 `config.sh`）。`QWBUDDY.md` §10 硬规矩不加条——这是配置默认值，不是禁令。
 

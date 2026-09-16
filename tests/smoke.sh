@@ -49,7 +49,7 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
   ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
@@ -343,7 +343,7 @@ for wname in workers '(codex)' note; do
   fi
   grep -q 'agent start' "$STUBLOG" && bad "--worker ${wname} 仍调用了 herdr agent start" || ok "--worker ${wname} 未调用 agent start"
 done
-printf '%s' "$r3out" | grep -q 'codex pi claude' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
+printf '%s' "$r3out" | grep -qF 'codex pi claude devin omp' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
 
 echo "== 16. R4：非法 state 变可见 =="
 ILF="$TMP/tasks/2099-01-06-illegal.md"
@@ -2598,6 +2598,26 @@ out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
   && ok "用模板默认值真派发：codex 拿到自己的最高权限参数（rc=${rc}）" \
   || { bad "模板默认值派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr agent start' "$STUBLOG"; }
 rm -rf "$MPX"
+
+echo "== 51h. 默认值自洽（2026-09-16 spec-defect 回归门）=="
+# 默认 QWB_WORKER_ARGS 串里出现的每个「工人名=」都必须在该串所属的默认 QWB_WORKERS 里，
+# 否则它不被当成新项，而是并进上一个工人的值（claude 曾因此被旁串 devin=/omp=）。
+# 反向验证：把默认工人表删回 "codex pi claude"，本条必须变红。
+dworkers="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKERS" )"
+dargs="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
+miss=""
+for tok in $dargs; do
+  case "$tok" in
+    *=*) nm="${tok%%=*}" ;;
+    *) continue ;;
+  esac
+  inself=0
+  for w in $dworkers; do [[ "$nm" == "$w" ]] && { inself=1; break; }; done
+  [[ "$inself" -eq 1 ]] || miss="${miss} ${nm}"
+done
+{ [[ -n "$dworkers" && -z "$miss" ]]; } \
+  && ok "默认 QWB_WORKER_ARGS 的每个「工人名=」都在默认 QWB_WORKERS 里（两条默认值自洽）" \
+  || bad "默认 ARGS 表含不在默认工人表里的名字（会被并进上一个值）:${miss}"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
