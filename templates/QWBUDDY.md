@@ -70,8 +70,9 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 
 ```
 写任务书（模板 qwbuddy/TASK.md；写好即 state: running，见 §3；必须有「验收场景」块，见 §6） 
-  → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人> [--worktree <路径> | --create-worktree | --here]
-       （默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本；--here 是显式声明在项目根派发；
+  → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人|auto> [--worktree <路径> | --create-worktree | --here]
+       （--worker auto = JEV 自动派工：qwb-dispatch.sh 按 config/dispatch-rules.json 选工人，
+        off/error/ambiguous 落默认工人不阻塞派发；默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本；--here 是显式声明在项目根派发；
         它负责：验收场景门校验、查主控锁、开窗口、记账（state: running + scenarios-fp + dispatch）、
         起工人、发提示词；锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁；
         没有验收场景块或缺失败路径场景会直接拒绝派发）
@@ -131,6 +132,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；工人 tab 落在 `QWB_WORKSPACE` 声明的项目 workspace——见下一行） |
+| `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 config/dispatch-rules.json（模板在母本仓 templates/）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
 | `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
 | `qwb-wake.sh [--dry-run|--once|--ensure|--check]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守在跑（开局必跑），`--check` 只报值守健康 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |

@@ -2125,5 +2125,238 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
   || { bad "ensure 未校验声明的 workspace（rc=${rc}）"; printf '%s\n' "$out"; }
 sed -i '' '/^QWB_WORKSPACE=/d' "$ENSP/qwbuddy/config.sh"
 
+echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/响应校验/key 纪律 + qwb-run auto 集成）=="
+# 假 curl 手法沿 firstmate tests/fm-dispatch-resolve.test.sh：记录 argv/请求体/fd3 头/子进程环境，
+# 按 FAKE_CURL_* 应答。零网络、零真 key。
+DT="$(mktemp -d)"
+DFB="$DT/fakebin"; DLOG="$DT/log"
+mkdir -p "$DFB" "$DLOG" "$DT/config"
+cat > "$DFB/curl" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+if [ -n "${TYPESAFE_API_KEY+x}" ]; then printf 'curl:secret-present\n' >> "${CHILD_ENV_LOG:?}"
+else printf 'curl:clean\n' >> "${CHILD_ENV_LOG:?}"; fi
+out=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    *) printf '%s\n' "$1" >> "${FAKE_CURL_LOG:?}/argv"; shift ;;
+  esac
+done
+cat > "${FAKE_CURL_LOG:?}/body"
+cat /dev/fd/3 > "${FAKE_CURL_LOG:?}/header" 2>/dev/null || printf 'fd3 不可读\n' > "${FAKE_CURL_LOG:?}/header"
+[ "${FAKE_CURL_FAIL:-0}" = 1 ] && exit 7
+cp "${FAKE_CURL_RESPONSE:?}" "$out"
+printf '%s' "${FAKE_CURL_HTTP:-200}"
+FAKE
+chmod +x "$DFB/curl"
+
+cat > "$DT/config/dispatch-rules.json" <<'JSON'
+{
+  "rules": [
+    {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
+    {"when": "常规实现、机械改动、调研", "worker": "pi"},
+    {"when": "代码审核、对抗性审查", "worker": "claude"}
+  ],
+  "default": {"worker": "pi"}
+}
+JSON
+cat > "$DT/brief.md" <<'MD'
+# 任务
+跨模块重构 worker 解析层，高风险改动，需要架构判断。
+MD
+export FAKE_CURL_LOG="$DLOG" FAKE_CURL_RESPONSE="$DT/resp.json" CHILD_ENV_LOG="$DLOG/child-env"
+DKEY='test-key-jev-port-never-on-argv'
+
+dresp() { # <path> <choice> <confidence> —— 合法应答：winner 拿 conf，其余平分余量（和恰为 1）
+  jq -n --arg c "$2" --argjson conf "$3" '
+    (["rule_1","rule_2","rule_3","default"] | map(select(. != $c))) as $rest |
+    ((1 - $conf) / ($rest | length)) as $share |
+    {model: "jev-1.13.0",
+     answers: {rule: {type: "choice", choice: $c, confidence: $conf,
+       probabilities: (reduce $rest[] as $k ({}; .[$k] = $share) | .[$c] = $conf)}},
+     usage: {input_tokens: 100, output_tokens: 20}}' > "$1"
+}
+dreset() { rm -rf "$DLOG"; mkdir -p "$DLOG"; }
+drun() { # 可先设 DENV="VAR=值"（逐次覆盖）；结果在 D_OUT/D_ERR/D_RC；设 DKEY 则带环境 key
+  D_ERR="$DT/stderr.txt"
+  D_OUT="$(cd "$DT" && env -u TYPESAFE_API_KEY ${DKEY:+TYPESAFE_API_KEY=$DKEY} ${DENV:-} \
+    PATH="$DFB:$PATH" bash "$ROOT/bin/qwb-dispatch.sh" "$@" 2>"$D_ERR")"; D_RC=$?
+  DENV=''
+}
+
+# 49.1 off 门：无 key 无 .env → stderr 一行 off、exit 0、stdout 空、零网络（内联跑，不注入 key）
+dreset
+D_OUT="$(cd "$DT" && env -u TYPESAFE_API_KEY PATH="$DFB:$PATH" bash "$ROOT/bin/qwb-dispatch.sh" brief.md 2>"$DT/stderr.txt")"; D_RC=$?; D_ERR="$DT/stderr.txt"
+{ [[ "$D_RC" -eq 0 ]] && [[ -z "$D_OUT" ]] && grep -q 'qwb-dispatch: off' "$D_ERR" && [[ ! -e "$DLOG/argv" ]]; } \
+  && ok "off 门：exit 0、stdout 空、stderr 一行 off、零网络调用" \
+  || { bad "off 门不对（rc=${D_RC}）"; printf 'out=[%s] err=[%s]\n' "$D_OUT" "$(cat "$D_ERR" 2>/dev/null)"; }
+
+# 49.2 .env key → clear：worker 与规则一致；key 走 fd3 头不上 argv；模型看不到 worker/key
+printf 'OTHER=1\nexport TYPESAFE_API_KEY="%s"\n' "$DKEY" > "$DT/.env"
+dreset; dresp "$DT/resp.json" rule_1 0.94; drun brief.md
+{ [[ "$D_RC" -eq 0 ]] && grep -q '^  status: clear' <<<"$D_OUT" && grep -q '^  worker: codex' <<<"$D_OUT" \
+    && grep -q '复杂架构' <<<"$D_OUT" && grep -q 'confidence: 0.94' <<<"$D_OUT"; } \
+  && ok ".env key 激活：rule_1 命中 → clear + worker codex（置信度 0.94）" \
+  || { bad ".env clear 不对（rc=${D_RC}）"; printf '%s\n' "$D_OUT"; cat "$D_ERR"; }
+grep -q "Authorization: Bearer $DKEY" "$DLOG/header" \
+  && ok "key 经 fd3 头送达 curl" || bad "fd3 头缺 key"
+argv="$(cat "$DLOG/argv")"
+{ grep -q 'https://api.typesafe.ai/v1/systemone' <<<"$argv" && ! grep -q "$DKEY" <<<"$argv"; } \
+  && ok "请求打固定端点；key 不在 argv" || bad "argv 检查失败"
+body="$(cat "$DLOG/body")"
+{ [[ "$(jq -r .model <<<"$body")" == 'jev-latest' ]] \
+    && [[ "$(jq -r .state.task.project <<<"$body")" == "$(basename "$DT")" ]] \
+    && grep -q '跨模块重构' <<<"$body" \
+    && [[ "$(jq -c '.questions | keys' <<<"$body")" == '["rule"]' ]] \
+    && [[ "$(jq -c '.questions.rule.criteria | keys | sort' <<<"$body")" == '["default","rule_1","rule_2","rule_3"]' ]]; } \
+  && ok "请求体：jev-latest + project + brief 全文 + 单 choice 问题（rule_1..3 + default）" \
+  || bad "请求体形状不对"
+{ ! grep -q "$DKEY" <<<"$body" && ! grep -q 'codex' <<<"$body"; } \
+  && ok "模型看不到 key 也看不到 worker 名" || bad "body 泄漏"
+[[ "$(cat "$DLOG/child-env")" == 'curl:clean' ]] \
+  && ok "key 不出现在子进程环境" || bad "子进程环境有 key（$(cat "$DLOG/child-env")）"
+# 对照：环境变量 key 优先于 .env
+D_OUT="$(cd "$DT" && TYPESAFE_API_KEY='env-wins-key' PATH="$DFB:$PATH" bash "$ROOT/bin/qwb-dispatch.sh" brief.md 2>/dev/null)"
+grep -q 'Authorization: Bearer env-wins-key' "$DLOG/header" \
+  && ok "环境变量 key 优先于 .env" || bad "env key 未生效"
+
+# 49.3 ambiguous：confidence < 0.6 → ambiguous + probabilities 全文 + 无 worker 行
+dreset; dresp "$DT/resp.json" rule_2 0.41; drun brief.md
+{ [[ "$D_RC" -eq 0 ]] && grep -q '^  status: ambiguous' <<<"$D_OUT" \
+    && grep -q '低于门槛 0.6' <<<"$D_OUT" \
+    && grep -q 'rule_1=' <<<"$D_OUT" && grep -q 'rule_3=' <<<"$D_OUT" && grep -q 'default=' <<<"$D_OUT" \
+    && ! grep -q '^  worker:' <<<"$D_OUT"; } \
+  && ok "低置信度 → ambiguous + probabilities 全文，不出 worker 行" \
+  || { bad "ambiguous 不对（rc=${D_RC}）"; printf '%s\n' "$D_OUT"; }
+
+# 49.4 default：无规则命中 → clear + default worker
+dreset; dresp "$DT/resp.json" default 0.94; drun brief.md
+grep -q '^  worker: pi' <<<"$D_OUT" && grep -q 'rule: default' <<<"$D_OUT" \
+  && ok "default 选项 → clear + default worker pi" || bad "default 不对：$(grep '^  status' <<<"$D_OUT")"
+
+# 49.5 响应校验与网络错：全部 error + exit 0（派工流程不被卡死）
+# rule_9 用例：probabilities 合法但 choice 不在选项集 → 落到解析层判 error
+jq -n '{model:"jev-1.13.0",answers:{rule:{type:"choice",choice:"rule_9",confidence:0.94,
+  probabilities:{rule_1:0.94,rule_2:0.02,rule_3:0.02,default:0.02}}},
+  usage:{input_tokens:100,output_tokens:20}}' > "$DT/resp.json"
+drun brief.md
+{ [[ "$D_RC" -eq 0 ]] && grep -q '^  status: error' <<<"$D_OUT" && grep -q 'rule_9 不在规则文件里' <<<"$D_OUT"; } \
+  && ok "未知选项 rule_9 → error（exit 0）" || { bad "rule_9 未判 error：$(grep '^  reason' <<<"$D_OUT")"; }
+dresp_bad() { # <变换 jq 表达式> <期望 reason 片段> <用例名>
+  dreset; dresp "$DT/resp.json" rule_1 0.94
+  jq "$1" "$DT/resp.json" > "$DT/r2.json" && mv "$DT/r2.json" "$DT/resp.json"
+  drun brief.md
+  { [[ "$D_RC" -eq 0 ]] && grep -q '^  status: error' <<<"$D_OUT" && grep -q "$2" <<<"$D_OUT"; } \
+    && ok "$3 → error（exit 0）" || { bad "$3 未判 error"; printf '%s\n' "$D_OUT"; }
+}
+dresp_bad '.answers.rule.probabilities |= del(.default)' 'rule Choice' 'probabilities 键不全'
+dresp_bad '.answers.rule.probabilities = {rule_1:0.1,rule_2:0.1,rule_3:0.1,default:0.1}' 'rule Choice' 'probabilities 和≠1'
+dresp_bad '.answers.rule.confidence = 2' 'rule Choice' 'confidence 越界'
+dresp_bad '.usage = "bad"' 'rule Choice' 'usage 非对象'
+dreset; dresp "$DT/resp.json" rule_1 0.94; DENV='FAKE_CURL_HTTP=500'; drun brief.md
+{ [[ "$D_RC" -eq 0 ]] && grep -q 'http 500' <<<"$D_OUT"; } \
+  && ok "HTTP 500 → error（exit 0）" || bad "http 500 未判 error"
+dreset; dresp "$DT/resp.json" rule_1 0.94; DENV='FAKE_CURL_FAIL=1'; drun brief.md
+grep -q 'http 000' <<<"$D_OUT" && ok "网络失败 → http 000 error" || bad "网络失败未判 error"
+
+# 49.6 坏规则文件 → exit 2（配置错误不绕过）、不联网
+dreset; printf '%s\n' '{"rules":[' > "$DT/config/dispatch-rules.json"
+drun brief.md
+{ [[ "$D_RC" -eq 2 ]] && grep -q '不是合法 JSON' "$D_ERR" && [[ ! -e "$DLOG/argv" ]]; } \
+  && ok "坏 JSON 规则 → exit 2 且零网络" || { bad "坏 JSON 未 exit 2（rc=${D_RC}）"; cat "$D_ERR"; }
+printf '%s\n' '{"rules":[{"when":"x","worker":"has space"}],"default":{"worker":"pi"}}' > "$DT/config/dispatch-rules.json"
+drun brief.md
+{ [[ "$D_RC" -eq 2 ]] && grep -q '合法 worker' "$D_ERR"; } \
+  && ok "worker 含空格 → exit 2" || { bad "worker 空格未拒（rc=${D_RC}）"; cat "$D_ERR"; }
+printf '%s\n' '{"rules":[{"when":"x","worker":"pi"}]}' > "$DT/config/dispatch-rules.json"
+drun brief.md
+{ [[ "$D_RC" -eq 2 ]] && grep -q 'default' "$D_ERR"; } \
+  && ok "缺 default → exit 2" || { bad "缺 default 未拒（rc=${D_RC}）"; cat "$D_ERR"; }
+
+# 49.7 规则文件不存在 → exit 0、stderr 一行 no rules、零网络
+dreset; mv "$DT/config/dispatch-rules.json" "$DT/rules.bak"
+drun brief.md
+{ [[ "$D_RC" -eq 0 ]] && [[ -z "$D_OUT" ]] && grep -q 'no rules' "$D_ERR" && [[ ! -e "$DLOG/argv" ]]; } \
+  && ok "无规则文件 → exit 0、no rules、零网络" || bad "no-rules 路径不对（rc=${D_RC}）"
+mv "$DT/rules.bak" "$DT/config/dispatch-rules.json"
+
+# 49.8 qwb-run.sh --worker auto 集成（stub herdr；$TMP 是前面装好的假项目）
+# 注：$DT/config 里的规则文件此时是 49.6 留下的坏文件，$TMP 直接写好规则，不从 $DT 拷
+rm -f "$DT/.env"
+mkdir -p "$TMP/config"
+cat > "$TMP/config/dispatch-rules.json" <<'JSON'
+{
+  "rules": [
+    {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
+    {"when": "常规实现、机械改动、调研", "worker": "pi"},
+    {"when": "代码审核、对抗性审查", "worker": "claude"}
+  ],
+  "default": {"worker": "pi"}
+}
+JSON
+AUT="$TMP/tasks/2099-01-50-autodisp.md"
+cat > "$AUT" <<'EOF'
+# autodisp
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书就绪
+When  auto 派发
+Then  落到解析出的工人
+### user_失败
+Given 派工不可用
+When  auto 派发
+Then  落默认工人不阻塞
+EOF
+autoworker() { grep '^dispatch:' "$AUT" | tail -1 | sed -n 's/.*worker=\([^[:space:]]*\).*/\1/p'; }
+rm -rf "$TMP/qwbuddy/.controller.lock"
+auto_run() { # 额外 env 以 DENV 传；stderr 落 $DT/run.err
+  ( cd "$TMP" && env -u TYPESAFE_API_KEY ${AUTO_KEY:+TYPESAFE_API_KEY=$AUTO_KEY} ${DENV:-} \
+      PATH="$DFB:$STUB:$PATH" HERDR_PANE_ID=wtest:dp \
+      bash qwbuddy/bin/qwb-run.sh --task autodisp --worker auto --here 2>"$DT/run.err" ) >/dev/null; }
+# (a) off → 默认工人 pi，不阻塞
+dreset; dresp "$DT/resp.json" rule_1 0.94
+auto_run; a_rc=$?
+{ [[ "$a_rc" -eq 0 ]] && [[ "$(autoworker)" == "pi" ]] \
+    && grep -q 'qwb-dispatch: off' "$DT/run.err" && grep -q '按默认工人 pi' "$DT/run.err"; } \
+  && ok "auto+off → 落默认工人 pi 派发成功，stderr 有说明（验收 4）" \
+  || { bad "auto+off 不对（rc=${a_rc}）"; cat "$DT/run.err"; }
+# (b) clear → 规则命中的 codex
+dreset; dresp "$DT/resp.json" rule_1 0.94; AUTO_KEY="$DKEY"
+auto_run; a_rc=$?; AUTO_KEY=''
+{ [[ "$a_rc" -eq 0 ]] && [[ "$(autoworker)" == "codex" ]] && grep -q 'auto 派工命中 → codex' "$DT/run.err"; } \
+  && ok "auto+clear → 派给规则命中的 codex（验收 2 延伸）" \
+  || { bad "auto+clear 不对（rc=${a_rc}，worker=$(autoworker)）"; cat "$DT/run.err"; }
+# (c) error（HTTP 500）→ 默认工人不阻塞（带 key 走到网络层才真测 error 路径）
+dreset; dresp "$DT/resp.json" rule_1 0.94; DENV='FAKE_CURL_HTTP=500'; AUTO_KEY="$DKEY"
+auto_run; a_rc=$?; DENV=''; AUTO_KEY=''
+{ [[ "$a_rc" -eq 0 ]] && [[ "$(autoworker)" == "pi" ]] && grep -q '未命中' "$DT/run.err"; } \
+  && ok "auto+error（http 500）→ 落默认工人 pi 不阻塞（验收 4）" \
+  || { bad "auto+error 不对（rc=${a_rc}）"; cat "$DT/run.err"; }
+# (d) 坏规则文件 → 拒绝派发（exit 2）、零副作用（带 key 才会走到规则校验）
+nd_before="$(grep -c '^dispatch:' "$AUT")"
+printf '%s\n' '{"rules":[' > "$TMP/config/dispatch-rules.json"
+AUTO_KEY="$DKEY"
+auto_run; a_rc=$?; AUTO_KEY=''
+{ [[ "$a_rc" -eq 2 ]] && [[ "$(grep -c '^dispatch:' "$AUT")" -eq "$nd_before" ]] \
+    && grep -q '配置错误' "$DT/run.err"; } \
+  && ok "auto+坏规则 → 拒绝派发（exit 2）零副作用" \
+  || { bad "auto+坏规则不对（rc=${a_rc}）"; cat "$DT/run.err"; }
+# (e) 规则解析出 QWB_WORKERS 之外的工人 → 整词校验拒绝（自建 ghost 规则，不依赖 (d) 遗留状态）
+jq -n '{rules:[{when:"复杂架构、跨模块重构、高风险改动",worker:"ghost"},
+  {when:"常规实现、机械改动、调研",worker:"pi"},
+  {when:"代码审核、对抗性审查",worker:"claude"}],default:{worker:"pi"}}' \
+  > "$TMP/config/dispatch-rules.json"
+dreset; dresp "$DT/resp.json" rule_1 0.94; AUTO_KEY="$DKEY"
+auto_run; a_rc=$?; AUTO_KEY=''
+{ [[ "$a_rc" -eq 1 ]] && [[ "$(grep -c '^dispatch:' "$AUT")" -eq "$nd_before" ]] \
+    && grep -q '合法工人' "$DT/run.err"; } \
+  && ok "规则解析出 QWB_WORKERS 外工人 → 整词校验拒绝" \
+  || { bad "ghost 未拒（rc=${a_rc}）"; cat "$DT/run.err"; }
+rm -rf "$DT"
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

@@ -9,6 +9,8 @@ usage() {
 必选:
   --task <id|路径>      任务书 id（如 qwbuddy-mvp）或文件路径
   --worker <名>         工人名（须在 config.sh 的 QWB_WORKERS 里整词精确匹配，如 codex/pi/claude）
+                        auto=JEV 自动派工（qwb-dispatch.sh 按 config/dispatch-rules.json 选工人；
+                        off/error/ambiguous 落默认工人不阻塞派发；规则文件坏则拒绝派发）
 
 选项:
   --project <根>        项目根（默认：当前目录）
@@ -87,6 +89,33 @@ TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_AGENT_START_MS=""
 # shellcheck source=/dev/null
 . "$CONF"
+# —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
+# clear → 解析出的工人；off/error/ambiguous → 默认工人（规则文件的 default.worker，无规则文件则 pi），
+# stderr 一行说明，不阻塞派发；qwb-dispatch 非零退出（规则文件坏等配置错误）→ 拒绝派发，不许绕过。
+if [[ "$WORKER" == "auto" ]]; then
+  DISPATCH_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-dispatch.sh"
+  [[ -f "$DISPATCH_BIN" ]] || { echo "错误：找不到 ${DISPATCH_BIN}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新" >&2; exit 1; }
+  DP_ERR="$(mktemp)"
+  DP_RC=0
+  DP_OUT="$(bash "$DISPATCH_BIN" "$TASK_FILE" --project "$PROJECT_ROOT" 2>"$DP_ERR")" || DP_RC=$?
+  if [[ "$DP_RC" -ne 0 ]]; then
+    cat "$DP_ERR" >&2; rm -f "$DP_ERR"
+    echo "错误：auto 派工配置错误（qwb-dispatch 退出码 ${DP_RC}）——修好 config/dispatch-rules.json 后重派；本次派发未发生、无副作用。" >&2
+    exit "$DP_RC"
+  fi
+  DP_STATUS="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  status: //p' | head -1)"
+  if [[ "$DP_STATUS" == "clear" ]]; then
+    WORKER="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  worker: //p' | head -1)"
+    echo "qwb-run: auto 派工命中 → ${WORKER}" >&2
+  else
+    WORKER="$(jq -r '.default.worker // empty' "$PROJECT_ROOT/config/dispatch-rules.json" 2>/dev/null || true)"
+    [[ -n "$WORKER" ]] || WORKER="pi"
+    DP_REASON="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  reason: //p' | head -1)"
+    { cat "$DP_ERR"; echo "qwb-run: auto 派工未命中（status=${DP_STATUS}${DP_REASON:+，${DP_REASON}}），按默认工人 ${WORKER} 继续派发"; } >&2
+  fi
+  rm -f "$DP_ERR"
+fi
+
 # 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(codex)' 这类都混不过）
 wfound=0
 for w in $QWB_WORKERS; do

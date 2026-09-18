@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
+    {"when": "常规实现、机械改动、调研", "worker": "pi"},
+    {"when": "代码审核、对抗性审查", "worker": "claude"}
+  ],
+  "default": {"worker": "pi"}
+}
