@@ -2688,7 +2688,7 @@ done
   && ok "默认 QWB_WORKER_ARGS 的每个「工人名=」都在默认 QWB_WORKERS 里（两条默认值自洽）" \
   || bad "默认 ARGS 表含不在默认工人表里的名字（会被并进上一个值）:${miss}"
 
-echo "== 52. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
+echo "== 53. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
 # 独立项目跑本节：其他节会改写共享 $TMP 的 config.sh（如第 27 节追加 QWB_REWAKE_MS=0）与账本，
 # --block 的去重/REWAKE 判定依赖干净 config，不与它们共账本
 BP="$TMP/block-proj"; mkdir -p "$BP/tasks"; cp -R "$TMP/qwbuddy" "$BP/qwbuddy"
@@ -2753,7 +2753,7 @@ printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$BP/blk-far.sh"; chmod +x
   && ok "--block REWAKE 兑底：超期再叫 rc=2 + 新 wake 行" \
   || bad "--block REWAKE 兑底不对（rc=${blk_rc}，wakes=$(grep -c '^wake:' "$BLKD")）"
 
-echo "== 53. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
+echo "== 54. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
 # hook 内部以自身位置推项目根并跑 --block（读该项目 config.sh）——同样用独立项目防 config 污染
 HP="$TMP/hook-proj"; mkdir -p "$HP/tasks"; cp -R "$TMP/qwbuddy" "$HP/qwbuddy"
 cp "$ROOT/templates/config.sh" "$HP/qwbuddy/config.sh"   # 同上：覆盖回干净 config
@@ -2792,7 +2792,7 @@ hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
   && ok "hook 残留锁接管：rc=2 + 摘要 + 锁已清 + wake 行" \
   || bad "hook 接管不对（rc=${hook_rc}，out=${hook_out}）"
 
-echo "== 54. qwb-init.sh 合并 .claude/settings.json：幂等、不覆盖、非法 JSON 拒绝 =="
+echo "== 55. qwb-init.sh 合并 .claude/settings.json：幂等、不覆盖、非法 JSON 拒绝 =="
 # 场景：已有 PreToolUse 与别人的 Stop hook → 跑两次，qwb hook 恰一条，别人内容原样，合法 JSON
 mkdir -p "$TMP/.claude"
 SETJ="$TMP/.claude/settings.json"
@@ -2845,7 +2845,7 @@ out="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc=$?
   || bad "非法 JSON 拒绝不对（rc=${rc}，out=${out}）"
 rm -f "$TMP/settings.before" "$TMP/settings.bad"
 
-echo "== 55. status 值守三态：hook / tab（pane …）/ 未运行 =="
+echo "== 56. status 值守三态：hook / tab（pane …）/ 未运行 =="
 DYN="$TMP/herdr-dyn-s4"; mkdir -p "$DYN"; rm -f "$TMP/qwbuddy/.watch"
 stat4() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE_ID=wtestW \
     bash qwbuddy/bin/qwb-status.sh ); }
