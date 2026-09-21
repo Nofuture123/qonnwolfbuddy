@@ -219,7 +219,7 @@ qwbuddy/roles/
 
 ### 8.2 母本仓布局
 
-见 [`../README.md`](../README.md)。
+见 [`../README.md`](../README.md)。母本仓不给自己装 qwbuddy/：主控在母本仓内工作时创建的 qwbuddy/（锁、值守、安装副本等运行态）在 `.gitignore` 忽略，配置回退读跟踪的 `qwb.config.sh`；两份配置同时存在时质量门必须一致（qwb-lint.sh 有专项检查）。
 
 ## 9. 一次完整流转
 

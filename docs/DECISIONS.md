@@ -458,7 +458,21 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 
 **E · agent 名兜底只取 sha1 前 8 位**：中文任务 id 净化后剩 `qwb--01` 这类残渣、两票同名；sha1 前 8 位（16^8 ≈ 43 亿）对单机同时存在的 agent 数足够，且比「要求所有任务 id 都 ASCII」少一条新规矩。只对未显式给 `--name` 的派发生效——显式指定是主控的意志，不覆盖。
 
-## 三十一、Pi 主控值守走扩展而非窗口/checkpoint（2026-09-23）
+
+## 三十一、安装收尾与派发补漏：运行态 .gitignore / dispatch-rules 落点 / 双配置守卫 / 开局点名用 status / 重派复用工人（2026-09-21）
+
+**来源**：2026-09-21 主控收敛审核对照生产项目 `qonnwolfai-student` 审出的安装问题（P1-3/P1-4/P2-母本仓/token-开局/重派副作用）。
+
+**A · 运行态为什么不进项目的 git**：`.worktrees/<id>/`（内含嵌套 `.git` 文件）、`qwbuddy/.controller.lock/`、`.watch`、`.watch.lock/`、`.hook.lock/`、`.hook.err` 全是运行态，留在 `git status` 里会污染项目、干扰主控验货时的脏检查。`qwb-init.sh` 往 `<项目根>/.gitignore` 追加一段带标记行的段（幂等：有标记行跳过、无文件新建），只追加不重排——项目原有条目字节不变。否掉的替代：只 ignore `qwbuddy/` 整目录——会把项目主人可能想跟踪的 `qwbuddy/brief-include.md`、`config.sh`、规则文件也藏掉，过度。
+
+**B · dispatch-rules 为什么落 `qwbuddy/` 而不是根 `config/`**：生产项目根的 `config/` 是 app 自己的目录，QW buddy 其余文件全在 `qwbuddy/` 下，没有理由为这一条规则文件开例外；且 init 此前不拷模板，装完 `--worker auto` 永远 `no rules`。路径改 `<项目根>/qwbuddy/dispatch-rules.json`，init 拷模板（目标已有不覆盖，同 brief-include 纪律）。否掉的替代：旧路径兼容回退——功能 2026-09-17 才合入、无外部安装，兼容层是白背的复杂度，还会让「两处规则文件哪份生效」变成新的排查题。
+
+**C · 母本仓双配置守卫**：母本仓自己既有跟踪的 `qwb.config.sh`，又有主控开局建的未跟踪 `qwbuddy/config.sh`（锁/值守要 `qwbuddy/` 目录），`qwb-test.sh` 优先读后者——改前者的质量门不生效且无人知道。处置：母本仓 `.gitignore` 加 `qwbuddy/`（该目录在母本仓只是主控运行态，明说不装自己）；`qwb-lint.sh` 新增母本仓布局专属检查——两份配置同时存在时 `QWB_GATE_FAST`/`QWB_GATE_FULL` 必须一致，否则 FAIL 并打印两边的值；只有一份配置时不适用、不输出。否掉的替代：禁止主控在母本仓开局抢锁——值守确实需要 `qwbuddy/`，禁不掉，只能把不一致变成看得见的 FAIL。
+
+**D · 开局点名为什么改成跑 `qwb-status.sh`**：生产项目 tasks/ 有 282 份文档，让主控模型自己列出全部任务书再逐份读 `state:` 是纯 token 浪费；`qwb-status.sh` 已经输出未结项、最近状态行、规格疑点、值守健康与工人丢失。QWBUDDY.md §1 第 2–5 步合并为「跑 status → 只读未结项那几份的末尾状态行 → 报告」，两份 hook 模板第 2 条同步。不改任何脚本。
+
+**E · 返工重派为什么复用同名工人而不是总开新窗口**：错题本已有「执行者产物的修订退回执行者窗口」；现实中重派常因原 agent 还在（done/idle）而撞 `agent_name_taken`，留下死 dispatch 行和空 tab。`qwb-run.sh`（herdr 模式）开 tab 前先 `agent get <名字>`：idle/done → 复用（不建 tab、不 start，直接 prompt 续派，dispatch 行写它现有 pane）；working/blocked → 拒绝（工人还在干，别打断）；查询失败 fail-closed 拒绝。新开路径 `agent start` 失败 → 关刚建的 tab、回滚刚写的 dispatch 行（只删最后一行且必须是本次写的那行）、exit 1 上报原始错误——派发失败不留半截副作用。pane-run 模式不动（它本来就没有 agent 名字池）。
+## 三十二、Pi 主控值守走扩展而非窗口/checkpoint（2026-09-23）
 
 **来源**：值守隐形化补齐第三种主控——pi 没有像 Claude Code 的 Stop hook、也不能像 Codex 那样当前台 tool call 循环，但 pi 有扩展机制（`session_start` / `session_shutdown` / `turn_end` 事件 + `pi.sendUserMessage(content, { deliverAs: "followUp" })` 注入）。
 
@@ -467,3 +481,4 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **为什么是扩展而不是另开窗口或让模型轮询**：已经有后台注入能力（`sendUserMessage` + `followUp`）就不该让模型轮询——轮询烧 token、抢回合；窗口形态违背「值守隐形化」的初衷。扩展持有的子进程随 pi 进程生死（spawn 不 detach + `session_shutdown` 杀 + `process exit` 保底），不是守护进程，符合 §10.2 的边界裁定。锁主复核（`.controller.lock/owner` 末字段 == `HERDR_PANE_ID`）决定扩展是否值守：非主控的 pi 会话一律不动，与 `--block` 的孤儿复核同判定。
 
 **与 firstmate 的边界**：只取「持子进程 + follow-up 注入」这一个机制；不搬分支监督、lease、generation ledger、远程 secondmate。Pi 扩展 API 以官方文档实测为准（本机 pi 0.86.1，`extensions.md`：`session_start`/`session_shutdown`/`turn_end` 事件、`pi.sendUserMessage` 的 `deliverAs: "followUp"`），firstmate 只是可行性先例不是规格来源。
+

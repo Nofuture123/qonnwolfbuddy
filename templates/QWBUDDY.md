@@ -9,14 +9,11 @@
 ## 1. 开局点名（每次启动先做）
 
 1. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。**已被占用且锁主仍活 = 另一个主控在活动**：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。锁主已消失（pid 已退出 / pane 不存在）时 acquire 会自动回收残留锁并获锁；锁主死活查不出来（herdr 不在 PATH / 查询报错）则照旧拒绝（不猜、不回收）。
-2. 列出 `tasks/` 下全部任务书，读每份头部 `state:` 字段。
-3. **未结项** = `state` ∈ {`running`, `blocked`, `needs-decision`}。列出未结项清单。
-4. 读每个未结项末尾的状态行，搞清楚活到哪了。重启后（关机 / herdr 重启）若 `qwb-status.sh` 在 running 票下标出「**工人丢失**: pane … 已不存在/无 agent」，说明工人已不在、账本没有结论——重派**同一票**（幂等复用同一 worktree 续接），不要另开副本。
-5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
-6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。**同一步**把 `HERDR_WORKSPACE_ID` 写进 `QWB_WORKSPACE`：工人与值守的 tab 靠它开在**项目自己的 workspace**（而不是你这个主控身边）；跨项目派活的主控不要写自己的，改填**目标项目**的 workspace id。
-7. 派发前 `qwb-run.sh` 会把本次工作目录预置成受信任（claude 写 `~/.claude.json`、codex 追加 `~/.codex/config.toml`、devin 走 `--respect-workspace-trust false` 启动参数）——装了本功能后 codex/claude/devin 不再需要人工过信任框；文件缺失/非法时跳过预置，首次派发才需人工按一次（见 docs/E2E-RUNBOOK.md 现象A）。
-8. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
-8. **按主控 harness 接值守**（隐形，无窗口；可见 tab 只是 fallback）：
+2. **点名**：跑 `bash qwbuddy/bin/qwb-status.sh`——它列出未结项（`[未结]`）、每张的最近状态行与未处理的规格疑点；**只读未结项那几份任务书**的末尾状态行，搞清活到哪了；向使用者报告：几个未结项、分别在什么阶段、下一步打算干什么。status 标「工人丢失」的票（pane 已不存在、账本无结论）重派**同一票**幂等续接，不另开副本。
+3. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。**同一步**把 `HERDR_WORKSPACE_ID` 写进 `QWB_WORKSPACE`：工人与值守的 tab 靠它开在**项目自己的 workspace**（而不是你这个主控身边）；跨项目派活的主控不要写自己的，改填**目标项目**的 workspace id。
+4. 派发前 `qwb-run.sh` 会把本次工作目录预置成受信任（claude 写 `~/.claude.json`、codex 追加 `~/.codex/config.toml`、devin 走 `--respect-workspace-trust false` 启动参数）——装了本功能后 codex/claude/devin 不再需要人工过信任框；文件缺失/非法时跳过预置，首次派发才需人工按一次（见 docs/E2E-RUNBOOK.md 现象A）。
+5. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
+6. **按主控 harness 接值守**（隐形，无窗口；可见 tab 只是 fallback）：
    - **Claude Code 主控**：`qwb-init.sh` 已把值守装进 `.claude/settings.json` 的 Stop hook（`asyncRewake`，超时 7200 秒）——开局**什么都不用起**，只需 `bash qwbuddy/bin/qwb-status.sh` 确认「值守：hook」。你每次回合结束 hook 自动在后台阻塞值守；账本有可动作变化时 hook 以 exit 2 用摘要叫醒你（Stop hook feedback），无变化则静默到期退出、下次 Stop 自动再起。
    - **Codex 主控**：开局点名后，把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 当**前台 tool call** 循环跑：退出码 2 → 读 stdout 摘要、处理账本、再跑下一轮；124 → 到期无变化，直接再跑下一轮；0 → 账本无未结项，值守收工。**禁止 `&` 后台、禁止 Codex 后台任务**——Codex 在前台 tool call 运行期间不能推理，靠有界 checkpoint 周期性交还控制权。
    - **Pi 主控**：`qwb-init.sh` 已装扩展（`.pi/extensions/qwb-watch.ts`），开局只需确认 `qwb-status.sh` 报 `值守：pi-ext`；首次装后需重启 pi 或 `/reload` 让扩展加载。扩展自动持有值守子进程、账本有变化时以 `[qwb-wake]` follow-up 消息叫醒你，无需任何窗口或手工轮询。
@@ -76,7 +73,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ```
 写任务书（模板 qwbuddy/TASK.md；写好即 state: running，见 §3；必须有「验收场景」块，见 §6） 
   → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人|auto> [--worktree <路径> | --create-worktree | --here]
-       （--worker auto = JEV 自动派工：qwb-dispatch.sh 按 config/dispatch-rules.json 选工人，
+       （--worker auto = JEV 自动派工：qwb-dispatch.sh 按 qwbuddy/dispatch-rules.json 选工人，
         off/error/ambiguous 落默认工人不阻塞派发；默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本；--here 是显式声明在项目根派发；
         它负责：验收场景门校验、查主控锁、开窗口、记账（state: running + scenarios-fp + dispatch）、
         起工人、发提示词；锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁；
@@ -139,7 +136,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；工人 tab 落在 `QWB_WORKSPACE` 声明的项目 workspace——见下一行） |
-| `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 config/dispatch-rules.json（模板在母本仓 templates/）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
+| `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 qwbuddy/dispatch-rules.json（模板在母本仓 templates/，qwb-init.sh 安装时拷入）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
 | `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
 | `qwb-wake.sh [--dry-run|--once|--ensure|--check|--block]` | 值守：查未结项 → 一轮只发**一条**投递（多票拼同一条文本，含各票 state 与最后状态行）→ 叫醒你的 pane；`QWB_REWAKE_MS` 时间兑底只对 `running` 票生效（blocked/needs-decision 等裁决，不重叫）；`--block` 每轮先复核主控锁，锁不在手（孤儿值守）不消费唤醒；`--ensure` 幂等确保值守 tab 在跑（fallback），`--check` 只报值守健康；`--block [--max-ms <毫秒>]` 前台阻塞值守（无窗口，给 Claude Code Stop hook / Codex 前台 checkpoint 用）：有可动作变化退出码 2 + stdout 摘要、无未结项 0、到期无变化 124 |
 | `qwb-hook-claude-stop.sh` | Claude Code Stop hook 入口（由 `qwb-init.sh` 合并进 `.claude/settings.json`，主控不手动跑）：守卫（仅主控锁 pane）→ `.hook.lock` 单飞 → 前台跑 `qwb-wake.sh --block`；exit 2 时摘要双写 stdout/stderr 唤醒主控，出错写 `.hook.err` 后 exit 0 不卡主控 |

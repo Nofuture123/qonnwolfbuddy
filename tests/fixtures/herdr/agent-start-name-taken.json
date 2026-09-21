@@ -1,0 +1,2 @@
+# 真录 2026-09-21，herdr：herdr agent start qwbfixrec --kind pi --pane w8Z:p7B --timeout 30000 同名二次启动（同名 agent 已占用；录完即关闭所在 tab）
+{"error":{"code":"agent_name_taken","message":"agent name qwbfixrec is already used; candidates: terminal_id=term_65c060a5764391b9 pane_id=w8Z:p7B workspace_id=w8Z tab_id=w8Z:t6P cwd=/private/tmp status=Idle"},"id":"cli:agent:start"}

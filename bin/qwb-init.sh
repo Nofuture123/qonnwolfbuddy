@@ -58,6 +58,32 @@ for s in "$SRC"/qwb-*.sh; do
 done
 chmod +x "$ROOT/qwbuddy/bin"/qwb-*.sh
 
+# 派工规则模板：目标已有不覆盖（可能已被项目主人改成自己的派工规则），幂等（同 brief-include 做法）
+if [[ -f "$ROOT/qwbuddy/dispatch-rules.json" ]]; then
+  echo "保留：qwbuddy/dispatch-rules.json 已存在，不覆盖"
+else
+  cp "$TPL/dispatch-rules.json" "$ROOT/qwbuddy/dispatch-rules.json"
+fi
+
+# 运行态不进 git：往 <项目根>/.gitignore 追加一段（幂等：已有标记行则跳过；文件不存在则新建）。
+# 只追加不重排——项目原有条目字节不变。
+GITIGN="$ROOT/.gitignore"
+if [[ -f "$GITIGN" ]] && grep -qF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GITIGN"; then
+  echo "跳过：.gitignore 已有"
+else
+  if [[ -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
+  cat >> "$GITIGN" <<'EOF'
+# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）
+.worktrees/
+qwbuddy/.controller.lock/
+qwbuddy/.watch
+qwbuddy/.watch.lock/
+qwbuddy/.hook.lock/
+qwbuddy/.hook.err
+EOF
+  echo "写入：.gitignore 追加 QW buddy 运行态"
+fi
+
 # 钩子：已含 qwbuddy/QWBUDDY.md 引用视为已装，跳过
 append_hook() {
   local target="$1" hook="$2"

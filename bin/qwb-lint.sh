@@ -9,15 +9,18 @@ usage() {
 逐项检查并输出 PASS/FAIL，任一 FAIL → 退出码 1：
   1. 文档承诺的脚本必须存在（QWBUDDY.md 与 docs/DESIGN.md 点名的 qwb-*.sh；qwb-init.sh 为母本仓专用安装器除外）
   2. tasks/*.md 的 state: 值 ∈ running|blocked|needs-decision|done|verified（有字段但值为空同样 FAIL；无字段的非任务文档跳过）
-  3. config 无死键（QWB_X=… 与 export QWB_X=… 都算声明；非注释行出现 $QWB_X / ${QWB_X} 才算被读取）
-  4. 无「变量后紧跟非 ASCII」写法（应写成 ${VAR} 形式；扫描 bin/*.sh 全部脚本）
-  5. 质量门已声明（QWB_GATE_FAST / QWB_GATE_FULL 均非空）
-  6. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）；
+  3. 母本仓双配置门一致（仅母本仓布局：qwb.config.sh 与 qwbuddy/config.sh 同时存在时，
+     两者的 QWB_GATE_FAST/QWB_GATE_FULL 必须相同——qwb-test.sh 只读 qwbuddy/config.sh，
+     不一致 = 改 qwb.config.sh 的门不生效；只有一份配置时不适用、不输出）
+  4. config 无死键（QWB_X=… 与 export QWB_X=… 都算声明；非注释行出现 $QWB_X / ${QWB_X} 才算被读取）
+  5. 无「变量后紧跟非 ASCII」写法（应写成 ${VAR} 形式；扫描 bin/*.sh 全部脚本）
+  6. 质量门已声明（QWB_GATE_FAST / QWB_GATE_FULL 均非空）
+  7. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）；
      带 scenarios-revised: 修订记录的票，再核对最新一条记录的 new= 指纹 == 当前基线
-  7. 需独立审核的票（review-required: yes）：review-impl:/review-rev: 各行须有
+  8. 需独立审核的票（review-required: yes）：review-impl:/review-rev: 各行须有
      model/family/session/evidence、family 非 unknown 且两方不同、原生 session 不同实例；
      无标记的普通票不启用本检查
-  8. 任务书正文无占位状态行（列首 working/done/blocked/needs-decision: 带未填占位符 <…>
+  9. 任务书正文无占位状态行（列首 working/done/blocked/needs-decision: 带未填占位符 <…>
      的行，是把模板示例当真实状态行抄进了票）——只警告不 FAIL：不补历史票，
      但列首占位行会污染值守指纹与疑点门，写票时必须删掉或缩进
 
@@ -92,7 +95,29 @@ else
   fail "非法 state:${bad_states}"
 fi
 
-echo "== 3. config 无死键 =="
+if [[ -f "$PROJECT_ROOT/templates/QWBUDDY.md" && -f "$PROJECT_ROOT/qwb.config.sh" && -f "$PROJECT_ROOT/qwbuddy/config.sh" ]]; then
+  echo "== 3. 母本仓双配置门一致（仅母本仓布局）=="
+  # 母本仓里 qwb.config.sh（跟踪）与主控开局建的 qwbuddy/config.sh（未跟踪，qwb-lock/wake 要
+  # qwbuddy/ 目录）同时存在时，qwb-test.sh 优先读后者——两份 QWB_GATE_* 不一致会让「改 qwb.config.sh
+  # 的门不生效」且无人知道。只有一份配置时不适用、不输出（连节标题也不打印）。
+  gate_of() { # $1=配置文件 $2=键名 → 打印该配置里此键的值（未设/空均打空串）；子 shell 不污染当前环境
+    # shellcheck disable=SC1090,SC1091  # 动态路径，故意不 follow
+    ( . "$1" >/dev/null 2>&1; eval "printf '%s' \"\${$2:-}\"" )
+  }
+  a_fast="$(gate_of "$PROJECT_ROOT/qwb.config.sh" QWB_GATE_FAST)"
+  a_full="$(gate_of "$PROJECT_ROOT/qwb.config.sh" QWB_GATE_FULL)"
+  b_fast="$(gate_of "$PROJECT_ROOT/qwbuddy/config.sh" QWB_GATE_FAST)"
+  b_full="$(gate_of "$PROJECT_ROOT/qwbuddy/config.sh" QWB_GATE_FULL)"
+  if [[ "$a_fast" == "$b_fast" && "$a_full" == "$b_full" ]]; then
+    pass "qwb.config.sh 与 qwbuddy/config.sh 的质量门一致"
+  else
+    fail "母本仓双配置质量门不一致（qwb-test.sh 只读 qwbuddy/config.sh，改 qwb.config.sh 不生效）：
+  QWB_GATE_FAST  qwb.config.sh=${a_fast:-（空）} | qwbuddy/config.sh=${b_fast:-（空）}
+  QWB_GATE_FULL  qwb.config.sh=${a_full:-（空）} | qwbuddy/config.sh=${b_full:-（空）}"
+  fi
+fi
+
+echo "== 4. config 无死键 =="
 CONF="$PROJECT_ROOT/qwbuddy/config.sh"
 [[ -f "$CONF" ]] || CONF="$PROJECT_ROOT/qwb.config.sh"
 if [[ -f "$CONF" ]]; then
@@ -119,7 +144,7 @@ else
   fail "找不到配置文件（试过 qwbuddy/config.sh 与 qwb.config.sh）"
 fi
 
-echo "== 4. 变量后紧跟非 ASCII 字符 =="
+echo "== 5. 变量后紧跟非 ASCII 字符 =="
 hits=""
 [[ ${#binsh[@]} -gt 0 ]] \
   && hits="$(perl -ne 'print "$ARGV:$.: $&\n" while /\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]/g' "${binsh[@]}" 2>/dev/null)"
@@ -130,7 +155,7 @@ else
 ${hits}"
 fi
 
-echo "== 5. 质量门已声明 =="
+echo "== 6. 质量门已声明 =="
 # 门未声明（空值）是配置缺失，不许静默当绿：新装项目一跑 lint 就会被提醒
 if [[ -f "$CONF" ]] && (
   # shellcheck source=/dev/null
@@ -142,7 +167,7 @@ else
   fail "质量门未声明：${CONF} 里 QWB_GATE_FAST / QWB_GATE_FULL 须非空（按本项目布局填写，示例见该文件注释）"
 fi
 
-echo "== 6. 已派发任务书的验收场景与冻结 =="
+echo "== 7. 已派发任务书的验收场景与冻结 =="
 # 验收场景块界定与 qwb-run.sh 派发门一致；带 scenarios-fp: 的任务书（经派发门写过基线的）
 # 重算当前块指纹比对，不一致即 FAIL；有 dispatch: 但无 scenarios-fp: 的是旧制派发，警告不 FAIL。
 # 带 scenarios-revised: 修订记录的票（经 --revise-scenarios 显式改过场景）：最新一条记录的
@@ -196,7 +221,7 @@ else
   fail "验收场景检查失败:${scen_bad}"
 fi
 
-echo "== 7. 需独立审核票的审核身份可核验 =="
+echo "== 8. 需独立审核票的审核身份可核验 =="
 # 只对显式标记 review-required: yes 的票启用——普通票零新增负担、不补历史票。
 # 结构校验：review-impl:/review-rev: 两行各自 model/family/session/evidence 齐全；
 # family 非 unknown、两方 family 不同、两方原生 session 不是同一实例。
@@ -249,7 +274,7 @@ else
   fail "审核身份检查失败:${rid_bad}"
 fi
 
-echo "== 8. 任务书正文无占位状态行（只警告，不 FAIL）=="
+echo "== 9. 任务书正文无占位状态行（只警告，不 FAIL）=="
 # 列首 working/done/blocked/needs-decision: 行里带 <…> 占位符 = 模板示例被当成真实状态行抄进了票：
 # 会被值守指纹与疑点门当真。缩进行不算列首（模板示例必须缩进，见 TASK.md §4）。
 # 只警告不 FAIL：本仓历史票已有这种行，不补历史票。

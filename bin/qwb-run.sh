@@ -9,7 +9,7 @@ usage() {
 必选:
   --task <id|路径>      任务书 id（如 qwbuddy-mvp）或文件路径
   --worker <名>         工人名（须在 config.sh 的 QWB_WORKERS 里整词精确匹配，如 codex/pi/claude）
-                        auto=JEV 自动派工（qwb-dispatch.sh 按 config/dispatch-rules.json 选工人；
+                        auto=JEV 自动派工（qwb-dispatch.sh 按 qwbuddy/dispatch-rules.json 选工人；
                         off/error/ambiguous 落默认工人不阻塞派发；规则文件坏则拒绝派发）
 
 选项:
@@ -124,7 +124,7 @@ if [[ "$WORKER" == "auto" ]]; then
   DP_OUT="$(bash "$DISPATCH_BIN" "$TASK_FILE" --project "$PROJECT_ROOT" 2>"$DP_ERR")" || DP_RC=$?
   if [[ "$DP_RC" -ne 0 ]]; then
     cat "$DP_ERR" >&2; rm -f "$DP_ERR"
-    echo "错误：auto 派工配置错误（qwb-dispatch 退出码 ${DP_RC}）——修好 config/dispatch-rules.json 后重派；本次派发未发生、无副作用。" >&2
+    echo "错误：auto 派工配置错误（qwb-dispatch 退出码 ${DP_RC}）——修好 qwbuddy/dispatch-rules.json 后重派；本次派发未发生、无副作用。" >&2
     exit "$DP_RC"
   fi
   DP_STATUS="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  status: //p' | head -1)"
@@ -132,7 +132,7 @@ if [[ "$WORKER" == "auto" ]]; then
     WORKER="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  worker: //p' | head -1)"
     echo "qwb-run: auto 派工命中 → ${WORKER}" >&2
   else
-    WORKER="$(jq -r '.default.worker // empty' "$PROJECT_ROOT/config/dispatch-rules.json" 2>/dev/null || true)"
+    WORKER="$(jq -r '.default.worker // empty' "$PROJECT_ROOT/qwbuddy/dispatch-rules.json" 2>/dev/null || true)"
     [[ -n "$WORKER" ]] || WORKER="pi"
     DP_REASON="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  reason: //p' | head -1)"
     { cat "$DP_ERR"; echo "qwb-run: auto 派工未命中（status=${DP_STATUS}${DP_REASON:+，${DP_REASON}}），按默认工人 ${WORKER} 继续派发"; } >&2
@@ -355,11 +355,59 @@ if [[ -n "$PANE" ]]; then
     || { echo "错误：--pane ${PANE} 的 cwd（${pcwd:-未知}）与目标目录（${EDIR}）不符——修复：在该 pane 里先执行 cd ${EDIR} 再重跑，或不带 --pane 新开 tab" >&2; exit 1; }
 fi
 
+# —— 返工/续派复用既有工人（只对 herdr 模式新开 tab 的路径；--pane 与 pane-run 不参与）——
+# 同名 agent 存在（按名字查询）且状态 idle/done → 复用：不建 tab、不 agent start，
+# dispatch: 行的 pane 写它现有的 pane，直接 agent prompt 续派（提示词前加返工/续派说明）；
+# working/blocked → 拒绝派发（工人还在干，别打断）；查询失败（非 not_found）→ fail-closed 拒绝。
+# 应答里 agent 名与本任务名不同（按名查询正常不会发生）或无名字段 → 视为无同名工人，走新开路径。
+REUSE_PANE=""
+TAB_ID=""
+if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
+  ag_out="$(herdr agent get "$NAME" 2>&1)" && ag_rc=0 || ag_rc=$?
+  if [[ "$ag_rc" -eq 0 ]]; then
+    ag_meta="$(printf '%s' "$ag_out" | perl -MJSON::PP=decode_json -0777 -e '
+      my $j = eval { decode_json(<STDIN>) };
+      my $a = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH" && ref $j->{result}{agent} eq "HASH")
+        ? $j->{result}{agent} : undef;
+      exit 1 unless $a;
+      for my $k ($a->{agent_status}, $a->{pane_id}) { exit 1 unless defined $k && !ref $k; }
+      printf "%s\t%s\t%s", (defined $a->{name} && !ref $a->{name} ? $a->{name} : ""),
+        $a->{agent_status}, $a->{pane_id};' || true)"
+    if [[ -n "$ag_meta" ]]; then
+      ag_name="$(printf '%s' "$ag_meta" | cut -f1)"
+      ag_stat="$(printf '%s' "$ag_meta" | cut -f2)"
+      ag_pane="$(printf '%s' "$ag_meta" | cut -f3)"
+      if [[ "$ag_name" == "$NAME" ]]; then
+        case "$ag_stat" in
+          idle|done)
+            [[ -n "$ag_pane" ]] || { echo "错误：同名工人 ${NAME} 状态 ${ag_stat} 但缺 pane_id，无法复用（fail-closed）：${ag_out}" >&2; exit 1; }
+            REUSE_PANE="$ag_pane"
+            ;;
+          working|blocked)
+            echo "错误：同名工人 ${NAME} 还在 ${ag_stat}（pane ${ag_pane}）——它还在干，别打断；确要重派先确认它已停，或换 --name 新开。" >&2
+            exit 1
+            ;;
+          *)
+            echo "错误：同名工人 ${NAME} 状态为 ${ag_stat}（非 idle/done/working/blocked），无法安全处置（fail-closed）：${ag_out}" >&2
+            exit 1
+            ;;
+        esac
+      fi
+    else
+      echo "错误：查询同名工人 ${NAME} 的应答无法解析（fail-closed，不猜）：${ag_out}" >&2
+      exit 1
+    fi
+  else
+    printf '%s' "$ag_out" | grep -q 'agent_not_found' \
+      || { echo "错误：查询同名工人 ${NAME} 失败（fail-closed，不猜）：${ag_out}" >&2; exit 1; }
+  fi
+fi
+
 # —— 工人 tab 的 workspace（F：跨项目派活时工人窗口必须开在项目自己的 workspace）——
 # 解析失败（声明了但 herdr 查不到 / workspace list 查询失败 / 响应不合契约）→ 在这里就拒绝，
-# 早于锁、worktree、tab、账本写等一切副作用。--pane 复用路径不建 tab（pane 已定），不解析。
+# 早于锁、worktree、tab、账本写等一切副作用。--pane 复用路径与复用既有工人路径不建 tab，不解析。
 TAB_WS=""
-if [[ -z "$PANE" ]]; then
+if [[ -z "$PANE" && -z "$REUSE_PANE" ]]; then
   TAB_WS="$(resolve_workspace "$PROJECT_ROOT")" || exit 1
 fi
 
@@ -556,38 +604,11 @@ DIR_NOTE=""
 [[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
 PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
 
-# 窗口：复用 --pane 或新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
-if [[ -z "$PANE" ]]; then
-  if [[ -n "$TAB_WS" ]]; then
-    out="$(herdr tab create --workspace "$TAB_WS" --cwd "$DIR" --label "$TASK_ID" --no-focus)"
-  else
-    out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
-  fi
-  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
-  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
-    my $j = eval { decode_json(<STDIN>) };
-    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH")
-      ? $j->{result}{root_pane}{pane_id} : undef;
-    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
-  ')"
-  [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
-fi
-
-# 最终 pane 已知后追加完整 dispatch，随后才启动工人并发送提示词。
-[[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && printf '\n' >> "$TASK_FILE"
-printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR" >> "$TASK_FILE" \
-  || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
-# 自检：任务书原有行不得丢失（行数只增不减）
-lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
-(( lines_after >= lines_before )) \
-  || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
-
 # —— 常驻附页追加：任务书最后一节（账本状态行不算节）——
 # 幂等查重按附页内容指纹（brief-include-fp: 行）取最后一份比对：同一内容重复派发不叠加，
 # 内容改了能追加新版（不因「已有附页节」就永远跳过）。指纹行非状态行前缀，附页节在
-# dispatch 行之后，场景块指纹语义不变（smoke 有对照用例钉住）。
+# dispatch 行之前追加，场景块指纹语义不变（smoke 有对照用例钉住）；放在开 tab / 写 dispatch
+# 之前，是为了让 dispatch 行始终是启动工人前追加的最后一行——启动失败时能安全回滚它。
 if [[ -n "$BRIEF_INC_BODY" ]]; then
   BRIEF_INC_FP="$(printf '%s' "$BRIEF_INC_BODY" | shasum | cut -d' ' -f1)"
   last_inc_fp="$(sed -n 's/^brief-include-fp:[[:space:]]*//p' "$TASK_FILE" | tail -1)"
@@ -604,6 +625,67 @@ if [[ -n "$BRIEF_INC_BODY" ]]; then
     || { echo "错误：常驻附页自检失败（指纹未落盘），不派发——请人工核对任务书" >&2; exit 1; }
 fi
 
+# 窗口：复用既有工人 pane / 复用 --pane / 新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
+if [[ -n "$REUSE_PANE" ]]; then
+  PANE="$REUSE_PANE"
+elif [[ -z "$PANE" ]]; then
+  if [[ -n "$TAB_WS" ]]; then
+    out="$(herdr tab create --workspace "$TAB_WS" --cwd "$DIR" --label "$TASK_ID" --no-focus)"
+  else
+    out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
+  fi
+  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
+  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
+    my $j = eval { decode_json(<STDIN>) };
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{pane_id} : undef;
+    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
+  ')"
+  [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
+  # tab id 供启动失败时回滚关 tab（缺失只警告不拒绝——关不掉大不了留个空 tab）
+  TAB_ID="$(printf '%s' "$out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j = eval { decode_json(<STDIN>) };
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{tab_id} : undef;
+    print((defined $v && !ref $v && $v ne "") ? $v : "");
+  ')"
+fi
+
+# 最终 pane 已知后追加完整 dispatch，随后才启动工人并发送提示词。
+# 记下追加前状态（是否已有尾换行、行数），启动失败时用它们把本行原样回滚掉。
+DISPATCH_LINE="$(printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR")"
+DISPATCH_HAD_NL=1
+{ [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && { DISPATCH_HAD_NL=0; printf '\n' >> "$TASK_FILE"; }; }
+lines_predisp="$(wc -l < "$TASK_FILE" | tr -d ' ')"
+printf '%s\n' "$DISPATCH_LINE" >> "$TASK_FILE" \
+  || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
+# 自检：任务书原有行不得丢失（行数只增不减）
+lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
+(( lines_after >= lines_before )) \
+  || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
+
+# 启动失败时的 dispatch 行回滚：只删最后一行，且必须是本次写的那一行（防误删别人的行）；
+# 追加前无尾换行的，把为对齐而补的那个换行也一并还原，字节回到追加前。
+undo_dispatch_line() {
+  perl -e '
+    my ($f, $line, $had_nl) = @ARGV;
+    open my $in, "<", $f or die "读任务书失败: $!\n";
+    my @l = <$in>; close $in;
+    die "最后一行不是本次写的 dispatch 行，不敢删（请人工核对 ${f}）\n"
+      unless @l && $l[-1] eq "$line\n";
+    pop @l;
+    if (!$had_nl && @l) { $l[-1] =~ s/\n\z//; }
+    my $tmp = "$f.undo.$$";
+    open my $out, ">", $tmp or die "写临时文件失败: $!\n";
+    print {$out} @l; close $out or die "写临时文件失败: $!\n";
+    rename $tmp, $f or die "替换任务书失败: $!\n";
+  ' "$TASK_FILE" "$DISPATCH_LINE" "$DISPATCH_HAD_NL" \
+    && [[ "$(wc -l < "$TASK_FILE" | tr -d ' ')" == "$lines_predisp" ]]
+}
+
 now_ms() {
   if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
   perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
@@ -617,14 +699,34 @@ sleep_ms() {
 
 case "$LAUNCH_MODE" in
   herdr)
-    # 启动参数：按空格切词追加到 `--` 之后（不做 shell 引号解析）；参数串为空时不加 `--`
-    start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
-    if [[ -n "$WORKER_ARGS" ]]; then
-      start_argv+=(--)
-      for start_arg in $WORKER_ARGS; do start_argv+=("$start_arg"); done
+    if [[ -n "$REUSE_PANE" ]]; then
+      # 复用既有工人：不建 tab、不 agent start，直接 prompt 续派（pane 已在 dispatch 行里留痕）
+      echo "复用既有工人 ${NAME}（pane ${PANE}）"
+      herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
+    else
+      # 启动参数：按空格切词追加到 `--` 之后（不做 shell 引号解析）；参数串为空时不加 `--`
+      start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
+      if [[ -n "$WORKER_ARGS" ]]; then
+        start_argv+=(--)
+        for start_arg in $WORKER_ARGS; do start_argv+=("$start_arg"); done
+      fi
+      start_rc=0
+      start_out="$(herdr "${start_argv[@]}" 2>&1)" || start_rc=$?
+      if [[ "$start_rc" -ne 0 ]]; then
+        # 起工人失败 → 不留副作用：关刚建的 tab（--pane 复用没建 tab，无 TAB_ID 不关）、
+        # 删刚写的 dispatch 行（只删最后一行且必须是本次写的那行），把 herdr 原始错误原样上报。
+        if [[ -n "$TAB_ID" ]]; then
+          herdr tab close "$TAB_ID" >/dev/null 2>&1 \
+            || echo "警告：tab ${TAB_ID} 关闭失败，请手动跑：herdr tab close ${TAB_ID}" >&2
+        fi
+        undo_dispatch_line \
+          || echo "警告：dispatch 行回滚失败——任务书可能残留一条死 dispatch 行，请人工核对 ${TASK_FILE}" >&2
+        printf '错误：herdr agent start 失败（退出码 %s）：\n%s\n' "$start_rc" "$start_out" >&2
+        exit 1
+      fi
+      printf '%s\n' "$start_out"
+      herdr agent prompt "$NAME" "$PROMPT"
     fi
-    herdr "${start_argv[@]}"
-    herdr agent prompt "$NAME" "$PROMPT"
     ;;
   pane-run:*)
     herdr pane run "$PANE" "$PANE_COMMAND"
