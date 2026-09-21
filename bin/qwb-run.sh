@@ -166,6 +166,21 @@ esac
 NAME="${NAME:-qwb-$TASK_ID}"
 NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 
+# —— 常驻规则附页（brief-include）：读与校验在任何派发副作用之前 ——
+# <项目根>/qwbuddy/brief-include.md 存在时，其内容原样追加为任务书最后一节「常驻附页」，
+# 供项目写一次常驻规则、不必每张票重抄。路径存在但不是可读的常规文件（目录/断链/不可读）
+# → 拒绝派发：配置错误不许静默跳过，也不许留下半截写入；全空白视为无附页；无附页零改动零输出。
+BRIEF_INC_FILE="$PROJECT_ROOT/qwbuddy/brief-include.md"
+BRIEF_INC_BODY=""
+if [[ -e "$BRIEF_INC_FILE" || -L "$BRIEF_INC_FILE" ]]; then
+  if [[ -f "$BRIEF_INC_FILE" ]] && BRIEF_INC_BODY="$(cat "$BRIEF_INC_FILE" 2>/dev/null)"; then
+    [[ -n "$(printf '%s' "$BRIEF_INC_BODY" | tr -d '[:space:]')" ]] || BRIEF_INC_BODY=""
+  else
+    echo "错误：${BRIEF_INC_FILE} 必须是可读的常规文件（目录/断链/不可读均拒绝派发）" >&2
+    exit 1
+  fi
+fi
+
 # —— 疑点门：票上有未决「规格疑点」→ 拒绝派发，先处置后派 ——
 # 相关事件 = 两类精确前缀（blocked:…spec-defect: / working:…spec-resolved:）按出现顺序取最后一个：
 # 是 spec-defect: → 未决。普通 working:/done:/dispatch: 行不参与判定、不能解除疑点；
@@ -449,6 +464,26 @@ printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s\n' \
 lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
 (( lines_after >= lines_before )) \
   || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
+
+# —— 常驻附页追加：任务书最后一节（账本状态行不算节）——
+# 幂等查重按附页内容指纹（brief-include-fp: 行）取最后一份比对：同一内容重复派发不叠加，
+# 内容改了能追加新版（不因「已有附页节」就永远跳过）。指纹行非状态行前缀，附页节在
+# dispatch 行之后，场景块指纹语义不变（smoke 有对照用例钉住）。
+if [[ -n "$BRIEF_INC_BODY" ]]; then
+  BRIEF_INC_FP="$(printf '%s' "$BRIEF_INC_BODY" | shasum | cut -d' ' -f1)"
+  last_inc_fp="$(sed -n 's/^brief-include-fp:[[:space:]]*//p' "$TASK_FILE" | tail -1)"
+  if [[ "$last_inc_fp" != "$BRIEF_INC_FP" ]]; then
+    [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && printf '\n' >> "$TASK_FILE"
+    {
+      printf '## 常驻附页\n\n'
+      printf '以下是本项目常驻规则附页（qwbuddy/brief-include.md）原样收录；本附页与其余各节冲突时，以其余各节为准。\n\n'
+      printf '%s\n' "$BRIEF_INC_BODY"
+      printf 'brief-include-fp: %s\n' "$BRIEF_INC_FP"
+    } >> "$TASK_FILE" || { echo "错误：常驻附页写入失败：${TASK_FILE}" >&2; exit 1; }
+  fi
+  grep -q "^brief-include-fp: ${BRIEF_INC_FP}" "$TASK_FILE" \
+    || { echo "错误：常驻附页自检失败（指纹未落盘），不派发——请人工核对任务书" >&2; exit 1; }
+fi
 
 now_ms() {
   if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi

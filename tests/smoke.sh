@@ -2358,5 +2358,84 @@ auto_run; a_rc=$?; AUTO_KEY=''
   || { bad "ghost 未拒（rc=${a_rc}）"; cat "$DT/run.err"; }
 rm -rf "$DT"
 
+echo "== 50. brief-include：常驻附页原样追加 / 无附页零改动 / 不可读拒绝 / 重复派发不叠加 =="
+rm -rf "$TMP/qwbuddy/.controller.lock"   # 前面节（JEV auto）的派发持过锁；本节统一用固定 pane id 当主控
+BI_T="$TMP/tasks/2099-01-06-binc.md"
+cat > "$BI_T" <<'EOF'
+# 附页测试
+state: blocked
+
+## 验收场景
+
+### user_正常路径
+Given 任务书已写好
+When  主控派发
+Then  账本追加 dispatch 行
+
+### user_失败路径
+Given 附页路径是目录
+When  主控派发
+Then  拒绝派发并报错
+EOF
+BIF="$TMP/qwbuddy/brief-include.md"
+bi_run() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task binc --worker codex --here ) 2>&1; }
+
+# init 装项目时拷模板，且不覆盖项目已改过的附页（幂等）
+assert_file "$BIF"
+printf '项目自己的常驻规则\n' > "$BIF"
+bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null
+grep -qF '项目自己的常驻规则' "$BIF" && ok "init 幂等：已存在 brief-include.md 不覆盖" || bad "init 覆盖了项目自己的 brief-include.md"
+
+# 场景：无附页 → 行为与今天一致（无附页节、stderr 无附页字样、退出 0）
+rm -f "$BIF"
+bi_out="$(bi_run)"; bi_rc=$?
+{ [[ "$bi_rc" -eq 0 ]] && ! grep -q '常驻附页' "$BI_T" && ! printf '%s' "$bi_out" | grep -q '附页'; } \
+  && ok "无附页：派发退出 0、任务书无附页节、stderr 无附页字样" \
+  || bad "无附页派发不对（rc=${bi_rc}，out=${bi_out}）"
+
+# 场景：有附页（中文多行）→ 任务书末尾原样追加附页节 + 声明；scenarios-fp 冻结语义不变
+cat > "$BIF" <<'EOF'
+  提交纪律：行首空格要保留
+
+第二段：不 trim、不改写；含中文与 $(id) 不展开。
+EOF
+bi_out="$(bi_run)"; bi_rc=$?
+inc_line="$(grep -n '^## 常驻附页' "$BI_T" | cut -d: -f1)"
+disp_line="$(grep -n '^dispatch:' "$BI_T" | tail -1 | cut -d: -f1)"
+{ [[ "$bi_rc" -eq 0 ]] \
+  && [[ "$(grep -c '^## 常驻附页' "$BI_T")" == "1" ]] \
+  && grep -qF '  提交纪律：行首空格要保留' "$BI_T" \
+  && grep -qF '$(id) 不展开' "$BI_T" \
+  && grep -qF '以其余各节为准' "$BI_T" \
+  && grep -q '^brief-include-fp: ' "$BI_T" \
+  && [[ "$inc_line" -gt "$disp_line" ]]; } \
+  && ok "有附页：末尾原样追加（保留行首空格/不展开）、含声明、在 dispatch 行之后" \
+  || bad "有附页追加不对（rc=${bi_rc}，inc=${inc_line}，disp=${disp_line}，out=${bi_out}）"
+
+# 场景：重复派发同一附页 → 不叠加；scenarios-fp 冻结基线不被附页追加破坏（对照用例）
+bi_out="$(bi_run)"; bi_rc=$?
+{ [[ "$bi_rc" -eq 0 ]] && [[ "$(grep -c '^## 常驻附页' "$BI_T")" == "1" ]]; } \
+  && ok "重复派发：附页仍只有一份，冻结基线核对通过（rc=0）" \
+  || bad "重复派发不对（rc=${bi_rc}，out=${bi_out}）"
+
+# 附页内容变化 → 能追加新版（最后一份为新内容），不因已有附页节而永远跳过
+printf '新版常驻规则\n' > "$BIF"
+bi_out="$(bi_run)"; bi_rc=$?
+new_fp="$(printf '%s' "$(cat "$BIF")" | shasum | cut -d' ' -f1)"
+{ [[ "$bi_rc" -eq 0 ]] && [[ "$(grep -c '^## 常驻附页' "$BI_T")" == "2" ]] \
+  && grep -qF '新版常驻规则' "$BI_T" \
+  && [[ "$(grep '^brief-include-fp: ' "$BI_T" | tail -1)" == "brief-include-fp: $new_fp" ]]; } \
+  && ok "附页内容变化：追加新版且最后一份指纹为新内容" \
+  || bad "附页内容变化不对（rc=${bi_rc}，out=${bi_out}）"
+
+# 场景：附页路径是目录 → 报明确错误拒绝派发，任务书零写入（不留半截）
+cp "$BI_T" "$BI_T.snap"
+rm -f "$BIF"; mkdir "$BIF"
+bi_out="$(bi_run)"; bi_rc=$?
+{ [[ "$bi_rc" -ne 0 ]] && printf '%s' "$bi_out" | grep -q '可读的常规文件' && cmp -s "$BI_T" "$BI_T.snap"; } \
+  && ok "附页是目录：拒绝派发（rc≠0），任务书与派发前逐字节一致" \
+  || bad "附页目录拒绝不对（rc=${bi_rc}，out=${bi_out}）"
+rmdir "$BIF"; rm -f "$BI_T.snap"
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

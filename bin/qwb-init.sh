@@ -44,6 +44,13 @@ else
   cp "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
 fi
 
+# 常驻附页模板：目标已有则不覆盖（可能已被项目主人改成自己的常驻规则），幂等
+if [[ -f "$ROOT/qwbuddy/brief-include.md" ]]; then
+  echo "保留：qwbuddy/brief-include.md 已存在，不覆盖"
+else
+  cp "$TPL/brief-include.md" "$ROOT/qwbuddy/brief-include.md"
+fi
+
 # 运行时脚本装进目标项目；qwb-init.sh 是母本仓专用安装器，不复制进目标
 for s in "$SRC"/qwb-*.sh; do
   [[ "$(basename "$s")" == "qwb-init.sh" ]] && continue
