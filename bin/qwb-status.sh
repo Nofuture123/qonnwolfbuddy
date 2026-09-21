@@ -29,6 +29,11 @@ done
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 LEDGER="$PROJECT_ROOT/tasks"
+# 共享库（worker_lost 工人丢失判定；与 qwb-run.sh / qwb-wake.sh 同一份）
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
+[[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$LIB"
 
 echo "== 账本：$LEDGER =="
 shopt -s nullglob
@@ -52,6 +57,16 @@ else
       printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
     fi
     [[ -n "$last" ]] && printf '       最近: %s\n' "$last"
+    # 工人丢失判定（关机/herdr 重启后 pane 没了、票还 running）：丢主控开局点名能直接看出
+    # 工人已不存在，重派同一票会幂等复用 worktree。无 herdr 或查询失败不当丢失（不猜）。
+    if [[ "$st" == "running" ]] && command -v herdr >/dev/null 2>&1; then
+      lostpane="$(worker_lost "$f")" && lrc=0 || lrc=$?
+      if [[ "$lrc" -eq 0 ]]; then
+        printf '       工人丢失: pane %s 已不存在/无 agent——重派同一票会幂等复用 worktree\n' "$lostpane"
+      elif [[ "$lrc" -eq 2 ]]; then
+        printf '       工人状态未知（查询失败，不当丢失）\n'
+      fi
+    fi
     # 规格疑点未处理：与 qwb-run.sh 疑点门同判定——最后一个相关事件（spec-defect:/spec-resolved:）
     # 是 spec-defect: 即未决；普通状态行不参与判定，疑点不会被后续 working:/done:/dispatch: 行遮住
     spev="$(grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$f" 2>/dev/null | tail -1 || true)"

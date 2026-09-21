@@ -71,9 +71,19 @@ open_task_for() {
   return 1
 }
 
-# 任务id → 账本中唯一任务书（记账落点；0 或多份都返回 1）
+# 任务id → 账本中唯一任务书（记账落点；0 或多份都返回 1）。
+# 与 qwb-run.sh 同款：先找「文件名去日期前缀与 .md 后 == 给定 id」的精确命中，恰好一份就用它；
+# 没有精确命中才退回子串匹配（否则 --task foo 会撞上 foo-bar 两份）。
 unique_task_for() {
-  local f hits=()
+  local f exact=() hits=()
+  for f in "$LEDGER"/*.md; do
+    [[ -e "$f" ]] || continue
+    [[ "$(basename "$f" .md | sed 's/^[0-9][0-9-]*-//')" == "$1" ]] && exact+=("$f")
+  done
+  if [[ ${#exact[@]} -eq 1 ]]; then
+    printf '%s' "${exact[0]}"
+    return 0
+  fi
   for f in "$LEDGER"/*"$1"*.md; do [[ -e "$f" ]] && hits+=("$f"); done
   [[ ${#hits[@]} -eq 1 ]] || return 1
   printf '%s' "${hits[0]}"

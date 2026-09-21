@@ -19,7 +19,9 @@ usage() {
                         隔离副本的创建是幂等的：已是本任务的有效 worktree 则复用，不重建
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
   --pane <pane_id>      复用既有 pane（须为交互 shell），否则新开 herdr tab
-  --name <agent名>      工人 agent 名（默认：qwb-<任务id>）
+  --name <agent名>      工人 agent 名（默认：qwb-<任务id>；任务 id 净化后只剩短残渣
+                         ——如中文 id 被剔成 qwb--01——则兑底为 qwb-<sha1(任务id)前8位>，
+                         显式给 --name 时不兑底）
   --accept-new-scenarios  主控显式确认：曾派发但丢 scenarios-fp 基线的任务书，允许重建冻结基线（留一行说明）
   --revise-scenarios=<原因>  主控显式修订验收场景：票内已有基线且场景块被有意改动时，
                          更新 scenarios-fp 并追加 working: scenarios-revised: 留痕记录（原因非空，须写明条款依据）
@@ -33,6 +35,11 @@ usage() {
     参数串同样过 headless 禁令（-p/--print/--exec/exec）。pane-run 工人的参数只能写在
     QWB_WORKER_LAUNCH 的命令行里——QWB_WORKER_ARGS 里再给它配值即拒绝派发（一个工人的启动参数
     只能有一处），两类检查都在锁/worktree/tab/账本写之前完成。
+新建隔离副本后、开 tab / 记账之前，config.sh 的 QWB_WORKTREE_SETUP 非空时会在副本目录里
+bash -c 执行一次（如 pnpm install --offline --frozen-lockfile && cp ../../.env .env），供
+monorepo 副本自装依赖/环境；stdout/stderr 透传，非 0 → 拒绝派发、副本保留供排查
+（任务书无 dispatch 行、无 tab 创建）。只对新建副本执行：复用既有副本 / --here /
+--worktree <既有路径> 均不跑。
 工人 tab 落在哪个 workspace：config.sh 的 QWB_WORKSPACE（非空即用，本机 herdr 查不到就拒绝派发，不静默回退）；
 未声明时按 herdr workspace list 的 worktree.repo_root 与项目根物理路径匹配（多个匹配取 focused 的）；
 都没有则落调用者 workspace 并在 stderr 警告。--pane 复用路径不建 tab，不受影响。
@@ -76,14 +83,25 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
 # shellcheck source=/dev/null
 . "$LIB"
 
-# 定位任务书：路径直接用；id 在 tasks/ 里唯一匹配
+# 定位任务书：路径直接用；id 先找「文件名去日期前缀与 .md 后 == 给定 id」的精确命中，
+# 恰好一份就用它；没有精确命中才退回子串匹配（多份仍报错——子串 glob 会把
+# watch-invisible 与 watch-invisible-pi 同时命中，精确 id 必须优先）
 if [[ -f "$TASK" ]]; then
   TASK_FILE="$(cd "$(dirname "$TASK")" && pwd)/$(basename "$TASK")"
 else
-  hits=()
-  for f in "$LEDGER"/*"$TASK"*.md; do [[ -e "$f" ]] && hits+=("$f"); done
-  [[ ${#hits[@]} -eq 1 ]] || { echo "错误：任务 '${TASK}' 在 ${LEDGER} 匹配到 ${#hits[@]} 份（要唯一）" >&2; exit 1; }
-  TASK_FILE="${hits[0]}"
+  exact=()
+  for f in "$LEDGER"/*.md; do
+    [[ -e "$f" ]] || continue
+    [[ "$(basename "$f" .md | sed 's/^[0-9][0-9-]*-//')" == "$TASK" ]] && exact+=("$f")
+  done
+  if [[ ${#exact[@]} -eq 1 ]]; then
+    TASK_FILE="${exact[0]}"
+  else
+    hits=()
+    for f in "$LEDGER"/*"$TASK"*.md; do [[ -e "$f" ]] && hits+=("$f"); done
+    [[ ${#hits[@]} -eq 1 ]] || { echo "错误：任务 '${TASK}' 在 ${LEDGER} 匹配到 ${#hits[@]} 份（要唯一）" >&2; exit 1; }
+    TASK_FILE="${hits[0]}"
+  fi
 fi
 # 任务 id = 文件名去日期前缀与扩展名
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
@@ -92,7 +110,7 @@ TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 # 工人须在 config.sh 的 QWB_WORKERS 里；QWB_WORKER_LAUNCH 只覆盖启动方式。
 # 配置唯一来源是 bash 文件：直接 source，不再解析 JSON。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_WORKER_ARGS=""; QWB_AGENT_START_MS=""
+QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_WORKER_ARGS=""; QWB_AGENT_START_MS=""; QWB_WORKTREE_SETUP=""
 # shellcheck source=/dev/null
 . "$CONF"
 # —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
@@ -196,8 +214,16 @@ if has_headless_form "$WORKER_ARGS"; then
   echo "错误：QWB_WORKER_ARGS 里工人 '${WORKER}' 的参数含 headless 形式（-p/--print/--exec/exec）——工人一律 Herdr 窗口交互式运行，参数串：${WORKER_ARGS}" >&2
   exit 1
 fi
+NAME_GIVEN=0
+[[ -n "$NAME" ]] && NAME_GIVEN=1
 NAME="${NAME:-qwb-$TASK_ID}"
 NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+# agent 名塔缩兑底：中文任务 id 经 tr 净化后可能只剩短残渣（如 场景完善-01真实闭环 →
+# qwb--01），两票同名。仅在未显式给 --name 时兑底为 qwb-<sha1(任务id) 前 8 位>；
+# 有效名（剩余字母数字 ≥ 3 个）保持原样，ASCII id 名与现状字节一致。
+if [[ "$NAME_GIVEN" -eq 0 ]] && [[ "$(printf '%s' "${NAME#qwb-}" | tr -cd 'a-z0-9' | wc -c | tr -d ' ')" -lt 3 ]]; then
+  NAME="qwb-$(printf '%s' "$TASK_ID" | shasum | cut -c1-8)"
+fi
 
 # —— 常驻规则附页（brief-include）：读与校验在任何派发副作用之前 ——
 # <项目根>/qwbuddy/brief-include.md 存在时，其内容原样追加为任务书最后一节「常驻附页」，
@@ -392,7 +418,9 @@ fi
 
 # worktree（M6：默认隔离）：--worktree 复用既有副本；--here 显式用项目根；
 # 其余情况（含 --create-worktree 与默认不给参数）一律开 <根>/.worktrees/<id> 隔离副本
+WT_CREATED=0
 if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
+  WT_CREATED=0
   # 开之前先清点：有残留 worktree 打警告但不阻塞（使用者可能有意保留）
   WT_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
   if [[ -f "$WT_BIN" ]]; then
@@ -437,15 +465,29 @@ if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
   elif git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
     git -C "$PROJECT_ROOT" worktree add "$WORKTREE" "$TASK_ID" \
       || { echo "错误：创建 worktree 失败（确要在项目根派发请显式用 --here）" >&2; exit 1; }
+    WT_CREATED=1
   else
     git -C "$PROJECT_ROOT" worktree add -b "$TASK_ID" "$WORKTREE" \
       || { echo "错误：创建 worktree 失败（项目须为 git 仓库；确要在项目根派发请显式用 --here）" >&2; exit 1; }
+    WT_CREATED=1
   fi
 fi
 DIR="$PROJECT_ROOT"
 if [[ -n "$WORKTREE" ]]; then
   [[ -d "$WORKTREE" ]] || { echo "错误：worktree 不存在：$WORKTREE" >&2; exit 1; }
   DIR="$(cd "$WORKTREE" && pwd)"
+fi
+
+# —— QWB_WORKTREE_SETUP：新建隔离副本后、开 tab / 记账之前，在副本目录里 bash -c 执行一次 ——
+# 只对本次新建的副本执行（复用既有副本 / --here / --worktree <既有路径> 均不跑）；
+# stdout/stderr 透传；非 0 → 拒绝派发，副本保留供排查（任务书无 dispatch 行、无 tab 创建）。
+if [[ "$WT_CREATED" -eq 1 && -n "${QWB_WORKTREE_SETUP:-}" ]]; then
+  init_rc=0
+  ( cd "$DIR" && bash -c "$QWB_WORKTREE_SETUP" ) || init_rc=$?
+  if [[ "$init_rc" -ne 0 ]]; then
+    echo "错误：worktree 初始化失败（退出码 ${init_rc}），副本保留在 ${DIR} 供排查，未派发" >&2
+    exit 1
+  fi
 fi
 
 # —— 派发前预置目录信任：claude/codex 对新目录弹信任框且不被权限参数跳过，起工人前把 $DIR

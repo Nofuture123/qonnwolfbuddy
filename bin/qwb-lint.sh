@@ -17,6 +17,9 @@ usage() {
   7. 需独立审核的票（review-required: yes）：review-impl:/review-rev: 各行须有
      model/family/session/evidence、family 非 unknown 且两方不同、原生 session 不同实例；
      无标记的普通票不启用本检查
+  8. 任务书正文无占位状态行（列首 working/done/blocked/needs-decision: 带未填占位符 <…>
+     的行，是把模板示例当真实状态行抄进了票）——只警告不 FAIL：不补历史票，
+     但列首占位行会污染值守指纹与疑点门，写票时必须删掉或缩进
 
 布局：装了 qwbuddy/ 的项目 → qwbuddy/QWBUDDY.md + qwbuddy/bin/；
       母本仓（模板源）       → templates/QWBUDDY.md + bin/，配置回退 qwb.config.sh。
@@ -244,6 +247,24 @@ elif [[ -z "$rid_bad" ]]; then
   pass "${rid_n} 张需独立审核票的身份记录可核验"
 else
   fail "审核身份检查失败:${rid_bad}"
+fi
+
+echo "== 8. 任务书正文无占位状态行（只警告，不 FAIL）=="
+# 列首 working/done/blocked/needs-decision: 行里带 <…> 占位符 = 模板示例被当成真实状态行抄进了票：
+# 会被值守指纹与疑点门当真。缩进行不算列首（模板示例必须缩进，见 TASK.md §4）。
+# 只警告不 FAIL：本仓历史票已有这种行，不补历史票。
+placeholder_warn=""
+for f in "$PROJECT_ROOT"/tasks/*.md; do
+  grep -q '^state:' "$f" || continue
+  while IFS= read -r line; do
+    placeholder_warn="${placeholder_warn} $(basename "$f")（占位状态行: ${line}）"
+  done < <(grep -E '^(working|done|blocked|needs-decision):.*<[^>]*>' "$f" || true)
+done
+if [[ -z "$placeholder_warn" ]]; then
+  pass "任务书正文无列首占位状态行"
+else
+  echo "警告：发现列首占位状态行（不算 FAIL，但值守指纹与疑点门会把它们当真，建议删除或缩进）：${placeholder_warn}" >&2
+  pass "占位状态行仅警告不 FAIL（详情见上方 stderr；新写票必须删掉或缩进，不补历史票）"
 fi
 
 echo

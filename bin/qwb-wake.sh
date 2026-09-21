@@ -6,12 +6,15 @@ usage() {
   cat <<'EOF'
 用法: qwb-wake.sh [选项]
 
-循环：读账本列未结项 → 有未结项且进展指纹已变 → herdr pane run 叫醒主控 → 等事件或超时 → 再来。
+循环：读账本列未结项 → 有未结项且进展指纹已变 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
 未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}。
-去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串)；
+去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串；
+     running 票判定为工人丢失时再追加 "\nlost=<pane>" 段——工人一消失指纹变一次、叫一次，之后指纹不变不重叫）；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
-兜底重叫：fp 未变但最近一条 wake: 行的时间戳距今 ≥ config.sh 的 QWB_REWAKE_MS（>0 才启用）
-     → 仍再叫一次（工人挂起/崩溃没有新账本行时，把超时判断交回主控）；时间戳解析失败按超期处理。
+     投递成功才逐票写 wake 行，失败一行都不写（下轮重试）。
+兜底重叫：仅对 state=running 生效——fp 未变但最近一条 wake: 行的时间戳距今 ≥ config.sh 的
+     QWB_REWAKE_MS（>0 才启用）→ 仍再叫一次（兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
+     blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过不重叫）；时间戳解析失败按超期处理。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
 等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval
      （毫秒级计时 + 小数秒 sleep），无论 wait 成功/失败/超时，已耗时间都计入预算、
@@ -29,10 +32,13 @@ usage() {
                       判定依据是 pane 前台进程组里真实的 qwb-wake.sh 进程 + 项目路径，
                       不凭 pane 存在或名字相似；查不到/多实例明确报错，不擅自多开
   --block             前台阻塞值守（无窗口：不 pane run、不开 tab，供 Claude Code Stop hook /
-                      Codex 前台 checkpoint 等主控 harness 自己调用）：轮询账本，有可动作变化 →
-                      stdout 打印摘要 + 往对应票追加 wake: 行 + 退出码 2；账本无未结项 → 退出码 0；
-                      --max-ms 到期无变化 → 退出码 124；其他非 0 = 错误。去重与时间兑底逻辑与
-                      循环模式完全共用（wake: 行状态记在同一本账本上，两种值守形态不会互相重复叫）
+                      Codex 前台 checkpoint 等主控 harness 自己调用）：每轮判定前先复核主控锁
+                      （qwbuddy/.controller.lock/owner 末字段 ≠ 本进程 HERDR_PANE_ID 或锁不存在
+                      → exit 0 不消费唤醒；HERDR_PANE_ID 为空则跳过复核），之后轮询账本，
+                      有可动作变化 → stdout 打印摘要 + 往对应票追加 wake: 行 + 退出码 2；
+                      账本无未结项 → 退出码 0；--max-ms 到期无变化 → 退出码 124；其他非 0 = 错误。
+                      去重与时间兑底逻辑与循环模式完全共用（wake: 行状态记在同一本账本上，
+                      两种值守形态不会互相重复叫）
   --max-ms <毫秒>     --block 的单轮阻塞上限（毫秒，超时一律毫秒）；不给则无限阻塞直到 exit 2 或 0
   --check             只报告本项目值守健康并退出：运行 / 未运行 / 未知（不写账本不改状态）
   -h, --help          显示本帮助
@@ -421,14 +427,6 @@ open_items() {
   done
 }
 
-# 进展指纹 = sha1(state 值 + "\n" + 最后一条状态行原文，无则空串)
-progress_fp() {
-  local last
-  last="$(grep -E '^(working|done|blocked|needs-decision):' "$1" 2>/dev/null | tail -1 || true)"
-  printf '%s' "$2
-${last}" | shasum | cut -d' ' -f1
-}
-
 # 最近一次 wake 行里的 fp（无 wake 行或解析不到 fp= 则为空 → 视为指纹不同）
 last_wake_fp() {
   grep '^wake:' "$1" 2>/dev/null | tail -1 | sed -n 's/.*fp=\([^[:space:]]*\).*/\1/p' || true
@@ -450,21 +448,41 @@ ts_epoch() {
   ' "$1" 2>/dev/null
 }
 
-check_round() {
-  local f st fp lwf ids=""
+# —— 一轮判定：--once/--dry-run 循环与 --block 完全共用同一份判定，不写两份 ——
+# collect_due <输出文件>：遍历未结项，把「本轮要叫」的票逐行 TSV 写进 $1：
+#   文件路径 <TAB> state <TAB> fp <TAB> 最后状态行原文截160字符 <TAB> 丢失pane（空=未丢失/未知）
+# 跳过的票往 stdout 打「跳过：…」说明；全局 OPEN_N = 未结项总数。
+# fp 输入 = state\n最后状态行（\nlost=<pane> 仅 running 票判定为工人丢失时追加）；
+# 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
+OPEN_N=0
+collect_due() {
+  local out="$1" f st last fp lwf we lostpane="" lostrc=1
+  OPEN_N=0
   while IFS=$'\t' read -r f st; do
-    ids="$ids $(basename "$f" .md)($st)"
-    fp="$(progress_fp "$f" "$st")"
+    OPEN_N=$((OPEN_N + 1))
+    last="$(grep -E '^(working|done|blocked|needs-decision):' "$f" 2>/dev/null | tail -1 || true)"
+    lostpane=""
+    if [[ "$st" == "running" && "$DRY" -eq 0 ]]; then
+      lostpane="$(worker_lost "$f")" && lostrc=0 || lostrc=$?
+      [[ "$lostrc" -ne 0 ]] && lostpane=""
+    fi
+    # fp 输入 = state\n最后状态行；running 票判定为丢失时再追加 \nlost=<pane>
+    # （直接管道进 shasum：命令替换会剥尾随换行；尾部 || true 保 pipefail 下群组非空退出不炸）
+    fp="$( { printf '%s\n' "$st"
+             printf '%s' "$last"
+             [[ -n "$lostpane" ]] && printf '\nlost=%s' "$lostpane" || true
+           } | shasum | cut -d' ' -f1)"
     lwf="$(last_wake_fp "$f")"
     if [[ -n "$lwf" && "$lwf" == "$fp" ]]; then
-      # 兜底重叫：进展指纹未变，但距上次叫醒 ≥ QWB_REWAKE_MS（>0 才启用）→ 仍再叫一次。
-      # 时间戳解析失败保守按超期处理——宁可多叫，不可漏叫。
+      # 时间兜底重叫只对 running 生效：兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
+      # blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过（重叫只烧主控 token）。
+      if [[ "$st" != "running" ]]; then
+        echo "跳过：$(basename "$f") state=${st} 等裁决（进展未变，不重叫）"
+        continue
+      fi
       if [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
-        local we
         we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
-        if [[ -z "$we" ]] || (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
-          : # 超期：落到下方叫醒分支
-        else
+        if [[ -n "$we" ]] && (( $(now_ms) - we * 1000 < QWB_REWAKE_MS )); then
           echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
           continue
         fi
@@ -475,19 +493,52 @@ check_round() {
     fi
     if [[ "$DRY" -eq 1 ]]; then
       echo "未结项（将叫醒）: $(basename "$f") state=$st"
-    else
-      [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; exit 1; }
-      if herdr pane run "$PANE" "看账本：未结项待处理 →$(printf '%s' "$ids")。请读 tasks/ 继续处理。"; then
-        printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f"
-        echo "已叫醒：$(basename "$f") state=${st} → pane ${PANE}"
-      else
-        echo "错误：投递失败（pane ${PANE}）：$(basename "$f") 不写 wake 行、保持未叫，下轮重试" >&2
-      fi
     fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "${last:0:160}" "$lostpane" >> "$out"
   done < <(open_items)
-  if [[ -z "$ids" ]]; then
-    echo "账本无未结项"
+}
+
+# 一轮一条投递的共用拼装：$1 = due 文件 → 全局 DUE_N / DUE_MSG
+seq_mark() {
+  local marks=(① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ ⑩ ⑪ ⑫ ⑬ ⑭ ⑮ ⑯ ⑰ ⑱ ⑲ ⑳)
+  if (( $1 >= 1 && $1 <= 20 )); then printf '%s' "${marks[$(($1 - 1))]}"; else printf '(%s)' "$1"; fi
+}
+compose_msg() {
+  DUE_N=0; DUE_MSG=""
+  local f st fp last lostpane sep=""
+  while IFS=$'\t' read -r f st fp last lostpane; do
+    DUE_N=$((DUE_N + 1))
+    DUE_MSG="${DUE_MSG}${sep}$(seq_mark "$DUE_N") $(basename "$f" .md)(${st}) 最近: ${last}"
+    [[ -n "$lostpane" ]] && DUE_MSG="${DUE_MSG}（工人丢失）"
+    sep=" "
+  done < "$1"
+}
+
+check_round() {
+  local duef
+  duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
+  : > "$duef"
+  collect_due "$duef"
+  if [[ ! -s "$duef" ]]; then
+    (( OPEN_N == 0 )) && echo "账本无未结项"
+    rm -f "$duef"
+    return 0
   fi
+  compose_msg "$duef"
+  if [[ "$DRY" -eq 1 ]]; then rm -f "$duef"; return 0; fi
+  [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; rm -f "$duef"; exit 1; }
+  # 一轮只发一条投递：全部要叫的票拼进同一条文本；投递成功才逐票写 wake 行，失败一行都不写
+  if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
+    local f st fp last lostpane
+    while IFS=$'\t' read -r f st fp last lostpane; do
+      printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
+        || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; continue; }
+      echo "已叫醒：$(basename "$f" .md) state=${st} → pane ${PANE}"
+    done < "$duef"
+  else
+    echo "错误：投递失败（pane ${PANE}）：本轮 ${DUE_N} 张票一行 wake 都不写、保持未叫，下轮重试" >&2
+  fi
+  rm -f "$duef"
   return 0
 }
 
@@ -537,35 +588,35 @@ wait_round() {
 }
 
 # —— block 模式：前台阻塞值守（Claude Code Stop hook / Codex 前台 checkpoint 的共用核心）——
-# 判定逻辑与 check_round 完全同款（进展指纹去重 + QWB_REWAKE_MS 时间兑底），但「叫醒」动作不同：
-# 不 pane run，而是把摘要打到 stdout、往票追加 wake: 行后以退出码 2 交还调用方。
+# 判定与循环模式完全共用（collect_due 的指纹去重 + 仅 running 的时间兑底 + 工人丢失指纹段），
+# 只有「叫醒」动作不同：不 pane run，而是把同一份拼装打到 stdout、往票追加 wake: 行后以退出码 2 交还调用方。
 # 返回码：2 = 有可动作变化（已写 wake 行）；0 = 账本无未结项（不写任何行）；1 = 有未结项但无变化（内部）
+block_owner_ok() {
+  # 孤儿值守复核：主控锁不在本进程手里（换会话后被新主控接管 / 锁已不存在）→ 不消费唤醒。
+  # HERDR_PANE_ID 为空（非 herdr 环境，如 smoke）跳过复核。
+  [[ -n "${HERDR_PANE_ID:-}" ]] || return 0
+  local owner=""
+  owner="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner" 2>/dev/null | head -1)"
+  [[ "$owner" == "$HERDR_PANE_ID" ]]
+}
+
 block_round() {
-  local f st fp lwf we due act=0 any=0 last
-  while IFS=$'\t' read -r f st; do
-    any=1
-    fp="$(progress_fp "$f" "$st")"
-    lwf="$(last_wake_fp "$f")"
-    due=0
-    if [[ -z "$lwf" || "$lwf" != "$fp" ]]; then
-      due=1
-    elif [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
-      we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
-      if [[ -z "$we" ]]; then
-        due=1
-      elif (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
-        due=1
-      fi
-    fi
-    if (( due )); then
-      act=1
-      last="$(grep -E '^(working|done|blocked|needs-decision):' "$f" 2>/dev/null | tail -1 || true)"
-      printf '%s（%s）%s\n' "$(basename "$f" .md)" "$st" "$last"
+  local duef
+  duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
+  : > "$duef"
+  collect_due "$duef"
+  local any="$OPEN_N" f st fp last lostpane
+  if [[ -s "$duef" ]]; then
+    compose_msg "$duef"
+    while IFS=$'\t' read -r f st fp last lostpane; do
       printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
         || echo "警告：wake 行写入失败（仍叫醒，下轮会重写）：$f" >&2
-    fi
-  done < <(open_items)
-  (( act )) && return 2
+    done < "$duef"
+    printf '看账本：%d 张未结项有进展 →%s。只需读这些票。\n' "$DUE_N" "$DUE_MSG"
+    rm -f "$duef"
+    return 2
+  fi
+  rm -f "$duef"
   (( any )) || return 0
   return 1
 }
@@ -576,6 +627,12 @@ if [[ "$BLOCK" -eq 1 ]]; then
     block_deadline=$(( $(now_ms) + MAX_MS ))
   fi
   while :; do
+    # 每轮判定前复核主控锁：锁不在手 = 本值守是孤儿（主控会话已退出 / 锁被新主控接管），
+    # exit 0、不写任何 wake 行，不消费唤醒
+    if ! block_owner_ok; then
+      echo "值守：主控锁不在本进程（owner=$(sed -n 's/^[^ ]*[[:space:]]*//p' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner" 2>/dev/null | head -1)，本进程 ${HERDR_PANE_ID}），孤儿值守退出不消费唤醒"
+      exit 0
+    fi
     brc=0; block_round || brc=$?
     if (( brc == 2 )); then exit 2; fi
     if (( brc == 0 )); then echo "账本无未结项"; exit 0; fi

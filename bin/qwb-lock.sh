@@ -6,7 +6,9 @@ usage() {
   cat <<'EOF'
 用法: qwb-lock.sh <acquire|release|status> [选项]
 
-  acquire   抢锁：建 qwbuddy/.controller.lock 目录并写 owner 文件；已被占用则失败（退出码 1）
+  acquire   抢锁：建 qwbuddy/.controller.lock 目录并写 owner 文件；已被占用则先判活：
+            锁主 pid 已退出 / pane 已不存在 → 自动回收残留锁后重新获锁；
+            锁主仍活或查不出死活（herdr 不在 PATH / 查询报错）→ 拒绝（fail-closed，不猜）
   release   放锁：删除锁目录（只在确认是残留锁时用；不做自动夺锁）
   status    查锁：打印锁主或「无锁」
 
@@ -43,6 +45,31 @@ lock_holder() {
   if [[ -f "$LOCK_DIR/owner" ]]; then cat "$LOCK_DIR/owner"; else echo "（无 owner 文件）"; fi
 }
 
+# 残留锁判活：owner 形如 pid:<n> 用 kill -0；其余视为 herdr pane id 查 pane get。
+# 死 → stdout 打印原锁主、返回 0；活/无法判定 → 返回 1（拒绝，不猜）。$2 = 原因说明（stderr 用）
+lock_holder_dead() {
+  local holder_id="$1"
+  case "$holder_id" in
+    pid:*)
+      local npid="${holder_id#pid:}"
+      [[ "$npid" =~ ^[0-9]+$ ]] || return 1
+      kill -0 "$npid" 2>/dev/null && return 1
+      return 0
+      ;;
+    "") return 1 ;;   # 无 owner 文件/解析不出：无法判活 → 拒绝
+    *)
+      command -v herdr >/dev/null 2>&1 || return 1   # herdr 不在 PATH：无法判活 → 拒绝
+      local pout="" prc=0
+      pout="$(herdr pane get "$holder_id" 2>&1)" || prc=$?
+      if [[ "$prc" -ne 0 ]]; then
+        printf '%s' "$pout" | grep -q 'pane_not_found' && return 0
+        return 1   # 其他查询失败：无法判活 → 拒绝（fail-closed）
+      fi
+      return 1   # pane 查得到 → 活锁
+      ;;
+  esac
+}
+
 case "$CMD" in
   acquire)
     [[ -d "$PROJECT_ROOT/qwbuddy" ]] || { echo "错误：${PROJECT_ROOT}/qwbuddy 不存在（先跑 qwb-init.sh）" >&2; exit 1; }
@@ -50,9 +77,26 @@ case "$CMD" in
       printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OWNER" > "$LOCK_DIR/owner"
       echo "已获锁：${OWNER}（${LOCK_DIR}）"
     else
-      echo "错误：锁已被占用：${LOCK_DIR}；锁主：$(lock_holder)" >&2
-      echo "确认是残留锁后手动释放：bash ${ME} release --project ${PROJECT_ROOT}" >&2
-      exit 1
+      holder="$(lock_holder)"
+      holder_id="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+      if lock_holder_dead "$holder_id"; then
+        if rm -rf "$LOCK_DIR" && mkdir "$LOCK_DIR" 2>/dev/null; then
+          printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OWNER" > "$LOCK_DIR/owner"
+          echo "回收残留锁（原锁主 ${holder_id} 已不存在）"
+          echo "已获锁：${OWNER}（${LOCK_DIR}）"
+        else
+          echo "错误：锁已被占用：${LOCK_DIR}；残留锁回收时又被并发抢走（两次 mkdir 都失败），本次拒绝" >&2
+          exit 1
+        fi
+      else
+        echo "错误：锁已被占用：${LOCK_DIR}；锁主：${holder}" >&2
+        if [[ -n "$holder_id" && "$holder_id" != pid:* ]]; then
+          command -v herdr >/dev/null 2>&1 \
+            || echo "说明：herdr 不在 PATH，无法判活，故不回收残留锁（fail-closed）" >&2
+        fi
+        echo "确认是残留锁后手动释放：bash ${ME} release --project ${PROJECT_ROOT}" >&2
+        exit 1
+      fi
     fi
     ;;
   release)

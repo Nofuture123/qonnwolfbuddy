@@ -92,3 +92,39 @@ resolve_workspace() {
   printf '%s' "$first"
   return 0
 }
+
+# worker_lost <任务书> —— 工人丢失判定（关机/herdr 重启后 pane 没了，票还 running）
+#
+# 取该票最新一条 dispatch: 的 pane=，herdr pane get 判活：
+#   pane_not_found，或 pane 在但 agent 字段为空（工人进程已退出、pane 退回 shell）
+#     → 工人丢失：stdout 打印 pane id，返回 0
+#   agent 仍在 → 未丢失，返回 1；无 dispatch 行（未派）→ 未丢失，返回 1
+#   其他查询失败 / 响应不合契约 → 无法判定：stderr 一行「无法确认工人状态」，返回 2（不当丢失，不猜）
+# 只应在有 herdr 且非 --dry-run 的路径调用（判定需要真实查询）。
+worker_lost() {
+  local f="$1" disp pane out v
+  disp="$(grep '^dispatch:' "$f" 2>/dev/null | tail -1 || true)"
+  [[ -n "$disp" ]] || return 1
+  pane="$(printf '%s\n' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
+  [[ -n "$pane" ]] || return 1
+  if ! out="$(herdr pane get "$pane" 2>&1)"; then
+    if printf '%s\n' "$out" | grep -q 'pane_not_found'; then
+      printf '%s\n' "$pane"
+      return 0
+    fi
+    echo "无法确认工人状态（herdr pane get ${pane} 查询失败：${out}）" >&2
+    return 2
+  fi
+  v="$(printf '%s\n' "$out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j = eval { decode_json(<STDIN>) };
+    my $p = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH" && ref $j->{result}{pane} eq "HASH")
+      ? $j->{result}{pane} : undef;
+    exit 2 unless defined $p;
+    print((defined $p->{agent} && $p->{agent} ne "") ? "live" : "lost");
+  ' 2>/dev/null || true)"
+  case "$v" in
+    live) return 1 ;;
+    lost) printf '%s\n' "$pane"; return 0 ;;
+    *)    echo "无法确认工人状态（herdr pane get ${pane} 响应不符合契约）" >&2; return 2 ;;
+  esac
+}

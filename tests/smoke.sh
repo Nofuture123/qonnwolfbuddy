@@ -311,21 +311,25 @@ n="$(grep -c 'agent wait' "$STUBLOG" || true)"
   && ok "1.3 秒内 ${n} 次 agent wait（真时钟真跑，节奏正常）" || bad "1.3 秒内 ${n} 次 agent wait（异常）"
 
 echo "== 13. F1 回归：主控锁 =="
+# 残留锁自动回收落地后，「锁被占用而拒绝」必须用活锁主构造：stub + dyn 片场让锁主 pane 真实存在；
+# 死 pid / pane_not_found 的锁主会被 acquire 自动回收再获锁（回收专项见 §59）
 LOCKD="$TMP/qwbuddy/.controller.lock"
+LK13="$TMP/herdr-dyn13"; rm -rf "$LK13"; mkdir -p "$LK13"
+sed "s|w8Z:pY|wtest:p9|g" "$FIXDIR/pane-get-shell.json" > "$LK13/get-wtestp9.json"
 rm -rf "$LOCKD"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh acquire --owner wtest:p9 ) >/dev/null \
   && ok "acquire 成功" || bad "acquire 失败"
-( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh acquire --owner wtest:p8 ) >/dev/null 2>&1 \
-  && bad "第二次 acquire 竟成功" || ok "持锁时第二次 acquire 被拒"
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LK13" bash qwbuddy/bin/qwb-lock.sh acquire --owner wtest:p8 ) >/dev/null 2>&1 \
+  && bad "第二次 acquire 竟成功" || ok "活锁主在时第二次 acquire 被拒"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh status ) | grep -q 'wtest:p9' \
   && ok "status 显示锁主" || bad "status 未显示锁主"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh release ) >/dev/null \
   && ok "release 成功" || bad "release 失败"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh acquire --owner wtest:p9 ) >/dev/null \
   && ok "release 后可再 acquire" || bad "release 后 acquire 失败"
-( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:p7 bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null 2>&1 \
-  && bad "他人持锁时 qwb-run.sh 仍派发" || ok "他人持锁时 qwb-run.sh 拒绝派发"
-( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:p9 bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null \
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LK13" HERDR_PANE_ID=wtest:p7 bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null 2>&1 \
+  && bad "他人（锁主 pane 存活）持锁时 qwb-run.sh 仍派发" || ok "他人持锁时 qwb-run.sh 拒绝派发"
+( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LK13" HERDR_PANE_ID=wtest:p9 bash qwbuddy/bin/qwb-run.sh --task disp --worker codex --worktree "$TMP" ) >/dev/null \
   && ok "自持锁时可派发" || bad "自持锁时派发被拒"
 rm -rf "$LOCKD"
 
@@ -2696,7 +2700,7 @@ cp "$ROOT/templates/config.sh" "$BP/qwbuddy/config.sh"   # $TMP 的 config 已�
 BLK="$BP/tasks/2099-01-07-blk.md"
 printf '# block\nstate: running\ndone: 工人完成 block 场景\n' > "$BLK"
 : > "$STUBLOG"
-blk_out="$( cd "$BP" && PATH="$STUB:$PATH" bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block 2>&1 )"; blk_rc=$?
+blk_out="$( cd "$BP" && PATH="$STUB:$PATH" env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 5000 2>&1 )"; blk_rc=$?
 { [[ "$blk_rc" -eq 2 ]] \
   && printf '%s' "$blk_out" | grep -q '2099-01-07-blk' \
   && printf '%s' "$blk_out" | grep -qF 'done: 工人完成 block 场景' \
@@ -2711,7 +2715,7 @@ blk_out="$( cd "$BP" && PATH="$STUB:$PATH" bash "$BP/qwbuddy/bin/qwb-wake.sh" --
 BLK_SNAP="$TMP/blk.snap"; sed -i '' 's/^state: running/state: verified/' "$BLK"
 cp "$BLK" "$BLK_SNAP"   # 快照取在改 state 之后：断言的是 --block 不动已结票
 : > "$STUBLOG"
-( cd "$BP" && PATH="$STUB:$PATH" bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block ) >/dev/null 2>&1; blk_rc=$?
+( cd "$BP" && PATH="$STUB:$PATH" env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 5000 ) >/dev/null 2>&1; blk_rc=$?
 { [[ "$blk_rc" -eq 0 ]] && cmp -s "$BLK" "$BLK_SNAP" && [[ ! -s "$STUBLOG" ]]; } \
   && ok "--block 无未结项：rc=0、票字节不变、零 herdr 调用" \
   || bad "--block 无未结项路径不对（rc=${blk_rc}）"
@@ -2735,7 +2739,7 @@ exit 0
 EOF
 chmod +x "$BP/blk-now.sh" "$BP/blk-sleep.sh"
 BLKC_SNAP="$BP/blkc.snap"; cp "$BLKC" "$BLKC_SNAP"
-( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-now.sh" QWB_SLEEP_CMD="$BP/blk-sleep.sh" \
+( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-now.sh" QWB_SLEEP_CMD="$BP/blk-sleep.sh" env -u HERDR_PANE_ID \
     bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 500 --interval 300 ) >/dev/null 2>&1; blk_rc=$?
 blk_sleeps="$(wc -l < "$BLKSLEEP" | tr -d ' ')"
 { [[ "$blk_rc" -eq 124 ]] && cmp -s "$BLKC" "$BLKC_SNAP" \
@@ -2748,7 +2752,7 @@ BLKD="$BP/tasks/2099-01-09-blkd.md"
 printf '# d\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKD"
 printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$BP/blk-far.sh"; chmod +x "$BP/blk-far.sh"
 ( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-far.sh" \
-    bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block ) >/dev/null 2>&1; blk_rc=$?
+    env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 999999999 ) >/dev/null 2>&1; blk_rc=$?
 { [[ "$blk_rc" -eq 2 ]] && [[ "$(grep -c '^wake:' "$BLKD")" -eq 2 ]]; } \
   && ok "--block REWAKE 兑底：超期再叫 rc=2 + 新 wake 行" \
   || bad "--block REWAKE 兑底不对（rc=${blk_rc}，wakes=$(grep -c '^wake:' "$BLKD")）"
@@ -2757,6 +2761,9 @@ echo "== 54. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
 # hook 内部以自身位置推项目根并跑 --block（读该项目 config.sh）——同样用独立项目防 config 污染
 HP="$TMP/hook-proj"; mkdir -p "$HP/tasks"; cp -R "$TMP/qwbuddy" "$HP/qwbuddy"
 cp "$ROOT/templates/config.sh" "$HP/qwbuddy/config.sh"   # 同上：覆盖回干净 config
+# 本节所有 --block 调用必须带上限（测试纪律：回归时要变红、不能挂死）——hook 内部把
+# QWB_HOOK_MAX_MS 透传给 --block --max-ms；压小后若实现坏掉会以 124 到期退出，断言 rc=2 变红
+printf 'QWB_HOOK_MAX_MS=4000\n' >> "$HP/qwbuddy/config.sh"
 mkdir -p "$HP/qwbuddy/.controller.lock"
 printf '2026-01-01T00:00:00Z wtest:ctl\n' > "$HP/qwbuddy/.controller.lock/owner"
 HOOK="$HP/tasks/2099-01-10-hook.md"
@@ -2871,3 +2878,320 @@ printf '%s' "$out" | grep -q '值守：未运行' \
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
+
+echo "== 57. 模板新票不污染状态（列首状态行缺口回归）=="
+# 场景：把 templates/TASK.md 原样复制为两张新票（state: running）→
+#   status 无「最近:」行；wake --once 后各票 wake 行 fp == sha1("running\n")（最后状态行为空）
+TPLP="$TMP/tplproj"; mkdir -p "$TPLP"; bash "$ROOT/bin/qwb-init.sh" "$TPLP" >/dev/null
+cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t.md"
+cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t2.md"
+out="$( cd "$TPLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh )"
+{ printf '%s' "$out" | grep -q '2099-01-01-t.md' && ! printf '%s' "$out" | grep -q '最近:'; } \
+  && ok "模板复制的新票 status 无「最近:」行" || bad "模板新票竟有「最近:」（模板列首示例污染）"
+out="$( cd "$TPLP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
+{ printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-01-t' \
+  && ! printf '%s' "$out" | grep -q '最近:'; } \
+  && ok "dry-run 同样无最近行（指纹基为空状态行）" || bad "dry-run 仍显示模板示例行"
+: > "$STUBLOG"
+( cd "$TPLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
+EXPECT_FP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
+fp1="$(grep '^wake:' "$TPLP/tasks/2099-01-01-t.md" | tail -1 | sed -n 's/.*fp=\([^[:space:]]*\).*/\1/p')"
+fp2="$(grep '^wake:' "$TPLP/tasks/2099-01-01-t2.md" | tail -1 | sed -n 's/.*fp=\([^[:space:]]*\).*/\1/p')"
+{ [[ "$fp1" == "$EXPECT_FP" && "$fp2" == "$EXPECT_FP" ]] \
+  && [[ "$(grep -c '^herdr pane run wtest:p9 看账本' "$STUBLOG" || true)" -eq 1 ]]; } \
+  && ok "两票 fp 均 = sha1(\"running\\n\") 且一轮恰好 1 条投递" \
+  || bad "fp 不对（${fp1:0:8}/${fp2:0:8} ≠ ${EXPECT_FP:0:8}）"
+
+echo "== 58. 模板残留半行不误拒 + lint 第 8 项警告 =="
+# 场景（失败路径变通过）：一票只含模板第一行示例（缩进后的 blocked: spec-defect: <…>）且无真实疑点
+#   → 疑点门不拒派发；lint 第 8 项对缩进行无警告
+cat > "$TPLP/tasks/2099-01-01-t3.md" <<'EOF'
+# 半行残留票
+state: running
+
+  blocked:  spec-defect: <票的哪一条条款；反例或证据路径；继续照做会错在哪里>
+
+## 1. 验收场景
+
+### user_正常
+Given 任务写好
+When  派发
+Then  记账成功
+### user_失败
+Given 列首占位示例
+When  派发
+Then  不误拒
+EOF
+out="$( cd "$TPLP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task t3 --worker pi --here 2>&1 )"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "缩进的模板半行不触发疑点门（派发 rc=0）" || bad "缩进半行仍被疑点门拒绝（rc=${rc}）：$(printf '%s' "$out" | tail -2)"
+# 对照：列首占位行 → lint 第 8 项警告（stderr 含文件名与「占位状态行」），但退出码仍 0
+printf '# 占位票\nstate: running\nworking: spec-resolved: <impl|spec>\n' > "$TPLP/tasks/2099-01-01-t4.md"
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$TPLP/qwbuddy/config.sh"
+lint_err="$( cd "$TPLP" && bash qwbuddy/bin/qwb-lint.sh 2>&1 >/dev/null )"; lint_rc=$?
+{ [[ "$lint_rc" -eq 0 ]] && printf '%s' "$lint_err" | grep -q '2099-01-01-t4.md' \
+  && printf '%s' "$lint_err" | grep -q '占位状态行'; } \
+  && ok "lint 第 8 项对列首占位行警告但不 FAIL（rc=0）" \
+  || bad "lint 第 8 项行为不对（rc=${lint_rc}）"
+printf '%s' "$lint_err" | grep -q '2099-01-01-t3.md' \
+  && bad "缩进行被 lint 第 8 项误报" || ok "lint 第 8 项不报缩进行（缩进不算列首）"
+
+echo "== 59. 主控锁残留自动回收（判活：pid 与 pane）=="
+LP="$TMP/lockproj"; mkdir -p "$LP"; bash "$ROOT/bin/qwb-init.sh" "$LP" >/dev/null
+LK="$LP/qwbuddy/.controller.lock"
+# 59a 死 pid → 自动回收
+rm -rf "$LK"; mkdir "$LK"
+DEADPID="$(sleep 0.1 & echo $!)"; sleep 0.4
+printf '2020-01-01T00:00:00Z pid:%s\n' "$DEADPID" > "$LK/owner"
+out="$( cd "$LP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '回收残留锁' \
+  && [[ "$(sed -n 's/^[^ ]* //p' "$LK/owner" | head -1)" == "me" ]]; } \
+  && ok "死 pid 锁主 → 回收残留锁并获锁（rc=0）" || { bad "死 pid 未回收（rc=${rc}）：$out"; }
+# 59b pane 已不存在（stub 默认 pane_not_found）→ 自动回收
+rm -rf "$LK"; mkdir "$LK"; printf '2020-01-01T00:00:00Z wX:p9\n' > "$LK/owner"
+out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '回收残留锁' \
+  && [[ "$(sed -n 's/^[^ ]* //p' "$LK/owner" | head -1)" == "me" ]]; } \
+  && ok "pane_not_found 锁主 → 回收残留锁并获锁（rc=0）" || { bad "pane 死锁未回收（rc=${rc}）：$out"; }
+# 59c（失败路径）活锁照旧拒绝：owner 字节不变
+rm -rf "$LP/dyn"; mkdir -p "$LP/dyn"
+sed "s|w8Z:pY|wX:p1|g" "$FIXDIR/pane-get-shell.json" > "$LP/dyn/get-wXp1.json"
+rm -rf "$LK"; mkdir "$LK"; printf '2020-01-01T00:00:00Z wX:p1\n' > "$LK/owner"
+cp "$LK/owner" "$LP/owner.snap"
+out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '锁已被占用' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+  && ok "活锁（pane 在）照旧拒绝且 owner 字节不变" || { bad "活锁被误回收（rc=${rc}）"; }
+# 59d（失败路径）herdr 查询报错（非 pane_not_found）→ 拒绝不回收（fail-closed）
+printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$LP/dyn/get-wXp1.err"
+out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '无法判活' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+  && ok "查询报错不回收（fail-closed）且 owner 字节不变" || { bad "查询失败竟回收/放行（rc=${rc}）"; }
+# 59e（失败路径）herdr 不在 PATH → 拒绝不回收
+out="$( cd "$LP" && PATH='/usr/bin:/bin' bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '无法判活' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+  && ok "herdr 不在 PATH：拒绝不回收（fail-closed）" || { bad "无 herdr 竟回收（rc=${rc}）"; }
+
+echo "== 60. 孤儿 --block 不消费唤醒（主控锁复核）=="
+OP="$TMP/orphanproj"; mkdir -p "$OP"; bash "$ROOT/bin/qwb-init.sh" "$OP" >/dev/null
+mkdir "$OP/qwbuddy/.controller.lock"; printf '2020-01-01T00:00:00Z wX:p1\n' > "$OP/qwbuddy/.controller.lock/owner"
+mk_orphan_ticket() { printf '# o\nstate: running\ndone: 新进展待消费\n' > "$OP/tasks/2099-01-01-orphan.md"; }
+mk_orphan_ticket
+( cd "$OP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wX:p2 bash qwbuddy/bin/qwb-wake.sh --project "$OP" --block --max-ms 5000 ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 0 ]] && ! grep -q '^wake:' "$OP/tasks/2099-01-01-orphan.md"; } \
+  && ok "锁主≠本进程：孤儿 --block exit 0 不写 wake 行" || { bad "孤儿竟消费唤醒（rc=${rc}）"; }
+mk_orphan_ticket
+( cd "$OP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wX:p1 bash qwbuddy/bin/qwb-wake.sh --project "$OP" --block --max-ms 5000 ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 2 ]] && grep -q '^wake:' "$OP/tasks/2099-01-01-orphan.md"; } \
+  && ok "锁主=本进程：正常消费（rc=2 + wake 行）" || { bad "锁主路径不对（rc=${rc}）"; }
+mk_orphan_ticket
+( cd "$OP" && PATH="$STUB:$PATH" env -u HERDR_PANE_ID bash qwbuddy/bin/qwb-wake.sh --project "$OP" --block --max-ms 5000 ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 2 ]] && grep -c '^wake:' "$OP/tasks/2099-01-01-orphan.md" | grep -q '^1$'; } \
+  && ok "HERDR_PANE_ID 未设：跳过复核照常消费（rc=2）" || { bad "无 HERDR_PANE_ID 路径不对（rc=${rc}）"; }
+
+echo "== 61. 一轮一条投递 + 投递失败一行不写 =="
+BP2="$TMP/batchproj"; mkdir -p "$BP2"; bash "$ROOT/bin/qwb-init.sh" "$BP2" >/dev/null
+for i in 1 2 3; do
+  printf '# b%s\nstate: running\ndone: 批量票 %s 的进展行\n' "$i" "$i" > "$BP2/tasks/2099-01-0$i-b$i.md"
+done
+: > "$STUBLOG"
+( cd "$BP2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
+nrun="$(grep -c '^herdr pane run wX:p1 看账本' "$STUBLOG" || true)"
+runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | head -1)"
+{ [[ "$nrun" -eq 1 ]] \
+  && printf '%s' "$runline" | grep -q '2099-01-01-b1' && printf '%s' "$runline" | grep -q '2099-01-02-b2' \
+  && printf '%s' "$runline" | grep -q '2099-01-03-b3' \
+  && printf '%s' "$runline" | grep -q 'done: 批量票 1 的进展行' && printf '%s' "$runline" | grep -q 'done: 批量票 3 的进展行' \
+  && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-01-b1.md")" -eq 1 ]] \
+  && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-02-b2.md")" -eq 1 ]] \
+  && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-03-b3.md")" -eq 1 ]]; } \
+  && ok "三票一轮恰好 1 条 pane run，文本含三个文件名与各自 done 行，三票各写一行 wake" \
+  || bad "批量投递不对（nrun=${nrun}）：${runline:0:200}"
+# 失败路径：投递失败 → 三票均无新 wake 行、退出码 0
+for i in 1 2 3; do sed -i '' '/^wake:/d' "$BP2/tasks/2099-01-0$i-b$i.md"; done
+out="$( cd "$BP2" && PATH="$STUB:$PATH" HERDR_FAIL=run bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 0 ]] && ! grep -q '^wake:' "$BP2/tasks/2099-01-01-b1.md" \
+  && ! grep -q '^wake:' "$BP2/tasks/2099-01-02-b2.md" && ! grep -q '^wake:' "$BP2/tasks/2099-01-03-b3.md"; } \
+  && ok "投递失败：三票一行 wake 都不写、主循环不死（rc=0）" || bad "失败路径写了 wake 或 rc≠0（rc=${rc}）"
+
+echo "== 62. REWAKE 兜底只对 running（blocked/needs-decision 等裁决不重叫）=="
+RWP="$TMP/rewakeproj"; mkdir -p "$RWP"; bash "$ROOT/bin/qwb-init.sh" "$RWP" >/dev/null
+RUNFP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
+NDFP="$(printf 'needs-decision\n' | shasum | cut -d' ' -f1)"
+printf '# rw-r\nstate: running\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
+printf '# rw-n\nstate: needs-decision\nwake: 2000-01-01T00:00:00Z state=needs-decision fp=%s\n' "$NDFP" > "$RWP/tasks/2099-01-02-rwn.md"
+printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$RWP/far.sh"; chmod +x "$RWP/far.sh"
+out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"
+{ printf '%s' "$out" | grep -q '跳过：2099-01-02-rwn' && printf '%s' "$out" | grep -q '等裁决' \
+  && [[ "$(grep -c '^wake:' "$RWP/tasks/2099-01-02-rwn.md")" -eq 1 ]] \
+  && [[ "$(grep -c '^wake:' "$RWP/tasks/2099-01-01-rwr.md")" -eq 2 ]]; } \
+  && ok "needs-decision 超期不重叫（跳过·等裁决），running 超期重叫" \
+  || bad "REWAKE 收窄不对：out=${out:0:200}"
+runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | tail -1)"
+printf '%s' "$runline" | grep -q '2099-01-01-rwr' && ! printf '%s' "$runline" | grep -q '2099-01-02-rwn' \
+  && ok "重叫投递文本只含 running 票" || bad "重叫文本混入 needs-decision"
+# --block 同一构造：exit 2 且摘要只含 running 那张
+printf '# rw-r\nstate: running\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
+blk_out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" env -u HERDR_PANE_ID bash qwbuddy/bin/qwb-wake.sh --project "$RWP" --block --max-ms 999999999 2>&1 )"; rc=$?
+{ [[ "$rc" -eq 2 ]] && printf '%s' "$blk_out" | grep -q '2099-01-01-rwr' \
+  && ! printf '%s' "$blk_out" | grep -q '2099-01-02-rwn'; } \
+  && ok "--block 同构造：rc=2 且摘要只含 running" || { bad "--block REWAKE 收窄不对（rc=${rc}）：${blk_out:0:200}"; }
+
+echo "== 63. worktree 初始化钩子 QWB_WORKTREE_SETUP =="
+GP2="$TMP/wtproj"; mkdir -p "$GP2"
+( cd "$GP2" && git init -q && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m init )
+bash "$ROOT/bin/qwb-init.sh" "$GP2" >/dev/null
+mk_wt_task() { # $1=id
+cat > "$GP2/tasks/2099-01-01-$1.md" <<EOF
+# $1
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given git 项目
+When  派发
+Then  钩子执行
+### user_失败
+Given 钩子非 0
+When  派发
+Then  拒绝派发
+EOF
+}
+mk_wt_task wtsetup
+printf "QWB_WORKTREE_SETUP='echo run >> setup-count.txt && test \"\$(pwd -P)\" = %s'\n" "$GP2/.worktrees/wtsetup" >> "$GP2/qwbuddy/config.sh"
+rm -rf "$GP2/qwbuddy/.controller.lock"
+( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtsetup --worker pi ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(wc -l < "$GP2/.worktrees/wtsetup/setup-count.txt" | tr -d ' ')" -eq 1 ]]; } \
+  && ok "首次派发（新建副本）：钩子在副本目录执行恰一次" || { bad "钩子未执行或执行多次（rc=${rc}）"; }
+# 再次派发（复用副本）→ 钩子不再执行
+( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtsetup --worker pi ) >/dev/null 2>&1; rc=$?
+[[ "$(wc -l < "$GP2/.worktrees/wtsetup/setup-count.txt" | tr -d ' ')" -eq 1 ]] \
+  && ok "复用副本再派发：钩子不再执行（计数仍 1）" || bad "复用副本竟重跑钩子"
+# 失败路径：钩子非 0 → 拒绝派发、无 dispatch 行、无 tab/agent、副本保留
+mk_wt_task wtfail
+printf "QWB_WORKTREE_SETUP='exit 3'\n" >> "$GP2/qwbuddy/config.sh"
+: > "$STUBLOG"
+out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtfail --worker pi 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'worktree 初始化失败' && printf '%s' "$out" | grep -q '3' \
+  && ! grep -q '^dispatch:' "$GP2/tasks/2099-01-01-wtfail.md" \
+  && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
+  && [[ -d "$GP2/.worktrees/wtfail" ]]; } \
+  && ok "钩子失败：拒绝派发（退出码 3 上报）、零副作用、副本保留" || { bad "钩子失败处理不对（rc=${rc}）：${out:0:200}"; }
+
+echo "== 64. 工人丢失：status 标出、值守只叫一次、shell 算丢失、在/未知不算 =="
+WLP="$TMP/lostproj"; mkdir -p "$WLP"; bash "$ROOT/bin/qwb-init.sh" "$WLP" >/dev/null
+LFP="$(printf 'running\ndone: 完成一半\n' | shasum | cut -d' ' -f1)"
+mk_lost_ticket() {
+  printf '# lost\nstate: running\ndone: 完成一半\ndispatch: 2020-01-01T00:00:00Z worker=pi agent=qwb-lost pane=wX:p9 dir=/tmp\nwake: 2020-01-01T00:00:00Z state=running fp=%s\n' "$LFP" > "$WLP/tasks/2099-01-01-lost.md"
+}
+mk_lost_ticket
+out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '工人丢失: pane wX:p9' \
+  && ok "pane 查不到 → status 标「工人丢失: pane wX:p9」" || { bad "status 未标丢失"; }
+: > "$STUBLOG"
+( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
+runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | tail -1)"
+{ printf '%s' "$runline" | grep -q '2099-01-01-lost' && printf '%s' "$runline" | grep -q '工人丢失' \
+  && [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 2 ]]; } \
+  && ok "工人一消失指纹变一次：第一轮叫一次并写 wake 行" || { bad "丢失轮没叫或没写行"; }
+out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"
+{ printf '%s' "$out" | grep -q '跳过：2099-01-01-lost' \
+  && [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 2 ]]; } \
+  && ok "第二轮指纹未变：跳过且无新 wake 行（沿用去重）" || bad "丢失后反复重叫"
+# pane 在但 agent 空（退回 shell）也算丢失
+mk_lost_ticket
+mkdir -p "$WLP/dyn"; sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" > "$WLP/dyn/get-wXp9.json"
+out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '工人丢失: pane wX:p9' \
+  && ok "pane 在但无 agent（退回 shell）→ 同样标工人丢失" || bad "shell 态未标丢失"
+# 工人在（带 agent 字段）→ 不算丢失；指纹与不做判定时一致（对照）
+mk_lost_ticket
+sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" | sed 's|"agent_status":"unknown"|"agent":"pi","agent_status":"idle"|' > "$WLP/dyn/get-wXp9.json"
+out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '工人丢失' && bad "工人健在竟标丢失" || ok "工人在（agent 字段非空）不标丢失"
+( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
+{ [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]]; } \
+  && ok "对照：工人在 → 指纹与不做丢失判定一致，不再叫" || bad "工人在却因丢失指纹多叫一次"
+# 查询失败（非 pane_not_found）→ 工人状态未知：status 标未知、值守不当丢失
+mk_lost_ticket
+printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$WLP/dyn/get-wXp9.err"
+out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
+printf '%s' "$out" | grep -q '工人状态未知' \
+  && ok "查询失败 → status 打印「工人状态未知」" || bad "查询失败未标未知"
+wake_err="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 >/dev/null )"
+{ [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]] && printf '%s' "$wake_err" | grep -q '无法确认工人状态'; } \
+  && ok "查询失败 → 值守不当丢失（不新写 wake 行、stderr 一行说明）" || bad "查询失败被当丢失或没说明"
+
+echo "== 65. --task 精确 id 优先（run 与 worktree finish 共用判定）=="
+mk_foo_task() { # $1=id
+cat > "$GP2/tasks/2099-01-02-$1.md" <<EOF
+# $1
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 多张相似票
+When  精确 id 派发
+Then  唯一命中
+### user_失败
+Given 模糊 id
+When  派发
+Then  多份拒绝
+EOF
+}
+mk_foo_task foo; mk_foo_task foo-bar
+( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task foo --worker pi --here ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q '^dispatch:' "$GP2/tasks/2099-01-02-foo.md" \
+  && ! grep -q '^dispatch:' "$GP2/tasks/2099-01-02-foo-bar.md"; } \
+  && ok "--task foo 精确命中 foo（dispatch 落对文件）" || { bad "--task foo 行为不对（rc=${rc}）"; }
+( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task foo-bar --worker pi --here ) >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q '^dispatch:' "$GP2/tasks/2099-01-02-foo-bar.md" \
+  && ok "--task foo-bar 命中 foo-bar" || bad "--task foo-bar 行为不对（rc=${rc}）"
+out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task fo --worker pi --here 2>&1 )"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '匹配到 2 份'; } \
+  && ok "--task fo 仍报「匹配到 2 份」拒绝" || bad "模糊 id 未拒绝（rc=${rc}）"
+# worktree finish 的 unique_task_for 同款精确匹配：--keep 只记账不删东西
+mkdir -p "$GP2/.worktrees/foo"
+( cd "$GP2" && bash qwbuddy/bin/qwb-worktree.sh finish foo --keep=测试保留 ) >/dev/null 2>&1; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -q '^worktree: keep' "$GP2/tasks/2099-01-02-foo.md" \
+  && ! grep -q '^worktree:' "$GP2/tasks/2099-01-02-foo-bar.md"; } \
+  && ok "worktree finish 精确命中 foo（记账落对文件）" || { bad "finish 记账落点不对（rc=${rc}）"; }
+
+echo "== 66. agent 名塌缩兜底（中文 id → qwb-<sha1 前 8 位>）=="
+ANP="$TMP/agentname"; mkdir -p "$ANP"; bash "$ROOT/bin/qwb-init.sh" "$ANP" >/dev/null
+mk_an_task() { # $1=id
+cat > "$ANP/tasks/2099-01-01-$1.md" <<EOF
+# $1
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given 中文名票
+When  派发
+Then  agent 名兜底
+### user_失败
+Given 同名
+When  再派
+Then  不撞名
+EOF
+}
+mk_an_task "场景完善-01真实闭环"
+: > "$STUBLOG"
+( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task "场景完善-01真实闭环" --worker pi --here ) >/dev/null 2>&1; rc=$?
+anline="$(grep 'agent start' "$STUBLOG" | head -1)"
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$anline" | grep -Eq 'agent start qwb-[0-9a-f]{8} '; } \
+  && ok "中文 id 净化后塌缩 → agent 名兜底为 qwb-<8hex>（${anline:0:60}…）" \
+  || bad "中文 id 兜底不对（rc=${rc}，line=${anline:0:80}）"
+grep -q '^dispatch: .*agent=qwb-[0-9a-f]\{8\} ' "$ANP/tasks/2099-01-01-场景完善-01真实闭环.md" \
+  && ok "dispatch 行记录兜底后的实际 agent 名" || bad "dispatch 行 agent 名不对"
+mk_an_task "plain-id"
+: > "$STUBLOG"
+( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task plain-id --worker pi --here ) >/dev/null 2>&1; rc=$?
+grep -q 'agent start qwb-plain-id ' "$STUBLOG" \
+  && ok "ASCII id 名字与现状字节一致（qwb-plain-id）" || { bad "ASCII id 名被改动"; }
+mk_an_task "named"
+: > "$STUBLOG"
+( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task named --worker pi --here --name custom ) >/dev/null 2>&1; rc=$?
+grep -q 'agent start custom ' "$STUBLOG" \
+  && ok "--name custom 仍用 custom（兜底不覆盖显式指定）" || { bad "--name 被兜底覆盖"; }
