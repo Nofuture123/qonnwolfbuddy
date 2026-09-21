@@ -28,12 +28,18 @@ usage() {
                       worktree.repo_root 匹配项目根；都没有才落调用者 workspace 并警告）；
                       判定依据是 pane 前台进程组里真实的 qwb-wake.sh 进程 + 项目路径，
                       不凭 pane 存在或名字相似；查不到/多实例明确报错，不擅自多开
+  --block             前台阻塞值守（无窗口：不 pane run、不开 tab，供 Claude Code Stop hook /
+                      Codex 前台 checkpoint 等主控 harness 自己调用）：轮询账本，有可动作变化 →
+                      stdout 打印摘要 + 往对应票追加 wake: 行 + 退出码 2；账本无未结项 → 退出码 0；
+                      --max-ms 到期无变化 → 退出码 124；其他非 0 = 错误。去重与时间兑底逻辑与
+                      循环模式完全共用（wake: 行状态记在同一本账本上，两种值守形态不会互相重复叫）
+  --max-ms <毫秒>     --block 的单轮阻塞上限（毫秒，超时一律毫秒）；不给则无限阻塞直到 exit 2 或 0
   --check             只报告本项目值守健康并退出：运行 / 未运行 / 未知（不写账本不改状态）
   -h, --help          显示本帮助
 EOF
 }
 
-PROJECT_ROOT="$(pwd)"; PANE="${QWB_CONTROLLER_PANE:-}"; INTERVAL=""; ONCE=0; DRY=0; ENSURE=0; CHECK=0
+PROJECT_ROOT="$(pwd)"; PANE="${QWB_CONTROLLER_PANE:-}"; INTERVAL=""; ONCE=0; DRY=0; ENSURE=0; CHECK=0; BLOCK=0; MAX_MS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -44,12 +50,22 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY=1; shift ;;
     --ensure) ENSURE=1; shift ;;
     --check) CHECK=1; shift ;;
+    --block) BLOCK=1; shift ;;
+    --max-ms) MAX_MS="$2"; shift 2 ;;
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 if [[ "$ENSURE" -eq 1 || "$CHECK" -eq 1 ]]; then
   [[ "$ENSURE" -eq 1 && "$CHECK" -eq 1 ]] && { echo "错误：--ensure 与 --check 互斥" >&2; exit 2; }
   [[ "$ONCE" -eq 0 && "$DRY" -eq 0 ]] || { echo "错误：--ensure/--check 与 --once/--dry-run 互斥" >&2; exit 2; }
+fi
+if [[ "$BLOCK" -eq 1 ]]; then
+  (( ENSURE + CHECK + ONCE + DRY == 0 )) || { echo "错误：--block 与 --ensure/--check/--once/--dry-run 互斥" >&2; exit 2; }
+else
+  [[ -z "$MAX_MS" ]] || { echo "错误：--max-ms 只随 --block 使用" >&2; exit 2; }
+fi
+if [[ -n "$MAX_MS" ]]; then
+  [[ "$MAX_MS" =~ ^[1-9][0-9]*$ ]] || { echo "错误：--max-ms 须为正整数毫秒（当前：${MAX_MS}）" >&2; exit 2; }
 fi
 
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
@@ -62,7 +78,7 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
 # shellcheck source=/dev/null
 . "$LIB"
 
-if [[ "$DRY" -eq 0 && "$CHECK" -eq 0 ]]; then
+if [[ "$DRY" -eq 0 && "$CHECK" -eq 0 && "$BLOCK" -eq 0 ]]; then
   command -v herdr >/dev/null 2>&1 || { echo "错误：找不到 herdr 命令，无法叫醒主控" >&2; exit 1; }
 fi
 # 配置唯一来源是 bash 文件：直接 source（PANE 已被 --pane/环境变量占上则不覆盖）
@@ -180,6 +196,14 @@ watch_write() { # $1=pane $2=workspace $3=pid（可空）
 
 watch_check() {
   command -v herdr >/dev/null 2>&1 || { echo "值守：未知（herdr 不在 PATH，无法查询）"; return 0; }
+  # 形态一：hook（值守隐形化）—— .hook.lock 里的 pid 存活即视为 Claude Code Stop hook 的 --block 在跑；
+  # 检测在 tab 形态之前：同一项目两种形态同时存在时报 hook（前台阻塞形态优先，tab 是 fallback）
+  local hpid=""
+  hpid="$(cat "$PROJECT_ROOT/qwbuddy/.hook.lock/pid" 2>/dev/null || true)"
+  if [[ -n "$hpid" ]] && kill -0 "$hpid" 2>/dev/null; then
+    echo "值守：hook（pid ${hpid}）"
+    return 0
+  fi
   local rp="" dead="" qfail=0 v=""
   [[ -f "$WATCHF" ]] && rp="$(watch_field pane)"
   if ! watch_scan "${HERDR_WORKSPACE_ID:-}"; then
@@ -205,7 +229,7 @@ watch_check() {
     else
       local extra=""
       [[ "$WATCH_FOUND" != "$rp" || -z "$rp" ]] && extra="（未登记，系手工/外部启动）"
-      echo "值守：运行（pane ${WATCH_FOUND}）${extra}"
+      echo "值守：tab（pane ${WATCH_FOUND}）${extra}"
     fi
     return 0
   fi
@@ -511,6 +535,57 @@ wait_round() {
     sleep_interval
   fi
 }
+
+# —— block 模式：前台阻塞值守（Claude Code Stop hook / Codex 前台 checkpoint 的共用核心）——
+# 判定逻辑与 check_round 完全同款（进展指纹去重 + QWB_REWAKE_MS 时间兑底），但「叫醒」动作不同：
+# 不 pane run，而是把摘要打到 stdout、往票追加 wake: 行后以退出码 2 交还调用方。
+# 返回码：2 = 有可动作变化（已写 wake 行）；0 = 账本无未结项（不写任何行）；1 = 有未结项但无变化（内部）
+block_round() {
+  local f st fp lwf we due act=0 any=0 last
+  while IFS=$'\t' read -r f st; do
+    any=1
+    fp="$(progress_fp "$f" "$st")"
+    lwf="$(last_wake_fp "$f")"
+    due=0
+    if [[ -z "$lwf" || "$lwf" != "$fp" ]]; then
+      due=1
+    elif [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
+      we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
+      if [[ -z "$we" ]]; then
+        due=1
+      elif (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
+        due=1
+      fi
+    fi
+    if (( due )); then
+      act=1
+      last="$(grep -E '^(working|done|blocked|needs-decision):' "$f" 2>/dev/null | tail -1 || true)"
+      printf '%s（%s）%s\n' "$(basename "$f" .md)" "$st" "$last"
+      printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
+        || echo "警告：wake 行写入失败（仍叫醒，下轮会重写）：$f" >&2
+    fi
+  done < <(open_items)
+  (( act )) && return 2
+  (( any )) || return 0
+  return 1
+}
+
+if [[ "$BLOCK" -eq 1 ]]; then
+  block_deadline=""
+  if [[ -n "$MAX_MS" ]]; then
+    block_deadline=$(( $(now_ms) + MAX_MS ))
+  fi
+  while :; do
+    brc=0; block_round || brc=$?
+    if (( brc == 2 )); then exit 2; fi
+    if (( brc == 0 )); then echo "账本无未结项"; exit 0; fi
+    if [[ -n "$block_deadline" ]] && (( $(now_ms) >= block_deadline )); then
+      echo "值守：--block 到期（--max-ms ${MAX_MS}ms）无变化" >&2
+      exit 124
+    fi
+    sleep_interval
+  done
+fi
 
 while :; do
   check_round

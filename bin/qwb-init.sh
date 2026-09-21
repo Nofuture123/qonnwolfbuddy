@@ -72,4 +72,78 @@ append_hook() {
 append_hook "$ROOT/AGENTS.md" agents-hook.md
 append_hook "$ROOT/CLAUDE.md" claude-hook.md
 
+# Claude Code Stop hook（值守隐形化）：合并进 .claude/settings.json。
+# 幂等（按 command 含 qwb-hook-claude-stop.sh 判重）、不覆盖已有 hooks（其他键原样）；
+# 文件不存在则新建；非法 JSON 拒绝写入（qwbuddy/ 其余安装已照常完成，stderr 说明）。
+# 用 python3：dict 保插入序 + indent=2 重写后别人的内容字节级不变；不用 jq（不保证装了）。
+merge_claude_hook() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "错误：本机无 python3，无法安全合并 .claude/settings.json——该文件未写入；qwbuddy/ 其余部分已装好，可装 python3 后重跑 qwb-init.sh（幂等）或手动添加 Stop hook" >&2
+    return 1
+  fi
+  CLAUDE_SETTINGS="$ROOT/.claude/settings.json" python3 - <<'PYEOF'
+import json, os, sys
+
+path = os.environ["CLAUDE_SETTINGS"]
+marker = "qwb-hook-claude-stop.sh"
+entry = {
+    "type": "command",
+    "command": 'bash "$CLAUDE_PROJECT_DIR"/qwbuddy/bin/qwb-hook-claude-stop.sh',
+    "asyncRewake": True,
+    "timeout": 7200,
+}
+
+def die(msg):
+    sys.stderr.write(
+        f"错误：{msg}\n未写入：{path}\n"
+        "说明：qwbuddy/ 其余安装已照常完成，仅 Claude Code Stop hook 未写入；"
+        "修复该文件后重跑 qwb-init.sh（幂等）即可补上。\n"
+    )
+    sys.exit(1)
+
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        die(f"{path} 不是合法 JSON（{e}）——拒绝写入，原文件保持逐字节不变")
+    if not isinstance(data, dict):
+        die(f"{path} 顶层不是 JSON 对象，拒绝写入")
+else:
+    data = {}
+
+hooks = data.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    die(f"{path} 的 hooks 不是 JSON 对象，拒绝写入")
+stop = hooks.setdefault("Stop", [])
+if not isinstance(stop, list):
+    die(f"{path} 的 hooks.Stop 不是 JSON 数组，拒绝写入")
+
+def has_qwb(groups):
+    for g in groups:
+        if isinstance(g, dict):
+            for h in g.get("hooks") or []:
+                if isinstance(h, dict) and marker in (h.get("command") or ""):
+                    return True
+    return False
+
+if has_qwb(stop):
+    print("跳过：.claude/settings.json 已有 qwb-hook-claude-stop.sh Stop hook（幂等）")
+else:
+    stop.append({"hooks": [entry]})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".qwbtmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    print("写入：.claude/settings.json 合并 Claude Code Stop hook（值守，asyncRewake）")
+PYEOF
+}
+
+if ! merge_claude_hook; then
+  exit 1
+fi
+
 echo "完成：QW buddy 已装进 ${ROOT}（账本：${ROOT}/tasks/）"

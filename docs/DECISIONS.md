@@ -390,3 +390,21 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **既有安装副本要更新**：`qwb-lib.sh` 是新增文件，已装过的项目需重跑母本仓 `bin/qwb-init.sh`（幂等，按 `bin/qwb-*.sh` 全量复制）才补得上；没补上时 run/wake 直接**报错退出并指名重跑 init**，不退回旧行为（宁可不派发，也不把工人静默送到别处）。
 
 **验证**：`tests/smoke.sh` 新增第 48 节（10 条断言：票 §1 的 8 条场景 + 查询失败/错型响应两条负例，含 `--ensure` 同款与「恰一行警告」计数断言）；`fast` 门 rc=0；`full` 门 rc=0、**440 PASS / 0 FAIL**（smoke 418 + review-identity 15 + lint 7）。真机 E2E 由执行者跑（工人 tab 实测落在 `QWB_WORKSPACE` 声明的 wAC，而执行者在 wA3），主控复验见任务书状态行。
+
+## 二十八、值守隐形化：按主控 harness 接值守，可见 tab 降级为 fallback（2026-09-23）
+
+**来源**：使用者「firstmate 就没有值守窗口」——QW buddy 的值守此前只能在主控 workspace 开一个可见 shell tab 死循环，Rocky 不想要这个窗口。
+
+**结论**：值守改按主控 harness 各接一套，共用一个核心：
+
+| 主控 | 接法 | 共用核心 |
+|---|---|---|
+| Claude Code | `.claude/settings.json` 的 **Stop hook**（`asyncRewake: true`，timeout 7200 **秒**），由 `qwb-init.sh` 幂等合并；hook 守卫（仅主控锁 pane）+ `.hook.lock` 单飞后前台跑 `qwb-wake.sh --block` | `qwb-wake.sh --block [--max-ms <毫秒>]` |
+| Codex | **前台 checkpoint**：开局后把 `qwb-wake.sh --block --max-ms 180000` 当前台 tool call 循环（exit 2 处理账本 / 124 再跑 / 0 收工）；禁止 `&` 后台 | 同上 |
+| 其他/未知 | `--ensure` 可见值守 tab（保留，fallback） | 现有循环模式 |
+
+**§10.2「无守护进程」的边界（正式裁定）**：**由主控进程拥有、随主控死**的值守子进程（Stop hook 的 `--block`、Codex 前台 checkpoint、可见 tab 里的循环）不算守护进程——它们没有独立于主控的生命周期，不违背「无守护进程」的本意（无人看护的常驻进程）。仍然禁止 cron / launchd / systemd / 独立 nohup 进程。MVP 保证随之升级为「存活且空闲的主控能被叫醒，且不要求任何可见窗口」。
+
+**为什么 hook 语义必须三方核实而不是照抄 firstmate**：官方文档实核（claude 2.1.278 + code.claude.com/docs/en/hooks.md）修正了两处容易转述错的地方——① hook 的 `timeout` 字段单位是**秒**（"Seconds before canceling"），与本项目「超时一律毫秒」并存不冲突（`QWB_HOOK_MAX_MS=7200000` 毫秒 ↔ settings.json `timeout: 7200` 秒，同一时长的两种单位）；② `asyncRewake` 的摘要交付通道是 **stderr 优先、stderr 空才退回 stdout**，所以 hook 把摘要 stdout/stderr 双写，两条通道任一生效都能到模型。文档同时证实 async hook「每次 Stop 都触发、不去重」——`.hook.lock` 单飞是必须的，不是过度设计。真机 E2E 见任务书状态行。
+
+**退出码契约**（block 模式，供所有主控 harness 复用）：2 = 有可动作变化（stdout 摘要 + 票末追加 `wake:` 行）；0 = 账本无未结项（不写任何行）；124 = `--max-ms` 到期无变化（不写任何行，GNU timeout 惯例，同 firstmate checkpoint）；其他非 0 = 错误。去重与 `QWB_REWAKE_MS` 时间兜底与循环模式完全共用（`wake:` 行记在同一本账本上，两种值守形态不会互相重复叫）。

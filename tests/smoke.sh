@@ -1609,7 +1609,7 @@ ensreset
 printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w93:p7"; mk_get w93:p7 "$ENSP"; mk_proc w93:p7 wake "$ENSP"
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：运行' && printf '%s' "$out" | grep -q 'w93:p7'; } \
+{ printf '%s' "$out" | grep -q '值守：tab' && printf '%s' "$out" | grep -q 'w93:p7'; } \
   && ok "status 值守显示运行+pane" || { bad "status 未显示运行"; printf '%s\n' "$out"; }
 # 43b 进程退出、shell 仍在 → 未运行（不得只凭 pane 存在报健康）
 mk_proc w93:p7 shell "$ENSP"
@@ -1630,7 +1630,7 @@ printf '%s' "$out" | grep -q '值守：未运行' \
 rm -f "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w93:p1,agent"; mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP"
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：运行' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
+{ printf '%s' "$out" | grep -q '值守：tab' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
   && ok "未登记值守被扫到 → 运行" || { bad "未登记值守漏检"; printf '%s\n' "$out"; }
 # 43f 无登记也扫不到 → 未运行
 ensreset
@@ -2436,6 +2436,187 @@ bi_out="$(bi_run)"; bi_rc=$?
   && ok "附页是目录：拒绝派发（rc≠0），任务书与派发前逐字节一致" \
   || bad "附页目录拒绝不对（rc=${bi_rc}，out=${bi_out}）"
 rmdir "$BIF"; rm -f "$BI_T.snap"
+
+echo "== 51. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
+# 独立项目跑本节：其他节会改写共享 $TMP 的 config.sh（如第 27 节追加 QWB_REWAKE_MS=0）与账本，
+# --block 的去重/REWAKE 判定依赖干净 config，不与它们共账本
+BP="$TMP/block-proj"; mkdir -p "$BP/tasks"; cp -R "$TMP/qwbuddy" "$BP/qwbuddy"
+cp "$ROOT/templates/config.sh" "$BP/qwbuddy/config.sh"   # $TMP 的 config 已被第 27 节负例追加 QWB_REWAKE_MS=0，覆盖回干净模板
+BLK="$BP/tasks/2099-01-07-blk.md"
+printf '# block\nstate: running\ndone: 工人完成 block 场景\n' > "$BLK"
+: > "$STUBLOG"
+blk_out="$( cd "$BP" && PATH="$STUB:$PATH" bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block 2>&1 )"; blk_rc=$?
+{ [[ "$blk_rc" -eq 2 ]] \
+  && printf '%s' "$blk_out" | grep -q '2099-01-07-blk' \
+  && printf '%s' "$blk_out" | grep -qF 'done: 工人完成 block 场景' \
+  && grep -q '^wake:' "$BLK"; } \
+  && ok "--block 有变化：rc=2 + 摘要含票名与 done 行 + 写 wake 行" \
+  || bad "--block 有变化路径不对（rc=${blk_rc}，out=${blk_out}）"
+{ ! grep -q 'pane run' "$STUBLOG" && ! grep -q 'tab create' "$STUBLOG"; } \
+  && ok "--block 无窗口：stub 日志无 pane run / tab create" \
+  || { bad "--block 竟调了 herdr 窗口动作"; cat "$STUBLOG"; }
+
+# 场景：账本全部已结 → rc 0、任何票文件字节不变、stub 日志无 herdr 调用
+BLK_SNAP="$TMP/blk.snap"; sed -i '' 's/^state: running/state: verified/' "$BLK"
+cp "$BLK" "$BLK_SNAP"   # 快照取在改 state 之后：断言的是 --block 不动已结票
+: > "$STUBLOG"
+( cd "$BP" && PATH="$STUB:$PATH" bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block ) >/dev/null 2>&1; blk_rc=$?
+{ [[ "$blk_rc" -eq 0 ]] && cmp -s "$BLK" "$BLK_SNAP" && [[ ! -s "$STUBLOG" ]]; } \
+  && ok "--block 无未结项：rc=0、票字节不变、零 herdr 调用" \
+  || bad "--block 无未结项路径不对（rc=${blk_rc}）"
+
+# 场景（失败路径）：有未结项但指纹与最后 wake 行一致且未超 REWAKE，--max-ms 500 + 假时钟
+#   → rc 124、票字节不变、假时钟推进 ≥500ms、sleep 调用有上界（不忙循环）
+BLKFP="$(printf '%s\n' 'running' | shasum | cut -d' ' -f1)"
+BLKC="$BP/tasks/2099-01-08-blkc.md"
+printf '# c\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKC"
+BLKNOW="$BP/blk-now"; BLKSLEEP="$BP/blk-sleep.log"
+echo 0 > "$BLKNOW"; : > "$BLKSLEEP"
+cat > "$BP/blk-now.sh" <<EOF
+#!/usr/bin/env bash
+cur="\$(( \$(cat "$BLKNOW") + 100 ))"; echo "\$cur" > "$BLKNOW"; echo "\$cur"
+EOF
+cat > "$BP/blk-sleep.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$1" >> "$BLKSLEEP"
+[[ "\$(wc -l < "$BLKSLEEP" | tr -d ' ')" -ge 30 ]] && kill "\$PPID" 2>/dev/null
+exit 0
+EOF
+chmod +x "$BP/blk-now.sh" "$BP/blk-sleep.sh"
+BLKC_SNAP="$BP/blkc.snap"; cp "$BLKC" "$BLKC_SNAP"
+( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-now.sh" QWB_SLEEP_CMD="$BP/blk-sleep.sh" \
+    bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 500 --interval 300 ) >/dev/null 2>&1; blk_rc=$?
+blk_sleeps="$(wc -l < "$BLKSLEEP" | tr -d ' ')"
+{ [[ "$blk_rc" -eq 124 ]] && cmp -s "$BLKC" "$BLKC_SNAP" \
+  && [[ "$(cat "$BLKNOW")" -ge 500 ]] && [[ "$blk_sleeps" -le 6 ]]; } \
+  && ok "--block 到期无变化：rc=124、零写入、假时钟推进 ≥500ms、sleep 仅 ${blk_sleeps} 次" \
+  || bad "--block 124 路径不对（rc=${blk_rc}，now=$(cat "$BLKNOW")，sleeps=${blk_sleeps}）"
+
+# 场景：指纹一致但该 wake 时间戳距假时钟"现在"≥ QWB_REWAKE_MS → 仍 rc 2 + 追加新 wake 行
+BLKD="$BP/tasks/2099-01-09-blkd.md"
+printf '# d\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKD"
+printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$BP/blk-far.sh"; chmod +x "$BP/blk-far.sh"
+( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-far.sh" \
+    bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block ) >/dev/null 2>&1; blk_rc=$?
+{ [[ "$blk_rc" -eq 2 ]] && [[ "$(grep -c '^wake:' "$BLKD")" -eq 2 ]]; } \
+  && ok "--block REWAKE 兑底：超期再叫 rc=2 + 新 wake 行" \
+  || bad "--block REWAKE 兑底不对（rc=${blk_rc}，wakes=$(grep -c '^wake:' "$BLKD")）"
+
+echo "== 52. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
+# hook 内部以自身位置推项目根并跑 --block（读该项目 config.sh）——同样用独立项目防 config 污染
+HP="$TMP/hook-proj"; mkdir -p "$HP/tasks"; cp -R "$TMP/qwbuddy" "$HP/qwbuddy"
+cp "$ROOT/templates/config.sh" "$HP/qwbuddy/config.sh"   # 同上：覆盖回干净 config
+mkdir -p "$HP/qwbuddy/.controller.lock"
+printf '2026-01-01T00:00:00Z wtest:ctl\n' > "$HP/qwbuddy/.controller.lock/owner"
+HOOK="$HP/tasks/2099-01-10-hook.md"
+printf '# hook\nstate: running\ndone: hook 场景可动作变化\n' > "$HOOK"
+hook_run() { ( cd "$HP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$HP/blk-far.sh" HERDR_PANE_ID="$1" \
+    bash qwbuddy/bin/qwb-hook-claude-stop.sh </dev/null 2>&1 ); }   # </dev/null：模拟 Claude Code 写完 stdin 即关闭
+
+# 场景（失败路径）：非锁主 → rc 0 立即返回、假时钟不推进、票无新 wake 行、不创建 .hook.lock
+printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$HP/blk-far.sh"; chmod +x "$HP/blk-far.sh"
+hook_out="$(hook_run wtest:p2)"; hook_rc=$?
+{ [[ "$hook_rc" -eq 0 ]] && [[ ! -d "$HP/qwbuddy/.hook.lock" ]] \
+  && ! grep -q '^wake:' "$HOOK"; } \
+  && ok "hook 非锁主：rc=0、零副作用（无锁、无 wake 行）" \
+  || bad "hook 非锁主不对（rc=${hook_rc}，out=${hook_out}）"
+
+# 场景（失败路径）：本进程是锁主但 .hook.lock 已有活实例 → rc 0 立即、不动已有锁、不跑 --block
+mkdir "$HP/qwbuddy/.hook.lock"
+echo $$ > "$HP/qwbuddy/.hook.lock/pid"
+hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
+{ [[ "$hook_rc" -eq 0 ]] && [[ "$(cat "$HP/qwbuddy/.hook.lock/pid")" == "$$" ]] \
+  && ! grep -q '^wake:' "$HOOK"; } \
+  && ok "hook 单飞：已有活锁 → rc=0 立即让位、原锁未动、未跑 --block" \
+  || bad "hook 单飞不对（rc=${hook_rc}，out=${hook_out}）"
+
+# 场景：锁存在但 pid 已死 → 接管、跑 --block、rc 2、摘要在输出里、结束后锁已清
+DEADPID=$(sleep 0.1 & echo $!); sleep 0.4
+echo "$DEADPID" > "$HP/qwbuddy/.hook.lock/pid"
+hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
+{ [[ "$hook_rc" -eq 2 ]] \
+  && printf '%s' "$hook_out" | grep -qF 'done: hook 场景可动作变化' \
+  && [[ ! -d "$HP/qwbuddy/.hook.lock" ]] \
+  && grep -q '^wake:' "$HOOK"; } \
+  && ok "hook 残留锁接管：rc=2 + 摘要 + 锁已清 + wake 行" \
+  || bad "hook 接管不对（rc=${hook_rc}，out=${hook_out}）"
+
+echo "== 53. qwb-init.sh 合并 .claude/settings.json：幂等、不覆盖、非法 JSON 拒绝 =="
+# 场景：已有 PreToolUse 与别人的 Stop hook → 跑两次，qwb hook 恰一条，别人内容原样，合法 JSON
+mkdir -p "$TMP/.claude"
+SETJ="$TMP/.claude/settings.json"
+cat > "$SETJ" <<'EOF'
+{
+  "otherKey": {"keep": true},
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo someone-else-pretool"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "echo someone-else-stop", "timeout": 60}]}
+    ]
+  }
+}
+EOF
+cp "$SETJ" "$TMP/settings.before"
+out="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc1=$?
+out2="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc2=$?
+chk_settings() { CLAUDE_DIR="$ROOT" python3 - "$TMP" <<'PYEOF'
+import json, os, sys
+
+tmp = sys.argv[1]
+new = json.load(open(os.path.join(tmp, ".claude", "settings.json")))
+old = json.load(open(os.path.join(tmp, "settings.before")))
+stop = new["hooks"]["Stop"]
+qwb = [h for g in stop for h in g.get("hooks", []) if "qwb-hook-claude-stop.sh" in (h.get("command") or "")]
+assert len(qwb) == 1, f"qwb hook 数={len(qwb)}"
+assert qwb[0]["asyncRewake"] is True and qwb[0]["timeout"] == 7200, "entry 字段不对"
+assert old["hooks"]["PreToolUse"] == new["hooks"]["PreToolUse"], "PreToolUse 被改"
+assert old["hooks"]["Stop"] == new["hooks"]["Stop"][:1], "别人的 Stop hook 被改或被挤位置"
+assert old["otherKey"] == new["otherKey"], "otherKey 被改"
+print("SETTINGS-OK")
+PYEOF
+}
+{ [[ "$rc1" -eq 0 && "$rc2" -eq 0 ]] \
+  && printf '%s' "$out2" | grep -q '已有 qwb-hook-claude-stop.sh' \
+  && chk_settings; } \
+  && ok "init 合并 settings.json：两次后恰一条 qwb hook、幂等跳过、别人内容原样、合法 JSON" \
+  || bad "init 合并断言失败（rc1=${rc1}，rc2=${rc2}，out=${out2}）"
+
+# 场景（失败路径）：settings.json 内容非法 → rc≠0、stderr 指出文件与未写入、字节不变
+printf '{not json' > "$SETJ"; cp "$SETJ" "$TMP/settings.bad"
+out="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '不是合法 JSON' \
+  && printf '%s' "$out" | grep -q '未写入' \
+  && printf '%s' "$out" | grep -q '其余安装已照常完成' \
+  && cmp -s "$SETJ" "$TMP/settings.bad"; } \
+  && ok "init 遇非法 JSON：拒绝、指明文件与未写入、字节不变、说明其余已装" \
+  || bad "非法 JSON 拒绝不对（rc=${rc}，out=${out}）"
+rm -f "$TMP/settings.before" "$TMP/settings.bad"
+
+echo "== 54. status 值守三态：hook / tab（pane …）/ 未运行 =="
+DYN="$TMP/herdr-dyn-s4"; mkdir -p "$DYN"; rm -f "$TMP/qwbuddy/.watch"
+stat4() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE_ID=wtestW \
+    bash qwbuddy/bin/qwb-status.sh ); }
+# hook 态：.hook.lock/pid 存活 → 「值守：hook（pid …）」
+mkdir "$TMP/qwbuddy/.hook.lock"; echo $$ > "$TMP/qwbuddy/.hook.lock/pid"
+out="$(stat4)"
+printf '%s' "$out" | grep -q "值守：hook（pid $$）" \
+  && ok "status 三态：hook 活 → 值守：hook" || { bad "status 未报 hook"; printf '%s\n' "$out"; }
+# tab 态：无 hook 锁，.watch 登记 + pane 前台有值守进程 → 「值守：tab（pane …）」
+rm -rf "$TMP/qwbuddy/.hook.lock"
+printf 'pane=w54:p1 workspace=wtestW pid=111 started=x\n' > "$TMP/qwbuddy/.watch"
+mk_plist "$DYN/pane-list.json" "w54:p1"
+mk_proc w54:p1 wake "$TMP"
+out="$(stat4)"
+printf '%s' "$out" | grep -q '值守：tab（pane w54:p1）' \
+  && ok "status 三态：tab 值守 → 值守：tab（pane w54:p1）" || { bad "status 未报 tab"; printf '%s\n' "$out"; }
+# 未运行态：两者皆无 → 「值守：未运行」
+rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"; mkdir -p "$DYN"
+mk_plist "$DYN/pane-list.json"
+out="$(stat4)"
+printf '%s' "$out" | grep -q '值守：未运行' \
+  && ok "status 三态：两者皆无 → 值守：未运行" || { bad "status 未报未运行"; printf '%s\n' "$out"; }
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

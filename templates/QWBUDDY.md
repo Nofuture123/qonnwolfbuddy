@@ -15,7 +15,11 @@
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
 6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。**同一步**把 `HERDR_WORKSPACE_ID` 写进 `QWB_WORKSPACE`：工人与值守的 tab 靠它开在**项目自己的 workspace**（而不是你这个主控身边）；跨项目派活的主控不要写自己的，改填**目标项目**的 workspace id。
 7. （仅新项目首次）派发前先在工人 CLI 的 tab 里手工接受一次 workspace 信任提示——首次 trust 对话框会吞掉派发提示词，属一次性人工授权（见 docs/E2E-RUNBOOK.md 现象A）。
-8. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
+8. **按主控 harness 接值守**（隐形，无窗口；可见 tab 只是 fallback）：
+   - **Claude Code 主控**：`qwb-init.sh` 已把值守装进 `.claude/settings.json` 的 Stop hook（`asyncRewake`，超时 7200 秒）——开局**什么都不用起**，只需 `bash qwbuddy/bin/qwb-status.sh` 确认「值守：hook」。你每次回合结束 hook 自动在后台阻塞值守；账本有可动作变化时 hook 以 exit 2 用摘要叫醒你（Stop hook feedback），无变化则静默到期退出、下次 Stop 自动再起。
+   - **Codex 主控**：开局点名后，把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 当**前台 tool call** 循环跑：退出码 2 → 读 stdout 摘要、处理账本、再跑下一轮；124 → 到期无变化，直接再跑下一轮；0 → 账本无未结项，值守收工。**禁止 `&` 后台、禁止 Codex 后台任务**——Codex 在前台 tool call 运行期间不能推理，靠有界 checkpoint 周期性交还控制权。
+   - **其他/未知主控**：沿用 `bash qwbuddy/bin/qwb-wake.sh --ensure` 幂等确保一个可见值守 tab（fallback）。使用者不需要手工启动值守。
+   任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行：`hook` / `tab（pane …）` / `未运行`；tab 报「未运行」可再跑一次 `--ensure` 重启，报「未知」说明 herdr 查不到、先修查询再说。
 
 如果账本为空：报「账本无任务」，等使用者提需求。
 
@@ -134,19 +138,20 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；工人 tab 落在 `QWB_WORKSPACE` 声明的项目 workspace——见下一行） |
 | `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 config/dispatch-rules.json（模板在母本仓 templates/）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
 | `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
-| `qwb-wake.sh [--dry-run|--once|--ensure|--check]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守在跑（开局必跑），`--check` 只报值守健康 |
+| `qwb-wake.sh [--dry-run|--once|--ensure|--check|--block]` | 值守：查未结项 → 叫醒你的 pane；`--ensure` 幂等确保值守 tab 在跑（fallback），`--check` 只报值守健康；`--block [--max-ms <毫秒>]` 前台阻塞值守（无窗口，给 Claude Code Stop hook / Codex 前台 checkpoint 用）：有可动作变化退出码 2 + stdout 摘要、无未结项 0、到期无变化 124 |
+| `qwb-hook-claude-stop.sh` | Claude Code Stop hook 入口（由 `qwb-init.sh` 合并进 `.claude/settings.json`，主控不手动跑）：守卫（仅主控锁 pane）→ `.hook.lock` 单飞 → 前台跑 `qwb-wake.sh --block`；exit 2 时摘要双写 stdout/stderr 唤醒主控，出错写 `.hook.err` 后 exit 0 不卡主控 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
 | `qwb-worktree.sh list|finish <id> --merged|--archive|--keep` | worktree 清点与收尾（见 §7） |
 | `qwb-test.sh fast|full` | 快门/全门执行器：跑 config 声明的 QWB_GATE_*（见 §6） |
 | `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法、质量门已声明、已派发任务书场景冻结 |
 
-所有脚本支持 `--help`。值守脚本由开局 `--ensure` 幂等确保（无需使用者手工启动）；它叫不醒**已退出**的你，你活着时它可以被 `--ensure` 重启。
+所有脚本支持 `--help`。值守随主控 harness 自动在跑（Claude Code 经 Stop hook；Codex 经前台 checkpoint 循环；其他主控经开局 `--ensure`，它叫不醒**已退出**的你，你活着时它可以被 `--ensure` 重启）。
 
 ## 10. 硬规矩（不可违反）
 
-1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是 `herdr` 叫醒主控窗口。
-2. 无队列、无 ACK 协议、无数据库、无守护进程、无 cron——账本承担这些职责。
+1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是叫醒主控（herdr 打字 / Stop hook exit 2 / checkpoint 退出码）。
+2. 无队列、无 ACK 协议、无数据库、无 cron——账本承担这些职责。「无守护进程」的边界：**由主控进程拥有、随主控死**的值守子进程（Claude Code Stop hook 的 `--block`、Codex 前台 checkpoint、可见 tab 里的值守循环）不算守护进程；仍然禁止 cron / launchd / systemd / 独立 nohup 进程。
 3. 只用 Herdr，不用 tmux / zellij / orca / cmux。
 4. 超时一律**毫秒**（30 分钟写 `1800000`，不写 `30m`）。
 5. 工人一律 Herdr 窗口**交互式**运行，**禁 headless**（`-p` / `--print` / `--exec` / `codex exec` 等）。
@@ -154,7 +159,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 
 ## 11. MVP 边界
 
-- ✅ 保证：**存活且空闲的你**能被 qwb-wake.sh 叫醒，继续处理账本。
-- ✅ 保证：你活着时，开局 `--ensure` 保证恰好一个本项目值守在跑（失活可重启）。
-- ❌ 不保证：你进程退出 / 整机重启后自动恢复（值守也随 shell 死）。这种情况使用者重启你，你按 §1 开局点名、从账本续接。
-- ❌ 不保证：值守进程离开你的存活期后仍被看护——没有守护进程。
+- ✅ 保证：**存活且空闲的你**能被叫醒——Claude Code 主控经 Stop hook（无窗口），Codex 主控经前台 checkpoint 循环，其他主控经可见 tab 值守。
+- ✅ 保证：你活着时，恰好一个本项目值守在跑（hook 形态靠 `.hook.lock` 单飞；tab 形态靠开局 `--ensure` 幂等确保，失活可重启）。
+- ❌ 不保证：你进程退出 / 整机重启后自动恢复（hook / checkpoint / 值守 tab 都随主控进程死）。这种情况使用者重启你，你按 §1 开局点名、从账本续接。
+- ❌ 不保证：值守进程离开你的存活期后仍被看护——没有守护进程（边界见 §10.2）。
