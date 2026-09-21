@@ -2,7 +2,7 @@
 
 ```
 任务 id:  watch-invisible-pi
-state:    running
+state:    verified
 scenarios-fp: e05cb5c4f5649f89d9939dcbc87c1ac394d02522
 来源:     Rocky 2026-09-16；主控三种之一是 pi（本机 pi 0.85.1）
 派发:     主控 claude-opus-5（Claude Code，pane wA2:p1） → <待派>
@@ -122,3 +122,19 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 - 不搬 firstmate 的分支监督 / lease / generation ledger / 远程 secondmate。
 - 不改 Claude hook 与 Codex 协议。
 - 不给 pi 加 turn-end guard 之类的"阻止模型停下"机制——本票只做叫醒。
+wake: 2026-09-21T19:24:16Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T19:54:26Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T20:24:37Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T20:54:46Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T21:24:58Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T21:55:27Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+wake: 2026-09-21T22:25:37Z state=running fp=368522136cbfcc45591872ff17a122187002a25b
+working: 2026-09-21T22:45:00Z 主控（claude-opus-5，pane wF2:p3）派发说明：前置 watch-invisible 已合并 main（b05036b；`qwb-wake.sh --block` 契约 2/0/124 与 `.watch` 三态已在）。改派 pi（zai-coding-cn/glm-5.3-flash）。与 audit-install-fixes 并行（它改 qwb-init.sh 的 .gitignore 段、dispatch-rules 路径、lint、hook 模板），本票只动票内白名单。**完成前先 `git merge main` 到本分支解冲突，smoke 新节号接在现有最大号之后、且必须加在 smoke.sh 收尾判定（SMOKE PASS; exit 0）之前，done: 行贴输出最后一个节标题与 PASS/FAIL 计数。** 本机 pi 版本以 `pi --version` 实测为准；真机 E2E 用临时项目 + 临时 pi 会话，用完即清。
+dispatch: 2026-09-21T22:38:56Z worker=pi agent=qwb-watch-invisible-pi pane=wF2:pD dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/watch-invisible-pi
+wake: 2026-09-21T22:40:36Z state=running fp=cd6a8fc36940511dda3240ee01464027776aebef
+wake: 2026-09-21T23:10:44Z state=running fp=cd6a8fc36940511dda3240ee01464027776aebef
+working: 2026-09-21T23:35:00Z 执行者（pi，pane wF2:pD）已交付并提交（分支 watch-invisible-pi，HEAD bfd260a）：pi-extensions/qwb-watch.ts（createWatchCore 依赖注入+default factory）、tests/pi-ext.test.mjs（9 项行为测试，node 26 直跑 .ts）、qwb-init.sh 装 .pi/extensions/qwb-watch.ts 幂等三态、qwb-wake.sh watch_check 加 pi-ext 第四态（kill -0 判活不需 herdr）、QWBUDDY.md §1 第 8 步 Pi 行、DECISIONS 三十二；已 git merge main（audit-install-fixes），本票 smoke 节顺延 71-73、DECISIONS 编号让位；质量门全绿待主控复验
+done: 2026-09-21T23:55:00Z worker=pi agent=qwb-watch-invisible-pi pane=wF2:pD dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/watch-invisible-pi sha=bfd260a。检查与原始结果：①bash bin/qwb-test.sh fast → rc=0；②bash bin/qwb-test.sh full（smoke+review-identity+lint）→ rc=0、尾行 LINT PASS；③bash tests/smoke.sh 两次 → 均 rc=0、SMOKE PASS、567 PASS/0 FAIL，最后一节标题「== 73. status 值守第四态 pi-ext：pid 活 → pi-ext，pid 死 → 未运行 ==」（merge main 后节号 71-73，main 的 audit-install-fixes 占 67-70）；④node tests/pi-ext.test.mjs → 9 passed（锁主/非锁主/exit2 注入重启/exit0 清.watch/退避封顶+告警恰1次+err 9条/单飞/turn_end 探测124 重新值守/shutdown 旧代际作废）；⑤TS 门=node type-stripping 转译 rc=0（本机无 tsc，npx 撞假 tsc 包）；⑥真机 E2E（临时 git 项目 /tmp/qwb-e2e-pi.ikHNWO + qwb-init 装扩展，QWB_WAKE_INTERVAL_MS=2000，herdr pane wF2:pE 抢锁 wF2:pE+exec pi，pi 0.86.1，zai-coding-cn/glm-5.3-flash）：pi 信任扩展后无人打字，pane read 原文出现「[qwb-wake] 看账本：1 张未结项有进展 →(1) 2099-01-01-e2e-demo(running)…」并开始新 turn（基线叫醒）；另一侧往票追加 done: hello → 账本 wake: 23:13:43 行、pi TUI 显示「Follow-up: [qwb-wake] …」排队并在回合结束投递（模型随后自主按 QWBUDDY.md 剧本 dispatch 工人 pane wF2:pF 实现并验收，值守连续叫醒，.watch 登记 kind=pi-ext pid=21185 cmd=bash …/qwb-wake.sh --block 无 --max-ms——链路与单飞登记全部实测命中）；⑦TEMP_CLEANUP=PASS（pane wF2:pE/wF2:pF 已 close，/tmp/qwb-e2e-pi.ikHNWO 已删）；⑧qwb-status.sh 对 pi-ext 活 pid 报「值守：pi-ext（pid …）」、kill 后报「值守：未运行」。注意：本机 pi 实测 0.86.1（票面写 0.85.1），扩展 API（session_start/session_shutdown/turn_end、sendUserMessage deliverAs:"followUp"）按 0.86.1 官方文档核实通过，E2E 真机验证同一版本。
+wake: 2026-09-21T23:20:47Z state=running fp=a76f449dd741c12b88d6f15365b808bc14063096
+working: 2026-09-21T23:22:00Z 主控验货（独立复跑于 worktree bfd260a）：`qwb-test.sh fast` rc=0；`tests/smoke.sh` rc=0、567 PASS / 0 FAIL，末节「== 73.」后 SMOKE PASS；`qwb-lint.sh` LINT PASS；`node tests/pi-ext.test.mjs` 9 passed；diff main 7 文件 +647/−1 全在白名单（含 merge main 提交）；main 可 fast-forward；临时项目 /tmp/qwb-e2e-pi.* 与 pane wF2:pE 确认已清。反转：把锁主判定 === 改成 !== → pi-ext 测试首条断言即失败（rc=1，「spawn 被调 1 次 0 !== 1」），恢复后工作树干净。备注：本机 pi 0.86.1（票面 0.85.1），执行者按 0.86.1 文档核实并真机 E2E 通过。结论：通过，state → verified，fast-forward 合并。
+worktree: merged branch=watch-invisible-pi tag=-
