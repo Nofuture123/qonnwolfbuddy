@@ -46,24 +46,24 @@ lock_holder() {
 }
 
 # 残留锁判活：owner 形如 pid:<n> 用 kill -0；其余视为 herdr pane id 查 pane get。
-# 死 → stdout 打印原锁主、返回 0；活/无法判定 → 返回 1（拒绝，不猜）。$2 = 原因说明（stderr 用）
+# 返回：0 = 死（可回收，stdout 打印原锁主）；1 = 活；2 = 无法判活（herdr 不在 PATH / 查询失败 / 无 owner 文件）
 lock_holder_dead() {
   local holder_id="$1"
   case "$holder_id" in
     pid:*)
       local npid="${holder_id#pid:}"
-      [[ "$npid" =~ ^[0-9]+$ ]] || return 1
+      [[ "$npid" =~ ^[0-9]+$ ]] || return 2
       kill -0 "$npid" 2>/dev/null && return 1
       return 0
       ;;
-    "") return 1 ;;   # 无 owner 文件/解析不出：无法判活 → 拒绝
+    "") return 2 ;;   # 无 owner 文件/解析不出：无法判活
     *)
-      command -v herdr >/dev/null 2>&1 || return 1   # herdr 不在 PATH：无法判活 → 拒绝
+      command -v herdr >/dev/null 2>&1 || return 2   # herdr 不在 PATH：无法判活
       local pout="" prc=0
       pout="$(herdr pane get "$holder_id" 2>&1)" || prc=$?
       if [[ "$prc" -ne 0 ]]; then
-        printf '%s' "$pout" | grep -q 'pane_not_found' && return 0
-        return 1   # 其他查询失败：无法判活 → 拒绝（fail-closed）
+        if printf '%s' "$pout" | grep -q 'pane_not_found'; then return 0; fi
+        return 2   # 其他查询失败：无法判活（fail-closed）
       fi
       return 1   # pane 查得到 → 活锁
       ;;
@@ -79,7 +79,9 @@ case "$CMD" in
     else
       holder="$(lock_holder)"
       holder_id="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
-      if lock_holder_dead "$holder_id"; then
+      lhd=2
+      lock_holder_dead "$holder_id" && lhd=0 || lhd=$?
+      if [[ "$lhd" -eq 0 ]]; then
         if rm -rf "$LOCK_DIR" && mkdir "$LOCK_DIR" 2>/dev/null; then
           printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OWNER" > "$LOCK_DIR/owner"
           echo "回收残留锁（原锁主 ${holder_id} 已不存在）"
@@ -90,10 +92,7 @@ case "$CMD" in
         fi
       else
         echo "错误：锁已被占用：${LOCK_DIR}；锁主：${holder}" >&2
-        if [[ -n "$holder_id" && "$holder_id" != pid:* ]]; then
-          command -v herdr >/dev/null 2>&1 \
-            || echo "说明：herdr 不在 PATH，无法判活，故不回收残留锁（fail-closed）" >&2
-        fi
+        [[ "$lhd" -eq 2 ]] && echo "说明：无法判活（herdr 不在 PATH 或 pane 查询失败），故不回收残留锁（fail-closed，不猜）" >&2
         echo "确认是残留锁后手动释放：bash ${ME} release --project ${PROJECT_ROOT}" >&2
         exit 1
       fi

@@ -2876,9 +2876,6 @@ out="$(stat4)"
 printf '%s' "$out" | grep -q '值守：未运行' \
   && ok "status 三态：两者皆无 → 值守：未运行" || { bad "status 未报未运行"; printf '%s\n' "$out"; }
 
-echo
-if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
-
 echo "== 57. 模板新票不污染状态（列首状态行缺口回归）=="
 # 场景：把 templates/TASK.md 原样复制为两张新票（state: running）→
 #   status 无「最近:」行；wake --once 后各票 wake 行 fp == sha1("running\n")（最后状态行为空）
@@ -2961,6 +2958,7 @@ out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/
 { [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '锁已被占用' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
   && ok "活锁（pane 在）照旧拒绝且 owner 字节不变" || { bad "活锁被误回收（rc=${rc}）"; }
 # 59d（失败路径）herdr 查询报错（非 pane_not_found）→ 拒绝不回收（fail-closed）
+rm -f "$LP/dyn/get-wXp1.json"   # stub .json 优先于 .err：不删会走不到查询失败分支（仍是 §59c 的活锁）
 printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$LP/dyn/get-wXp1.err"
 out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
 { [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '无法判活' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
@@ -3028,11 +3026,13 @@ out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" bash qwbudd
 runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | tail -1)"
 printf '%s' "$runline" | grep -q '2099-01-01-rwr' && ! printf '%s' "$runline" | grep -q '2099-01-02-rwn' \
   && ok "重叫投递文本只含 running 票" || bad "重叫文本混入 needs-decision"
-# --block 同一构造：exit 2 且摘要只含 running 那张
+# --block 同一构造：exit 2 且摘要只含 running 那张（「跳过：… 等裁决」说明行合法存在，
+# 只断言「看账本：」摘要行本身不含 needs-decision 那张）
 printf '# rw-r\nstate: running\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
 blk_out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" env -u HERDR_PANE_ID bash qwbuddy/bin/qwb-wake.sh --project "$RWP" --block --max-ms 999999999 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 2 ]] && printf '%s' "$blk_out" | grep -q '2099-01-01-rwr' \
-  && ! printf '%s' "$blk_out" | grep -q '2099-01-02-rwn'; } \
+blk_summary="$(printf '%s\n' "$blk_out" | grep '^看账本：' | tail -1)"
+{ [[ "$rc" -eq 2 ]] && printf '%s' "$blk_summary" | grep -q '2099-01-01-rwr' \
+  && ! printf '%s' "$blk_summary" | grep -q '2099-01-02-rwn'; } \
   && ok "--block 同构造：rc=2 且摘要只含 running" || { bad "--block REWAKE 收窄不对（rc=${rc}）：${blk_out:0:200}"; }
 
 echo "== 63. worktree 初始化钩子 QWB_WORKTREE_SETUP =="
@@ -3057,11 +3057,15 @@ Then  拒绝派发
 EOF
 }
 mk_wt_task wtsetup
-printf "QWB_WORKTREE_SETUP='echo run >> setup-count.txt && test \"\$(pwd -P)\" = %s'\n" "$GP2/.worktrees/wtsetup" >> "$GP2/qwbuddy/config.sh"
+# 场景要求钩子 cwd 在副本物理路径里（pwd -P）；副本派发时才创建，物理路径（/var vs /private/var）
+# 事先不可知——钩子把 pwd -P 写进文件，派发后与副本物理路径比对，语义等价
+printf "QWB_WORKTREE_SETUP='pwd -P > phys-path.txt && echo run >> setup-count.txt'\n" >> "$GP2/qwbuddy/config.sh"
 rm -rf "$GP2/qwbuddy/.controller.lock"
 ( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtsetup --worker pi ) >/dev/null 2>&1; rc=$?
-{ [[ "$rc" -eq 0 ]] && [[ "$(wc -l < "$GP2/.worktrees/wtsetup/setup-count.txt" | tr -d ' ')" -eq 1 ]]; } \
-  && ok "首次派发（新建副本）：钩子在副本目录执行恰一次" || { bad "钩子未执行或执行多次（rc=${rc}）"; }
+wt_phys="$(cd "$GP2/.worktrees/wtsetup" && pwd -P)"
+{ [[ "$rc" -eq 0 ]] && [[ "$(wc -l < "$GP2/.worktrees/wtsetup/setup-count.txt" | tr -d ' ')" -eq 1 ]] \
+  && [[ "$(cat "$GP2/.worktrees/wtsetup/phys-path.txt")" == "$wt_phys" ]]; } \
+  && ok "首次派发（新建副本）：钩子在副本物理目录执行恰一次" || { bad "钩子未执行/多次/cwd 不符（rc=${rc}）"; }
 # 再次派发（复用副本）→ 钩子不再执行
 ( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtsetup --worker pi ) >/dev/null 2>&1; rc=$?
 [[ "$(wc -l < "$GP2/.worktrees/wtsetup/setup-count.txt" | tr -d ' ')" -eq 1 ]] \
@@ -3079,9 +3083,10 @@ out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/
 
 echo "== 64. 工人丢失：status 标出、值守只叫一次、shell 算丢失、在/未知不算 =="
 WLP="$TMP/lostproj"; mkdir -p "$WLP"; bash "$ROOT/bin/qwb-init.sh" "$WLP" >/dev/null
-LFP="$(printf 'running\ndone: 完成一半\n' | shasum | cut -d' ' -f1)"
+LFP="$(printf 'running\ndone: 完成一半' | shasum | cut -d' ' -f1)"   # 实现指纹输入无尾随换行
 mk_lost_ticket() {
-  printf '# lost\nstate: running\ndone: 完成一半\ndispatch: 2020-01-01T00:00:00Z worker=pi agent=qwb-lost pane=wX:p9 dir=/tmp\nwake: 2020-01-01T00:00:00Z state=running fp=%s\n' "$LFP" > "$WLP/tasks/2099-01-01-lost.md"
+  # 种子 wake 行用新鲜时间戳：2020 年会被 REWAKE 超期判定合法重叫，破坏「指纹一致不重叫」的对照
+  printf '# lost\nstate: running\ndone: 完成一半\ndispatch: 2020-01-01T00:00:00Z worker=pi agent=qwb-lost pane=wX:p9 dir=/tmp\nwake: %s state=running fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LFP" > "$WLP/tasks/2099-01-01-lost.md"
 }
 mk_lost_ticket
 out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
@@ -3113,6 +3118,7 @@ printf '%s' "$out" | grep -q '工人丢失' && bad "工人健在竟标丢失" ||
   && ok "对照：工人在 → 指纹与不做丢失判定一致，不再叫" || bad "工人在却因丢失指纹多叫一次"
 # 查询失败（非 pane_not_found）→ 工人状态未知：status 标未知、值守不当丢失
 mk_lost_ticket
+rm -f "$WLP/dyn/get-wXp9.json"   # stub .json 优先于 .err：不删会走不到查询失败分支
 printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$WLP/dyn/get-wXp9.err"
 out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
 printf '%s' "$out" | grep -q '工人状态未知' \
@@ -3195,3 +3201,7 @@ mk_an_task "named"
 ( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task named --worker pi --here --name custom ) >/dev/null 2>&1; rc=$?
 grep -q 'agent start custom ' "$STUBLOG" \
   && ok "--name custom 仍用 custom（兜底不覆盖显式指定）" || { bad "--name 被兜底覆盖"; }
+
+# 新节必须加在本行之前
+echo
+if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
