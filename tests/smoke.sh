@@ -125,10 +125,15 @@ case "\${1:-} \${2:-}" in
   "agent get")  nfile="\${HERDR_AGENT_GET_COUNT_FILE:-$TMP/herdr-agent-get.count}"
                 n=\$(( \$(cat "\$nfile" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "\$nfile"
                 if [[ "\$n" -le "\${HERDR_AGENT_GET_FAILS:-0}" ]]; then fix agent-get-error.json >&2; exit 1; fi
-                fix agent-get-cmd.json ;;
+                if [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/agent-get-\$(san "\${3:-}").json";
+                elif [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/agent-get-\$(san "\${3:-}").err" >&2; exit 1;
+                else fix agent-get-cmd.json; fi ;;
   "agent rename") fix agent-get-cmd.json ;;
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
-  "agent start") fix agent-start.json ;;
+  "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
+                printf '{"id":"cli:tab:close","result":{"type":"ok"}}\n' ;;
+  "agent start") if [[ "\${HERDR_FAIL:-}" == *start* ]]; then fix agent-start-name-taken.json >&2; exit 1; fi
+                fix agent-start.json ;;
   "agent prompt") if [[ "\${HERDR_FAIL:-}" == *prompt* ]]; then failjson inject_failed "mocked prompt failure"; fi
                 fix agent-prompt.json ;;
   "agent list") fix agent-list.json ;;
@@ -838,6 +843,7 @@ fix() { sed '/^#/d' "$FIXDIR/\$1"; }
 case "\${1:-} \${2:-}" in
   "tab create")   fix tab-create.json ;;
   "workspace list") fix workspace-list.json ;;
+  "agent get")    fix agent-get-error.json >&2; exit 1 ;;   # 无同名工人：本节只走新开 tab 路径
   "agent start")  printf 'done: worker-appended-at-start\n' >> "$F2T"; fix agent-start.json ;;
   "agent prompt") fix agent-prompt.json ;;
   *)              fix pane-run.json ;;
@@ -2138,7 +2144,7 @@ echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/
 # 按 FAKE_CURL_* 应答。零网络、零真 key。
 DT="$(mktemp -d)"
 DFB="$DT/fakebin"; DLOG="$DT/log"
-mkdir -p "$DFB" "$DLOG" "$DT/config"
+mkdir -p "$DFB" "$DLOG" "$DT/qwbuddy"
 cat > "$DFB/curl" <<'FAKE'
 #!/usr/bin/env bash
 set -u
@@ -2159,7 +2165,7 @@ printf '%s' "${FAKE_CURL_HTTP:-200}"
 FAKE
 chmod +x "$DFB/curl"
 
-cat > "$DT/config/dispatch-rules.json" <<'JSON'
+cat > "$DT/qwbuddy/dispatch-rules.json" <<'JSON'
 {
   "rules": [
     {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
@@ -2269,31 +2275,31 @@ dreset; dresp "$DT/resp.json" rule_1 0.94; DENV='FAKE_CURL_FAIL=1'; drun brief.m
 grep -q 'http 000' <<<"$D_OUT" && ok "网络失败 → http 000 error" || bad "网络失败未判 error"
 
 # 49.6 坏规则文件 → exit 2（配置错误不绕过）、不联网
-dreset; printf '%s\n' '{"rules":[' > "$DT/config/dispatch-rules.json"
+dreset; printf '%s\n' '{"rules":[' > "$DT/qwbuddy/dispatch-rules.json"
 drun brief.md
 { [[ "$D_RC" -eq 2 ]] && grep -q '不是合法 JSON' "$D_ERR" && [[ ! -e "$DLOG/argv" ]]; } \
   && ok "坏 JSON 规则 → exit 2 且零网络" || { bad "坏 JSON 未 exit 2（rc=${D_RC}）"; cat "$D_ERR"; }
-printf '%s\n' '{"rules":[{"when":"x","worker":"has space"}],"default":{"worker":"pi"}}' > "$DT/config/dispatch-rules.json"
+printf '%s\n' '{"rules":[{"when":"x","worker":"has space"}],"default":{"worker":"pi"}}' > "$DT/qwbuddy/dispatch-rules.json"
 drun brief.md
 { [[ "$D_RC" -eq 2 ]] && grep -q '合法 worker' "$D_ERR"; } \
   && ok "worker 含空格 → exit 2" || { bad "worker 空格未拒（rc=${D_RC}）"; cat "$D_ERR"; }
-printf '%s\n' '{"rules":[{"when":"x","worker":"pi"}]}' > "$DT/config/dispatch-rules.json"
+printf '%s\n' '{"rules":[{"when":"x","worker":"pi"}]}' > "$DT/qwbuddy/dispatch-rules.json"
 drun brief.md
 { [[ "$D_RC" -eq 2 ]] && grep -q 'default' "$D_ERR"; } \
   && ok "缺 default → exit 2" || { bad "缺 default 未拒（rc=${D_RC}）"; cat "$D_ERR"; }
 
 # 49.7 规则文件不存在 → exit 0、stderr 一行 no rules、零网络
-dreset; mv "$DT/config/dispatch-rules.json" "$DT/rules.bak"
+dreset; mv "$DT/qwbuddy/dispatch-rules.json" "$DT/rules.bak"
 drun brief.md
 { [[ "$D_RC" -eq 0 ]] && [[ -z "$D_OUT" ]] && grep -q 'no rules' "$D_ERR" && [[ ! -e "$DLOG/argv" ]]; } \
   && ok "无规则文件 → exit 0、no rules、零网络" || bad "no-rules 路径不对（rc=${D_RC}）"
-mv "$DT/rules.bak" "$DT/config/dispatch-rules.json"
+mv "$DT/rules.bak" "$DT/qwbuddy/dispatch-rules.json"
 
 # 49.8 qwb-run.sh --worker auto 集成（stub herdr；$TMP 是前面装好的假项目）
 # 注：$DT/config 里的规则文件此时是 49.6 留下的坏文件，$TMP 直接写好规则，不从 $DT 拷
 rm -f "$DT/.env"
-mkdir -p "$TMP/config"
-cat > "$TMP/config/dispatch-rules.json" <<'JSON'
+mkdir -p "$TMP/qwbuddy"
+cat > "$TMP/qwbuddy/dispatch-rules.json" <<'JSON'
 {
   "rules": [
     {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
@@ -2346,7 +2352,7 @@ auto_run; a_rc=$?; DENV=''; AUTO_KEY=''
   || { bad "auto+error 不对（rc=${a_rc}）"; cat "$DT/run.err"; }
 # (d) 坏规则文件 → 拒绝派发（exit 2）、零副作用（带 key 才会走到规则校验）
 nd_before="$(grep -c '^dispatch:' "$AUT")"
-printf '%s\n' '{"rules":[' > "$TMP/config/dispatch-rules.json"
+printf '%s\n' '{"rules":[' > "$TMP/qwbuddy/dispatch-rules.json"
 AUTO_KEY="$DKEY"
 auto_run; a_rc=$?; AUTO_KEY=''
 { [[ "$a_rc" -eq 2 ]] && [[ "$(grep -c '^dispatch:' "$AUT")" -eq "$nd_before" ]] \
@@ -2357,7 +2363,7 @@ auto_run; a_rc=$?; AUTO_KEY=''
 jq -n '{rules:[{when:"复杂架构、跨模块重构、高风险改动",worker:"ghost"},
   {when:"常规实现、机械改动、调研",worker:"pi"},
   {when:"代码审核、对抗性审查",worker:"claude"}],default:{worker:"pi"}}' \
-  > "$TMP/config/dispatch-rules.json"
+  > "$TMP/qwbuddy/dispatch-rules.json"
 dreset; dresp "$DT/resp.json" rule_1 0.94; AUTO_KEY="$DKEY"
 auto_run; a_rc=$?; AUTO_KEY=''
 { [[ "$a_rc" -eq 1 ]] && [[ "$(grep -c '^dispatch:' "$AUT")" -eq "$nd_before" ]] \
@@ -2416,8 +2422,8 @@ disp_line="$(grep -n '^dispatch:' "$BI_T" | tail -1 | cut -d: -f1)"
   && grep -qF '$(id) 不展开' "$BI_T" \
   && grep -qF '以其余各节为准' "$BI_T" \
   && grep -q '^brief-include-fp: ' "$BI_T" \
-  && [[ "$inc_line" -gt "$disp_line" ]]; } \
-  && ok "有附页：末尾原样追加（保留行首空格/不展开）、含声明、在 dispatch 行之后" \
+  && [[ "$inc_line" -lt "$disp_line" ]]; } \
+  && ok "有附页：末尾原样追加（保留行首空格/不展开）、含声明、在 dispatch 行之前" \
   || bad "有附页追加不对（rc=${bi_rc}，inc=${inc_line}，disp=${disp_line}，out=${bi_out}）"
 
 # 场景：重复派发同一附页 → 不叠加；scenarios-fp 冻结基线不被附页追加破坏（对照用例）
@@ -2435,6 +2441,11 @@ new_fp="$(printf '%s' "$(cat "$BIF")" | shasum | cut -d' ' -f1)"
   && [[ "$(grep '^brief-include-fp: ' "$BI_T" | tail -1)" == "brief-include-fp: $new_fp" ]]; } \
   && ok "附页内容变化：追加新版且最后一份指纹为新内容" \
   || bad "附页内容变化不对（rc=${bi_rc}，out=${bi_out}）"
+# 顺序不变量：附页恒在 dispatch 行之前——dispatch 是启动工人前写入的最后一行，
+# agent start 失败时才能按「删最后一行且回到写前行数」安全回滚（§67/§69 有回滚用例钉住）
+[[ "$inc_line" -lt "$disp_line" ]] \
+  && ok "顺序不变量：附页节在 dispatch 行之前（dispatch 恒为启动前最后一行）" \
+  || bad "附页节跑到 dispatch 行之后，破坏回滚前提（inc=${inc_line}，disp=${disp_line}）"
 
 # 场景：附页路径是目录 → 报明确错误拒绝派发，任务书零写入（不留半截）
 cp "$BI_T" "$BI_T.snap"
@@ -3201,6 +3212,195 @@ mk_an_task "named"
 ( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task named --worker pi --here --name custom ) >/dev/null 2>&1; rc=$?
 grep -q 'agent start custom ' "$STUBLOG" \
   && ok "--name custom 仍用 custom（兜底不覆盖显式指定）" || { bad "--name 被兜底覆盖"; }
+
+echo "== 67. init 写 .gitignore（幂等/新建/git status 反证）与 dispatch-rules 落点 qwbuddy/ =="
+GIP="$TMP/gitign"; mkdir -p "$GIP"
+( cd "$GIP" && git init -q && git config user.email t@t && git config user.name t && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init )
+gi_run() { bash "$ROOT/bin/qwb-init.sh" "$GIP" 2>&1; }
+gi1="$(gi_run)"; gi_rc=$?
+{ [[ "$gi_rc" -eq 0 ]] && printf '%s' "$gi1" | grep -q '写入：.gitignore 追加 QW buddy 运行态'; } \
+  && ok "init 写 .gitignore：stdout 一行「写入：.gitignore 追加 QW buddy 运行态」" \
+  || { bad "init 写 .gitignore 失败（rc=${gi_rc}）"; printf '%s\n' "$gi1"; }
+[[ "$(head -1 "$GIP/.gitignore")" == 'node_modules/' ]] \
+  && ok "原有条目字节不变（node_modules/ 仍在首行）" || bad "原有 .gitignore 条目被改动"
+{ [[ "$(grep -cF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GIP/.gitignore")" == "1" ]] \
+  && grep -qxF '.worktrees/' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.controller.lock/' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.watch' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.watch.lock/' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.hook.lock/' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.hook.err' "$GIP/.gitignore"; } \
+  && ok "QW buddy 段恰好一次，含 .worktrees/ 与 qwbuddy/.controller.lock/ 等六条" \
+  || bad "QW buddy 段缺失或重复：$(cat "$GIP/.gitignore")"
+gi_sha1="$(shasum "$GIP/.gitignore" | cut -d' ' -f1)"
+gi2="$(gi_run)"
+{ [[ "$(shasum "$GIP/.gitignore" | cut -d' ' -f1)" == "$gi_sha1" ]] \
+  && printf '%s' "$gi2" | grep -q '跳过：.gitignore 已有'; } \
+  && ok "幂等：再跑一次 .gitignore 字节不变，stdout「跳过：.gitignore 已有」" \
+  || bad "二次 init 不幂等或 stdout 不对"
+# 无 .gitignore 的新项目 → 新建且首行即段标记
+GIP2="$TMP/gitign2"; mkdir -p "$GIP2"
+bash "$ROOT/bin/qwb-init.sh" "$GIP2" >/dev/null
+[[ "$(head -1 "$GIP2/.gitignore")" == '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' ]] \
+  && ok "无 .gitignore 项目：文件被新建且含 QW buddy 段" || bad "新建 .gitignore 不对"
+# 失败路径反证：git status 干净 → 删段后 .worktrees 与 .controller.lock 现身（证明段落有效）
+( cd "$GIP" && git add -A && git commit -qm install )
+bash "$GIP/qwbuddy/bin/qwb-lock.sh" acquire --project "$GIP" --owner "pid:$$" >/dev/null
+mkdir -p "$GIP/.worktrees/x"; : > "$GIP/.worktrees/x/w.txt"   # 空目录 git 永不显示，放个文件才真验忽略
+gs="$(git -C "$GIP" status --porcelain)"
+{ [[ -z "$gs" ]]; } \
+  && ok "装完+提交+抢锁+建 .worktrees/x → git status --porcelain 干净" \
+  || bad "status 竟然脏：$gs"
+perl -i -ne 'print unless /^# QW buddy 运行态/ || /^\.worktrees\/$/ || /^qwbuddy\/\.(controller\.lock\/|watch|watch\.lock\/|hook\.lock\/|hook\.err)$/' "$GIP/.gitignore"
+gs="$(git -C "$GIP" status --porcelain)"
+{ printf '%s' "$gs" | grep -q 'worktrees' && printf '%s' "$gs" | grep -q '.controller.lock'; } \
+  && ok "删掉 QW buddy 段后 .worktrees 与 .controller.lock 在 status 现身（反证段落有效）" \
+  || bad "删段后反证失败：$gs"
+bash "$GIP/qwbuddy/bin/qwb-lock.sh" release --project "$GIP" >/dev/null
+# dispatch-rules 落点：init 拷模板且字节相同；改过不覆盖；读新路径、不回退旧路径
+{ cmp -s "$GIP/qwbuddy/dispatch-rules.json" "$ROOT/templates/dispatch-rules.json"; } \
+  && ok "qwbuddy/dispatch-rules.json 存在且与模板字节相同" \
+  || bad "规则文件缺失或与模板不一致"
+printf '{"rules":[],"项目自己改过的规则":true}\n' > "$GIP/qwbuddy/dispatch-rules.json"
+gi3="$(gi_run)"
+{ grep -qF '项目自己改过的规则' "$GIP/qwbuddy/dispatch-rules.json" \
+  && printf '%s' "$gi3" | grep -q '保留：qwbuddy/dispatch-rules.json 已存在，不覆盖'; } \
+  && ok "再跑 init 不覆盖项目改过的规则文件（幂等）" \
+  || bad "init 覆盖了项目自己的 dispatch-rules.json"
+DP3="$TMP/oldpath"; mkdir -p "$DP3/config"
+printf '# 简\n' > "$DP3/brief.md"
+printf '%s\n' '{"rules":[{"when":"x","worker":"pi"}],"default":{"worker":"pi"}}' > "$DP3/config/dispatch-rules.json"
+dp_out="$(cd "$DP3" && TYPESAFE_API_KEY=stub PATH="$DFB:$PATH" bash "$ROOT/bin/qwb-dispatch.sh" brief.md 2>&1 >/dev/null)"; dp_rc=$?
+{ [[ "$dp_rc" -eq 0 ]] && printf '%s' "$dp_out" | grep -q 'no rules' \
+  && ! printf '%s' "$dp_out" | grep -q '合法 worker'; } \
+  && ok "旧路径 config/ 存在而新路径缺失 → 报 no rules（不读旧路径、不做兼容）" \
+  || bad "旧路径回退不应发生：rc=${dp_rc}，out=$dp_out"
+
+echo "== 68. 母本仓双配置守卫（lint：双配置质量门必须一致）=="
+MRP="$TMP/mrepo"; mkdir -p "$MRP/templates" "$MRP/bin" "$MRP/tasks" "$MRP/docs"
+cp "$ROOT"/templates/QWBUDDY.md "$MRP/templates/"
+cp "$ROOT"/docs/DESIGN.md "$MRP/docs/"
+cp "$ROOT"/bin/qwb-*.sh "$MRP/bin/"
+cp "$ROOT"/qwb.config.sh "$MRP/"
+mkdir -p "$MRP/qwbuddy"
+printf 'QWB_GATE_FAST="fast-999"\nQWB_GATE_FULL="full-999"\n' > "$MRP/qwbuddy/config.sh"
+lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
+{ [[ "$lrc" -ne 0 ]] && printf '%s' "$lint_out" | grep -q '质量门不一致' \
+  && printf '%s' "$lint_out" | grep -q 'fast-999' && printf '%s' "$lint_out" | grep -q 'full-999' \
+  && printf '%s' "$lint_out" | grep -q 'qwbuddy/config.sh=fast-999'; } \
+  && ok "双配置门值不同 → lint FAIL 且打印两边的值" \
+  || { bad "双配置守卫未按预期 FAIL（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -12; }
+( . "$ROOT/qwb.config.sh"
+  printf 'QWB_GATE_FAST=%s\nQWB_GATE_FULL=%s\n' "$(printf '%q' "$QWB_GATE_FAST")" "$(printf '%q' "$QWB_GATE_FULL")" ) > "$MRP/qwbuddy/config.sh"
+lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
+{ [[ "$lrc" -eq 0 ]] && printf '%s' "$lint_out" | grep -q '质量门一致'; } \
+  && ok "两份配置门改成相同 → lint PASS" \
+  || { bad "同门应 PASS（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -12; }
+rm "$MRP/qwbuddy/config.sh"
+lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
+{ [[ "$lrc" -eq 0 ]] && ! printf '%s' "$lint_out" | grep -q '质量门不一致' \
+  && ! printf '%s' "$lint_out" | grep -q '双配置'; } \
+  && ok "只有一份配置 → 该项不报（其余项不误伤，LINT PASS）" \
+  || { bad "单配置不应报双配置项（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
+
+echo "== 69. 返工重派：复用既有工人 / 同名在干拒绝 / agent start 失败回滚 =="
+RUP="$TMP/reuse"; mkdir -p "$RUP"; bash "$ROOT/bin/qwb-init.sh" "$RUP" >/dev/null
+cat > "$RUP/tasks/2099-01-01-reuset.md" <<'EOF'
+# reuset
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 同名工人空闲
+When  再派
+Then  复用不新开窗口
+### user_失败
+Given 同名工人忙碌
+When  再派
+Then  拒绝且零副作用
+EOF
+mkdir -p "$RUP/dyn"
+# 同名 idle 工人片场：真录 agent-get-cmd.json 改 name/pane（san(qwb-reuset)=qwbreuset）
+sed -e 's/wAB:p3/wX:p5/g' -e 's/wAB:t3/wX:t5/g' -e 's/"agent":"cmd"/"agent":"pi","name":"qwb-reuset"/' \
+  "$FIXDIR/agent-get-cmd.json" | sed '/^#/d' > "$RUP/dyn/agent-get-qwbreuset.json"
+ru_task="$RUP/tasks/2099-01-01-reuset.md"
+# (a) idle → 复用：无 tab create、无 agent start、有 agent prompt，dispatch pane=现有 pane
+: > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
+ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
+  bash qwbuddy/bin/qwb-run.sh --task reuset --worker pi --here 2>&1 )"; ru_rc=$?
+{ [[ "$ru_rc" -eq 0 ]] && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
+  && grep -q 'agent prompt qwb-reuset ' "$STUBLOG" \
+  && grep -q '这是返工/续派' "$STUBLOG" \
+  && printf '%s' "$ru_out" | grep -q '复用既有工人 qwb-reuset（pane wX:p5）' \
+  && [[ "$(grep '^dispatch:' "$ru_task" | tail -1)" == *"agent=qwb-reuset pane=wX:p5 "* ]]; } \
+  && ok "同名 idle 工人 → 复用（不建 tab、不 start，dispatch 落现有 pane，stdout 含「复用既有工人」）" \
+  || { bad "复用路径不对（rc=${ru_rc}）"; printf '%s\n' "$ru_out"; cat "$STUBLOG"; }
+# (b) 同名工人还在 working → 拒绝，无新 dispatch 行，无 prompt/start/tab create
+perl -pi -e 's/"agent_status":"idle"/"agent_status":"working"/' "$RUP/dyn/agent-get-qwbreuset.json"
+disp_before="$(grep -c '^dispatch:' "$ru_task")"
+: > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
+ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
+  bash qwbuddy/bin/qwb-run.sh --task reuset --worker pi --here 2>&1 )"; ru_rc=$?
+{ [[ "$ru_rc" -ne 0 ]] && printf '%s' "$ru_out" | grep -q '还在 working' \
+  && [[ "$(grep -c '^dispatch:' "$ru_task")" -eq "$disp_before" ]] \
+  && ! grep -q 'agent prompt' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
+  && ! grep -q 'tab create' "$STUBLOG"; } \
+  && ok "同名工人还在 working → 拒绝派发（无新 dispatch 行、零 herdr 副作用）" \
+  || { bad "working 拒绝路径不对（rc=${ru_rc}）"; printf '%s\n' "$ru_out"; cat "$STUBLOG"; }
+# (c) 无同名工人 + agent start 失败 → 关刚建 tab、回滚 dispatch 行、exit 1 上报原始错误
+rm "$RUP/dyn/agent-get-qwbreuset.json"   # 回到无同名工人：走新开 tab 路径
+cat > "$RUP/tasks/2099-01-02-rollback.md" <<'EOF'
+# rollback
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 工人正常启动
+When  派发
+Then  正常记账
+### user_失败
+Given agent start 失败
+When  派发
+Then  回滚 tab 与 dispatch 行
+EOF
+rb_task="$RUP/tasks/2099-01-02-rollback.md"
+rm -rf "$RUP/qwbuddy/.controller.lock"
+( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
+  bash qwbuddy/bin/qwb-run.sh --task rollback --worker pi --here ) >/dev/null 2>&1; rb_rc1=$?
+[[ "$rb_rc1" -eq 0 ]] || bad "回滚对照：首次正常派发竟失败（rc=${rb_rc1}）"
+rb_before="$(wc -l < "$rb_task" | tr -d ' ')"
+: > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
+rb_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" HERDR_FAIL=start \
+  bash qwbuddy/bin/qwb-run.sh --task rollback --worker pi --here 2>&1 )"; rb_rc=$?
+{ [[ "$rb_rc" -ne 0 ]] && printf '%s' "$rb_out" | grep -q 'agent_name_taken' \
+  && printf '%s' "$rb_out" | grep -q 'agent start 失败' \
+  && [[ "$(wc -l < "$rb_task" | tr -d ' ')" -eq "$rb_before" ]] \
+  && [[ "$(grep -c '^dispatch:' "$rb_task")" -eq 1 ]] \
+  && grep -q 'tab create' "$STUBLOG" && grep -q 'tab close w93:t7' "$STUBLOG" \
+  && ! grep -q 'agent prompt' "$STUBLOG"; } \
+  && ok "agent start 失败（agent_name_taken）→ 关刚建 tab、dispatch 行回滚到写前行数、exit 1 原始错误上报" \
+  || { bad "回滚路径不对（rc=${rb_rc}）"; printf '%s\n' "$rb_out"; cat "$STUBLOG"; }
+
+echo "== 70. 开局点名改用 qwb-status.sh（省 token）=="
+q1="$(awk '/^## 1\. 开局点名/{f=1;next} /^## 2\./{f=0} f' "$ROOT/templates/QWBUDDY.md")"
+{ printf '%s' "$q1" | grep -q 'qwb-status.sh' && printf '%s' "$q1" | grep -q '只读未结项' \
+  && ! printf '%s' "$q1" | grep -q '读每份头部'; } \
+  && ok "QWBUDDY.md §1 含 qwb-status.sh 与「只读未结项」，不再含「读每份头部」" \
+  || bad "§1 点名文案不对"
+! grep -q '读每份头部' "$ROOT/templates/QWBUDDY.md" \
+  && ok "QWBUDDY.md 全文不再有「读每份头部」旧文案" || bad "旧文案仍在"
+for hf in claude-hook agents-hook; do
+  h2="$(grep '^[0-9]\.' "$ROOT/templates/$hf.md" | sed -n 2p)"
+  printf '%s' "$h2" | grep -q 'qwb-status.sh' \
+    && ok "$hf.md 第 2 条含 qwb-status.sh" \
+    || bad "$hf.md 第 2 条未改：$h2"
+done
+lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; lrc=$?
+{ [[ "$lrc" -eq 0 ]] && printf '%s' "$lint_out" | grep -q 'LINT PASS'; } \
+  && ok "qwb-lint.sh 第 1 项仍 PASS（本仓 LINT PASS）" \
+  || { bad "本仓 lint 不应受影响（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
 
 # 新节必须加在本行之前
 echo

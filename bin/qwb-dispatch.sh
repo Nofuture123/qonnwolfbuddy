@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # qwb-dispatch.sh —— JEV 自动派工（opt-in）：读任务简报，让 typesafe.ai System One（jev-latest）
-# 从 config/dispatch-rules.json 里回答"该走哪条规则"这一个问题；置信度门槛、default 回退、
+# 从 qwbuddy/dispatch-rules.json 里回答"该走哪条规则"这一个问题；置信度门槛、default 回退、
 # 状态判定全部是 jq/bash 纯代码。模型只看到 project + brief + 各规则的 when 文本；
 # worker 名等策略数据永不离开本机。
 # 移植自 firstmate bin/fm-dispatch-resolve.sh（砍掉机队特有部分：多 profile、quota-axi、
@@ -9,14 +9,14 @@
 # 用法:
 #   qwb-dispatch.sh <brief文件> [--project <项目根>]
 #     <brief文件>   任务简报（通常就是任务书路径；全文作为 state.task.brief 发给模型）
-#     --project     项目根（默认当前目录）：规则在 <项目根>/config/dispatch-rules.json，
+#     --project     项目根（默认当前目录）：规则在 <项目根>/qwbuddy/dispatch-rules.json，
 #                   key 可在 <项目根>/.env；state.task.project 用项目根的目录名
 #
 # 开关（opt-in）：TYPESAFE_API_KEY 取进程环境变量，否则读 <项目根>/.env（环境变量优先）；
 #   两处都无 → stderr 一行 "qwb-dispatch: off"，exit 0，零网络调用，行为与没有本工具完全一致。
 #   key 纪律（照抄上游）：key 只存一个 shell 变量、经文件描述符 `3< <(...)` 传给 curl 的
 #   Authorization 头、启动任何子进程前 unset TYPESAFE_API_KEY；不打印、不落日志、不落盘。
-# 规则文件：<项目根>/config/dispatch-rules.json（模板：QW buddy 母本仓 templates/dispatch-rules.json）。
+# 规则文件：<项目根>/qwbuddy/dispatch-rules.json（模板：QW buddy 母本仓 templates/dispatch-rules.json）。
 #   不存在 → stderr 一行 "no rules"、exit 0、不联网（qwb-run auto 会按默认工人继续派发）；
 #   存在但不合 schema → exit 2（配置错误，不许被绕过或静默跳过）。
 # 输出（stdout，TOON 风格块）：
@@ -84,7 +84,7 @@ done
 [ -n "$PROJECT_ROOT" ] || PROJECT_ROOT=$(pwd)
 [ -d "$PROJECT_ROOT" ] || die "项目根不存在: ${PROJECT_ROOT}"
 PROJECT_ROOT=$(cd "$PROJECT_ROOT" && pwd)
-RULES_PATH="${PROJECT_ROOT}/config/dispatch-rules.json"
+RULES_PATH="${PROJECT_ROOT}/qwbuddy/dispatch-rules.json"
 
 # ---- 开关门（opt-in）：环境变量优先，其次 <项目根>/.env；都无 → off，零网络调用 ----
 if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
