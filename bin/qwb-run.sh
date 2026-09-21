@@ -448,6 +448,50 @@ if [[ -n "$WORKTREE" ]]; then
   DIR="$(cd "$WORKTREE" && pwd)"
 fi
 
+# —— 派发前预置目录信任：claude/codex 对新目录弹信任框且不被权限参数跳过，起工人前把 $DIR
+# 预先标成受信任。只对实际派的这一个工人做；文件缺失/非法 → stderr 一行警告并跳过，
+# 信任框照弹、人来按，不阻塞派发。devin 的信任走启动参数（templates/config.sh QWB_WORKER_ARGS）。
+# 已受信任则完全不动文件（幂等：再派一次字节一致）。
+case "$WORKER" in
+  claude)
+    cj="${HOME:-}/.claude.json"
+    if [[ ! -f "$cj" ]]; then
+      echo "警告：$cj 不存在，跳过 claude 信任预置（信任框将照常弹出）" >&2
+    elif out="$(perl -MJSON::PP -e '
+        my ($f, $dir) = @ARGV;
+        open my $in, "<", $f or exit 2;
+        local $/; my $txt = <$in>; close $in;
+        my $j = eval { decode_json($txt) } or exit 1;
+        ref($j) eq "HASH" or exit 1;
+        my $p = $j->{projects} //= {};
+        ref($p) eq "HASH" or exit 1;
+        my $cur = $p->{$dir};
+        exit 0 if ref($cur) eq "HASH" && $cur->{hasTrustDialogAccepted};
+        $p->{$dir} = {} unless ref($cur) eq "HASH";
+        $p->{$dir}{hasTrustDialogAccepted} = JSON::PP::true;
+        my $tmp = "$f.qwb.$$";
+        open my $out, ">", $tmp or exit 3;
+        print {$out} encode_json($j), "\n" or exit 3;
+        close $out or exit 3;
+        rename $tmp, $f or exit 3;
+      ' "$cj" "$DIR" 2>&1)"; then
+      :
+    else
+      echo "警告：$cj 非法或不可写，跳过 claude 信任预置（信任框将照常弹出）：${out}" >&2
+    fi
+    ;;
+  codex)
+    ct="${HOME:-}/.codex/config.toml"
+    if [[ ! -f "$ct" ]]; then
+      echo "警告：$ct 不存在，跳过 codex 信任预置（信任框将照常弹出）" >&2
+    elif ! grep -qF "[projects.\"$DIR\"]" "$ct"; then
+      { [[ -s "$ct" && -n "$(tail -c1 "$ct")" ]] && printf '\n' >> "$ct"; } || true
+      printf '[projects."%s"]\ntrust_level = "trusted"\n' "$DIR" >> "$ct" \
+        || echo "警告：$ct 追加失败，跳过 codex 信任预置（信任框将照常弹出）" >&2
+    fi
+    ;;
+esac
+
 # —— 记账（F2）：state/场景基线在起任何工人前写；dispatch 在最终 pane 已知后、提示词发出前写 ——
 # 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
 lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"

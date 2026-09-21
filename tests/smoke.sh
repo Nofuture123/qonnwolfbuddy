@@ -24,6 +24,10 @@ fi
 echo "== 3. qwb-init.sh 装进临时假项目 =="
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# 信任预置会读写 $HOME/.claude.json 与 $HOME/.codex/config.toml：全程用假 HOME，不碰真家目录。
+# seed 一份合法 codex config，让 48 节这类断言 stderr 为空的用例不被「文件不存在」预置警告污染
+mkdir -p "$TMP/home/.codex"; printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$TMP/home/.codex/config.toml"
+export HOME="$TMP/home"
 bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
@@ -2579,8 +2583,8 @@ mp_task mptmpl
 tmpl_args="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
 mp_set QWB_WORKER_ARGS "$tmpl_args"
 bash -n "$ROOT/templates/config.sh" && ok "bash -n templates/config.sh 退出 0" || bad "templates/config.sh 语法错误"
-if ( . "$ROOT/templates/config.sh"; [[ "$QWB_WORKER_ARGS" == "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous omp=--auto-approve pi=--approve" ]] ); then
-  ok "模板默认 QWB_WORKER_ARGS 与票 §0 一致（5 个 herdr-kind 工人）"
+if ( . "$ROOT/templates/config.sh"; [[ "$QWB_WORKER_ARGS" == "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous --respect-workspace-trust false omp=--auto-approve pi=--approve" ]] ); then
+  ok "模板默认 QWB_WORKER_ARGS 与票 §0 一致（5 个 herdr-kind 工人，devin 含信任参数）"
 else
   bad "模板默认 QWB_WORKER_ARGS 与票不符"
 fi
@@ -2597,6 +2601,71 @@ out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
    && grep -qxF 'herdr agent start qwb-mptmpl --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG"; } \
   && ok "用模板默认值真派发：codex 拿到自己的最高权限参数（rc=${rc}）" \
   || { bad "模板默认值派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr agent start' "$STUBLOG"; }
+echo "== 52. 派发前预置目录信任（trust-preseed）=="
+# 场景（票 §1）：claude 写 ~/.claude.json（保留原有项目、幂等）｜codex 追加 ~/.codex/config.toml
+# 块（原内容不变、不重复追加）｜.claude.json 非法 → stderr 一行警告、文件不动、派发照常 rc=0。
+# HOME 已在顶部隔离到 $TMP/home。复用 51 节的 mp_* 装置（本节之后才 rm -rf $MPX）。
+mp_task tpc; mp_task tpx
+mp_set QWB_WORKER_LAUNCH ""; mp_set QWB_WORKER_ARGS ""
+tp_claude="$TMP/home/.claude.json"; tp_codex="$TMP/home/.codex/config.toml"
+rm -rf "$TMP/home"; mkdir -p "$TMP/home/.codex"
+printf '{"projects":{"/other/proj":{"hasTrustDialogAccepted":false},"/two":{"allowedTools":["Bash"]}}}' > "$tp_claude"
+printf '[projects."/existing/proj"]\ntrust_level = "trusted"\n' > "$tp_codex"
+tp_snap="$(cat "$tp_codex")"
+tp_projdir="$MPX"
+
+# 52a claude：写入 projects[<项目根>].hasTrustDialogAccepted=true，原有项目保留、仍是合法 JSON
+mp_pre
+out="$(mp_run --task tpc --worker claude --here 2>&1)"; rc=$?
+tp_read='my $j = decode_json(<STDIN>); my $p = $j->{projects} // {}; print(($p->{$ARGV[0]}{hasTrustDialogAccepted} ? "T" : "F"), (exists $p->{"/other/proj"} ? "o" : "x"), (exists $p->{"/two"} ? "w" : "x"))'
+tp_got="$(perl -MJSON::PP=decode_json -e "$tp_read" "$tp_projdir" < "$tp_claude" 2>/dev/null)"
+{ [[ "$rc" -eq 0 ]] && [[ "$tp_got" == "Tow" ]] && perl -MJSON::PP=decode_json -e 'decode_json(join "", <>)' < "$tp_claude"; } \
+  && ok "claude：hasTrustDialogAccepted=true 写入，原有两个项目保留，仍是合法 JSON" \
+  || { bad "claude 预置不对（rc=${rc}，读值=${tp_got:-不可解码}）"; printf '%s\n' "$out"; }
+
+# 52b claude 幂等：已 true 再派一次 → 文件字节不变
+n1=$(wc -c < "$tp_claude" | tr -d ' ')
+mp_pre
+mp_run --task tpc --worker claude --here >/dev/null 2>&1
+[[ "$(wc -c < "$tp_claude" | tr -d ' ')" == "$n1" ]] \
+  && ok "claude：已受信任再派一次文件字节不变（幂等）" \
+  || bad "claude：幂等失败，二次派发改写了文件"
+
+# 52c codex：尾部追加本项目根块，原内容不变；再派一次不重复追加
+mp_pre
+out="$(mp_run --task tpx --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && [[ "$(head -2 "$tp_codex")" == "$tp_snap" ]] \
+   && grep -qxF '[projects."'"$tp_projdir"'"]' "$tp_codex" \
+   && grep -qxF 'trust_level = "trusted"' "$tp_codex"; } \
+  && ok "codex：尾部追加本项目块，原有内容逐字保留" \
+  || { bad "codex 预置不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$tp_codex"; }
+mp_pre
+mp_run --task tpx --worker codex --here >/dev/null 2>"$TMP/tp2.err"
+{ [[ "$(grep -cF '[projects."'"$tp_projdir"'"]' "$tp_codex")" == "1" ]] && [[ "$(cat "$tp_codex")" == "${tp_snap}
+[projects.\"$tp_projdir\"]
+trust_level = \"trusted\"" ]]; } \
+  && ok "codex：已受信任再派一次不重复追加（块恰一个、文件内容不变）" \
+  || { bad "codex：幂等失败（重复追加或内容漂移）"; echo "[dump] tp_codex:"; cat "$tp_codex"; echo "[dump] err2:"; cat "$TMP/tp2.err"; }
+
+# 52d 失败路径：.claude.json 非法 → stderr 一行警告、文件不动、派发照常 rc=0
+printf '{bad' > "$tp_claude"
+mp_pre
+out="$(mp_run --task tpc --worker claude --here 2>"$TMP/tp.err")"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && [[ "$(cat "$tp_claude")" == '{bad' ]] \
+   && [[ "$(grep -c '跳过 claude 信任预置' "$TMP/tp.err")" == "1" ]] \
+   && grep -qxF 'herdr agent start qwb-tpc --kind claude --pane w93:p7 --timeout 300' "$STUBLOG"; } \
+  && ok "claude.json 非法：stderr 恰一行警告、文件不动、派发照常 rc=0" \
+  || { bad "非法 JSON 路径不对（rc=${rc}）"; cat "$TMP/tp.err" >&2; printf '%s\n' "$out"; }
+# 对照：codex 工人不碰 claude.json（只对实际派的工人做）
+printf '{bad' > "$tp_claude"
+mp_pre
+mp_run --task tpx --worker codex --here >/dev/null 2>&1
+[[ "$(cat "$tp_claude")" == '{bad' ]] \
+  && ok "对照：派 codex 不碰 .claude.json（只对实际派的工人预置）" \
+  || bad "派 codex 却改写了 .claude.json"
+
 rm -rf "$MPX"
 
 echo "== 51h. 默认值自洽（2026-09-16 spec-defect 回归门）=="

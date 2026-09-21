@@ -9,7 +9,7 @@ QWB_WORKER_LAUNCH=""                   # 可选：工人名=herdr|pane-run:<交�
 # （未列出/空值不加 `--`）。参数串同样禁 headless（-p/--print/--exec/exec）。
 # pane-run 工人的参数写在 QWB_WORKER_LAUNCH 的命令行里（如 cmd=pane-run:cmd --yolo --trust）——
 # 在这里再给它配值会被拒绝派发，一个工人的启动参数只能有一处。
-QWB_WORKER_ARGS="codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous omp=--auto-approve pi=--approve"
+QWB_WORKER_ARGS="codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous --respect-workspace-trust false omp=--auto-approve pi=--approve"
 QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
 QWB_WAKE_INTERVAL_MS=120000            # 值守每轮等待预算（毫秒）
 QWB_REWAKE_MS=1800000                  # 时间兜底重叫：距上次叫醒超过它仍未结项就再叫一次（0 = 关闭）
