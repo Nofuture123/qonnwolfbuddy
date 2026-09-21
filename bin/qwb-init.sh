@@ -72,6 +72,28 @@ append_hook() {
 append_hook "$ROOT/AGENTS.md" agents-hook.md
 append_hook "$ROOT/CLAUDE.md" claude-hook.md
 
+# Pi 主控值守扩展：装到 .pi/extensions/qwb-watch.ts（值守隐形化，随 pi 进程生死）。
+# 幂等三态：不存在 → 新建（重启 pi 或 /reload 后生效）；内容一致 → 不重写（mtime 不变）；
+# 内容不同 → 备份为 .bak 后覆盖并在 stdout 说明（目标可能被项目主人改过，不丢内容）。
+install_pi_ext() {
+  local src="$TPL/pi-extensions/qwb-watch.ts"
+  local dst="$ROOT/.pi/extensions/qwb-watch.ts"
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    echo "跳过：.pi/extensions/qwb-watch.ts 内容一致（幂等）"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dst")"
+  if [[ -f "$dst" ]]; then
+    cp "$dst" "$dst.bak"
+    cp "$src" "$dst"
+    echo "写入：.pi/extensions/qwb-watch.ts 已更新（旧内容备份为 qwb-watch.ts.bak；重启 pi 或 /reload 生效）"
+  else
+    cp "$src" "$dst"
+    echo "写入：.pi/extensions/qwb-watch.ts（重启 pi 或 /reload 后扩展生效）"
+  fi
+}
+install_pi_ext
+
 # Claude Code Stop hook（值守隐形化）：合并进 .claude/settings.json。
 # 幂等（按 command 含 qwb-hook-claude-stop.sh 判重）、不覆盖已有 hooks（其他键原样）；
 # 文件不存在则新建；非法 JSON 拒绝写入（qwbuddy/ 其余安装已照常完成，stderr 说明）。

@@ -457,3 +457,13 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **D · `QWB_WORKTREE_SETUP` 为什么放 config 而不是任务书**：装依赖（pnpm install、拷 .env）是**项目属性**不是任务属性——每张票都一样，写任务书会让 282 张票各抄一遍、漏抄即翻车；放 config 一处声明，`qwb-run.sh` 在新建副本后、开 tab/记账前执行，失败拒绝派发（副本保留排查，账本零副作用）。只对新建副本执行：复用副本意味着依赖已在，重装只浪费时间。
 
 **E · agent 名兜底只取 sha1 前 8 位**：中文任务 id 净化后剩 `qwb--01` 这类残渣、两票同名；sha1 前 8 位（16^8 ≈ 43 亿）对单机同时存在的 agent 数足够，且比「要求所有任务 id 都 ASCII」少一条新规矩。只对未显式给 `--name` 的派发生效——显式指定是主控的意志，不覆盖。
+
+## 三十一、Pi 主控值守走扩展而非窗口/checkpoint（2026-09-23）
+
+**来源**：值守隐形化补齐第三种主控——pi 没有像 Claude Code 的 Stop hook、也不能像 Codex 那样当前台 tool call 循环，但 pi 有扩展机制（`session_start` / `session_shutdown` / `turn_end` 事件 + `pi.sendUserMessage(content, { deliverAs: "followUp" })` 注入）。
+
+**结论**：Pi 主控值守装成项目级扩展 `.pi/extensions/qwb-watch.ts`（`qwb-init.sh` 安装），由扩展持有 `qwb-wake.sh --block` 阻塞子进程：exit 2 → stdout 摘要以 `[qwb-wake]` 前缀 follow-up 注入并立即重启下一轮；exit 0 → 清 `.watch` 闲置，`turn_end` 用 `--block --max-ms 1` 探测（0/124 判定有无未结项，不另写账本解析）；其他退出码 → 记 `qwbuddy/.pi-watch.err` 指数退避（上限 `QWB_WAKE_INTERVAL_MS × 8`），退避到顶注入一次「值守故障」叫醒主控去修。
+
+**为什么是扩展而不是另开窗口或让模型轮询**：已经有后台注入能力（`sendUserMessage` + `followUp`）就不该让模型轮询——轮询烧 token、抢回合；窗口形态违背「值守隐形化」的初衷。扩展持有的子进程随 pi 进程生死（spawn 不 detach + `session_shutdown` 杀 + `process exit` 保底），不是守护进程，符合 §10.2 的边界裁定。锁主复核（`.controller.lock/owner` 末字段 == `HERDR_PANE_ID`）决定扩展是否值守：非主控的 pi 会话一律不动，与 `--block` 的孤儿复核同判定。
+
+**与 firstmate 的边界**：只取「持子进程 + follow-up 注入」这一个机制；不搬分支监督、lease、generation ledger、远程 secondmate。Pi 扩展 API 以官方文档实测为准（本机 pi 0.86.1，`extensions.md`：`session_start`/`session_shutdown`/`turn_end` 事件、`pi.sendUserMessage` 的 `deliverAs: "followUp"`），firstmate 只是可行性先例不是规格来源。

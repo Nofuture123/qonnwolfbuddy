@@ -210,6 +210,19 @@ watch_check() {
     echo "值守：hook（pid ${hpid}）"
     return 0
   fi
+  # 形态二：pi 扩展（值守隐形化）——.watch 记 kind=pi-ext pid=<子进程 pid>，pid 活即值守在跑；
+  # pid 死 = pi 已退出或扩展收工 → 未运行。判活用 kill -0 不需要 herdr，故放在 tab 扫描之前；
+  # 同项目 Claude hook 与 pi 扩展互斥（一个主控只用一种 harness），hook 在前优先。
+  if [[ -f "$WATCHF" ]] && [[ "$(watch_field kind)" == "pi-ext" ]]; then
+    local wpid=""
+    wpid="$(watch_field pid)"
+    if [[ -n "$wpid" ]] && [[ "$wpid" != 0 ]] && kill -0 "$wpid" 2>/dev/null; then
+      echo "值守：pi-ext（pid ${wpid}）"
+    else
+      echo "值守：未运行（pi-ext 子进程已退出）"
+    fi
+    return 0
+  fi
   local rp="" dead="" qfail=0 v=""
   [[ -f "$WATCHF" ]] && rp="$(watch_field pane)"
   if ! watch_scan "${HERDR_WORKSPACE_ID:-}"; then

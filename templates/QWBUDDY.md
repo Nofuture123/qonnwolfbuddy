@@ -19,8 +19,9 @@
 8. **按主控 harness 接值守**（隐形，无窗口；可见 tab 只是 fallback）：
    - **Claude Code 主控**：`qwb-init.sh` 已把值守装进 `.claude/settings.json` 的 Stop hook（`asyncRewake`，超时 7200 秒）——开局**什么都不用起**，只需 `bash qwbuddy/bin/qwb-status.sh` 确认「值守：hook」。你每次回合结束 hook 自动在后台阻塞值守；账本有可动作变化时 hook 以 exit 2 用摘要叫醒你（Stop hook feedback），无变化则静默到期退出、下次 Stop 自动再起。
    - **Codex 主控**：开局点名后，把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 当**前台 tool call** 循环跑：退出码 2 → 读 stdout 摘要、处理账本、再跑下一轮；124 → 到期无变化，直接再跑下一轮；0 → 账本无未结项，值守收工。**禁止 `&` 后台、禁止 Codex 后台任务**——Codex 在前台 tool call 运行期间不能推理，靠有界 checkpoint 周期性交还控制权。
+   - **Pi 主控**：`qwb-init.sh` 已装扩展（`.pi/extensions/qwb-watch.ts`），开局只需确认 `qwb-status.sh` 报 `值守：pi-ext`；首次装后需重启 pi 或 `/reload` 让扩展加载。扩展自动持有值守子进程、账本有变化时以 `[qwb-wake]` follow-up 消息叫醒你，无需任何窗口或手工轮询。
    - **其他/未知主控**：沿用 `bash qwbuddy/bin/qwb-wake.sh --ensure` 幂等确保一个可见值守 tab（fallback）。使用者不需要手工启动值守。
-   任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行：`hook` / `tab（pane …）` / `未运行`；tab 报「未运行」可再跑一次 `--ensure` 重启，报「未知」说明 herdr 查不到、先修查询再说。
+   任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行：`hook` / `pi-ext` / `tab（pane …）` / `未运行`；tab 报「未运行」可再跑一次 `--ensure` 重启，pi-ext 报「未运行」说明 pi 主控会话不在（重启 pi 即恢复），报「未知」说明 herdr 查不到、先修查询再说。
 如果账本为空：报「账本无任务」，等使用者提需求。
 
 ## 2. 三层责任——谁的保证归谁

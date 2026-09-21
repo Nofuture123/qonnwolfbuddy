@@ -3202,6 +3202,66 @@ mk_an_task "named"
 grep -q 'agent start custom ' "$STUBLOG" \
   && ok "--name custom 仍用 custom（兜底不覆盖显式指定）" || { bad "--name 被兜底覆盖"; }
 
+echo "== 67. Pi 扩展单元测试（qwb-watch.ts 行为，不依赖 pi 进程）=="
+run_pi_ext() {
+  if command -v node >/dev/null 2>&1; then
+    node "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0
+    node --experimental-strip-types "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0
+  fi
+  if command -v bun >/dev/null 2>&1; then bun "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0; fi
+  return 1
+}
+extout="$(run_pi_ext)"; extrc=$?
+{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 9 passed'; } \
+  && ok "pi 扩展单元测试 9 项通过（锁主/非锁主/exit 2/0/退避告警/单飞/探测/shutdown）" \
+  || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
+# TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
+if command -v node >/dev/null 2>&1; then
+  chk node -e 'const{pathToFileURL}=require("node:url");import(pathToFileURL(process.argv[1]).href).then(()=>process.exit(0),e=>{console.error(String((e&&e.message)||e));process.exit(1)})' "$ROOT/templates/pi-extensions/qwb-watch.ts" \
+    || bad "qwb-watch.ts 无法被 node type-stripping 转译"
+else
+  echo "SKIP  本机无 node，跳过 TS 转译门"
+fi
+
+echo "== 68. qwb-init.sh 装 Pi 扩展：新建 / 幂等不重写 / 备份覆盖 =="
+P3="$TMP/piext-proj"; mkdir -p "$P3"
+DST="$P3/.pi/extensions/qwb-watch.ts"
+out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
+{ [[ $rc -eq 0 ]] && [[ -f "$DST" ]] && printf '%s' "$out" | grep -q '重启 pi 或 /reload'; } \
+  && ok "init 新建 .pi/extensions/qwb-watch.ts 并提示重启生效" \
+  || { bad "init 新建扩展失败（rc=$rc）"; }
+mt() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+m_before="$(mt "$DST")"; sleep 1
+out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
+{ [[ $rc -eq 0 ]] && [[ "$(mt "$DST")" == "$m_before" ]] \
+    && printf '%s' "$out" | grep -q '内容一致' && [[ ! -f "$DST.bak" ]]; } \
+  && ok "init 幂等：同内容不重写（mtime 不变）、无备份" \
+  || { bad "init 幂等不对（rc=$rc，mtime 前=$m_before 后=$(mt "$DST")）"; }
+printf '\n// 项目本地改动\n' >> "$DST"
+out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
+{ [[ $rc -eq 0 ]] && [[ -f "$DST.bak" ]] && grep -q '项目本地改动' "$DST.bak" \
+    && ! grep -q '项目本地改动' "$DST" \
+    && printf '%s' "$out" | grep -q '备份为 qwb-watch.ts.bak'; } \
+  && ok "init 遇不同内容：备份 .bak 后覆盖、stdout 说明" \
+  || { bad "init 备份覆盖不对（rc=$rc，out=$out）"; }
+
+echo "== 69. status 值守第四态 pi-ext：pid 活 → pi-ext，pid 死 → 未运行 =="
+DYN="$TMP/herdr-dyn-s69"; mkdir -p "$DYN"; rm -f "$TMP/qwbuddy/.watch"; rm -rf "$TMP/qwbuddy/.hook.lock"
+stat69() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE_ID=wtestW \
+    bash qwbuddy/bin/qwb-status.sh ); }
+( exec sleep 30 ) & wpid=$!
+printf 'kind=pi-ext pid=%s started=x cmd=y\n' "${wpid}" > "$TMP/qwbuddy/.watch"
+out="$(stat69)"
+printf '%s' "$out" | grep -q "值守：pi-ext（pid ${wpid}）" \
+  && ok "status：.watch kind=pi-ext 活 pid → 值守：pi-ext（pid …）" \
+  || { bad "status 未报 pi-ext"; printf '%s\n' "$out"; }
+kill "${wpid}" 2>/dev/null; wait "${wpid}" 2>/dev/null
+out="$(stat69)"
+{ printf '%s' "$out" | grep -q '值守：未运行' && printf '%s' "$out" | grep -q 'pi-ext'; } \
+  && ok "status：pi-ext pid 死 → 值守：未运行" \
+  || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
+rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
