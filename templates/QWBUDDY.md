@@ -14,13 +14,13 @@
 4. 读每个未结项末尾的状态行，搞清楚活到哪了。
 5. 向使用者报告当前状态：几个未结项、分别在什么阶段、下一步打算干什么。
 6. 把本 pane 的 herdr pane id 写进 `qwbuddy/config.sh` 的 `QWB_CONTROLLER_PANE`（pane id 见环境变量 `HERDR_PANE_ID`）——值守脚本靠它叫醒你。**同一步**把 `HERDR_WORKSPACE_ID` 写进 `QWB_WORKSPACE`：工人与值守的 tab 靠它开在**项目自己的 workspace**（而不是你这个主控身边）；跨项目派活的主控不要写自己的，改填**目标项目**的 workspace id。
-7. （仅新项目首次）派发前先在工人 CLI 的 tab 里手工接受一次 workspace 信任提示——首次 trust 对话框会吞掉派发提示词，属一次性人工授权（见 docs/E2E-RUNBOOK.md 现象A）。
+7. 派发前 `qwb-run.sh` 会把本次工作目录预置成受信任（claude 写 `~/.claude.json`、codex 追加 `~/.codex/config.toml`、devin 走 `--respect-workspace-trust false` 启动参数）——装了本功能后 codex/claude/devin 不再需要人工过信任框；文件缺失/非法时跳过预置，首次派发才需人工按一次（见 docs/E2E-RUNBOOK.md 现象A）。
+8. **确保值守在跑**：`bash qwbuddy/bin/qwb-wake.sh --ensure`。幂等——已有一个本项目值守就复用，没有才在本 workspace 开一个可见值守 tab；发现多实例或查不到会报错而不是乱动。使用者不需要手工启动值守。之后任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行（运行/未运行/未知）；报「未运行」可再跑一次 `--ensure` 让它重启，报「未知」说明 herdr 查不到、先修查询再说。
 8. **按主控 harness 接值守**（隐形，无窗口；可见 tab 只是 fallback）：
    - **Claude Code 主控**：`qwb-init.sh` 已把值守装进 `.claude/settings.json` 的 Stop hook（`asyncRewake`，超时 7200 秒）——开局**什么都不用起**，只需 `bash qwbuddy/bin/qwb-status.sh` 确认「值守：hook」。你每次回合结束 hook 自动在后台阻塞值守；账本有可动作变化时 hook 以 exit 2 用摘要叫醒你（Stop hook feedback），无变化则静默到期退出、下次 Stop 自动再起。
    - **Codex 主控**：开局点名后，把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 当**前台 tool call** 循环跑：退出码 2 → 读 stdout 摘要、处理账本、再跑下一轮；124 → 到期无变化，直接再跑下一轮；0 → 账本无未结项，值守收工。**禁止 `&` 后台、禁止 Codex 后台任务**——Codex 在前台 tool call 运行期间不能推理，靠有界 checkpoint 周期性交还控制权。
    - **其他/未知主控**：沿用 `bash qwbuddy/bin/qwb-wake.sh --ensure` 幂等确保一个可见值守 tab（fallback）。使用者不需要手工启动值守。
    任何时候可用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」一行：`hook` / `tab（pane …）` / `未运行`；tab 报「未运行」可再跑一次 `--ensure` 重启，报「未知」说明 herdr 查不到、先修查询再说。
-
 如果账本为空：报「账本无任务」，等使用者提需求。
 
 ## 2. 三层责任——谁的保证归谁
@@ -85,6 +85,8 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 
 工人选择看 `qwbuddy/config.sh` 的 `QWB_WORKERS` 工人表与其下方派工规则注释；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
 需要覆盖默认 Herdr kind 启动时，在 `QWB_WORKER_LAUNCH` 写 `工人名=pane-run:<交互命令>`；命令值可含空格、到下一个 `工人名=` 前缀才结束，未列出的工人仍走 `herdr agent start`。pane-run 检测并改名后用 `herdr pane run` 直打提示词，不走只支持官方 kind 的 `agent prompt`；若 300ms 内没有进入 working/done/blocked（Command Code 长文本可能只粘贴未提交），再补一次 Enter。
+
+**工人与审核者一律最高权限启动**（`QWB_WORKER_ARGS` / pane-run 命令行）：herdr 模式在 `QWB_WORKER_ARGS` 写 `工人名=参数串`（模板默认已按工人填好，参数按空格切词追加到 `herdr agent start` 的 `--` 之后），pane-run 模式把权限参数写进 `QWB_WORKER_LAUNCH` 的命令行（如 `cmd=pane-run:cmd --yolo --trust`）。一个工人的启动参数只能有一处——两处都配会被拒绝派发。理由见 `docs/DECISIONS.md` 的「为什么最高权限」。
 
 ## 5. 验货门
 

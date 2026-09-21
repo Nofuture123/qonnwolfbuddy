@@ -27,6 +27,12 @@ usage() {
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
 启动方式：config.sh 的 QWB_WORKER_LAUNCH 可按工人覆盖为 pane-run:<交互命令>；未列出走 herdr。
+启动参数：config.sh 的 QWB_WORKER_ARGS 可按工人给启动参数（格式与 QWB_WORKER_LAUNCH 同款：
+    工人名=参数串，值可含空格、遇下一个「工人名=」前缀才结束，同一工人取最后一项）。参数串按空格
+    切词追加到 herdr agent start 的 `--` 之后；为空（未列出/空值）则不加 `--`，与不配置时字节一致。
+    参数串同样过 headless 禁令（-p/--print/--exec/exec）。pane-run 工人的参数只能写在
+    QWB_WORKER_LAUNCH 的命令行里——QWB_WORKER_ARGS 里再给它配值即拒绝派发（一个工人的启动参数
+    只能有一处），两类检查都在锁/worktree/tab/账本写之前完成。
 工人 tab 落在哪个 workspace：config.sh 的 QWB_WORKSPACE（非空即用，本机 herdr 查不到就拒绝派发，不静默回退）；
 未声明时按 herdr workspace list 的 worktree.repo_root 与项目根物理路径匹配（多个匹配取 focused 的）；
 都没有则落调用者 workspace 并在 stderr 警告。--pane 复用路径不建 tab，不受影响。
@@ -86,7 +92,7 @@ TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 # 工人须在 config.sh 的 QWB_WORKERS 里；QWB_WORKER_LAUNCH 只覆盖启动方式。
 # 配置唯一来源是 bash 文件：直接 source，不再解析 JSON。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_AGENT_START_MS=""
+QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_WORKER_ARGS=""; QWB_AGENT_START_MS=""
 # shellcheck source=/dev/null
 . "$CONF"
 # —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
@@ -126,24 +132,41 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
+# 工人配置表解析：QWB_WORKER_LAUNCH（启动方式）与 QWB_WORKER_ARGS（启动参数）共用这一份实现。
+# 格式 `工人名=值`，值可含空格、遇下一个「工人名=」前缀才结束（工人名取 QWB_WORKERS 整词表）；
+# 同一工人出现多次取最后一项。结果经全局回带：WORKER_MAP_FOUND（0/1 是否列出）+ WORKER_MAP_VALUE，
+# 不用命令替换（子 shell 回不带变量），也能区分「未列出」与「列出但值为空」。
+worker_map_get() {  # $1=映射串 $2=工人名
+  local map="$1" want="$2" part prefix is_worker cur_w="" cur_v="" known
+  WORKER_MAP_VALUE=""; WORKER_MAP_FOUND=0
+  for part in $map; do
+    prefix="${part%%=*}"; is_worker=0
+    if [[ "$part" == *=* ]]; then
+      for known in $QWB_WORKERS; do
+        [[ "$prefix" == "$known" ]] && is_worker=1 && break
+      done
+    fi
+    if [[ "$is_worker" -eq 1 ]]; then
+      # 前一项到此结束：它正是要查的工人就收下它的值（重复出现时后一项覆盖前一项）
+      if [[ "$cur_w" == "$want" ]]; then WORKER_MAP_VALUE="$cur_v"; WORKER_MAP_FOUND=1; fi
+      cur_w="$prefix"; cur_v="${part#*=}"
+    elif [[ -n "$cur_w" ]]; then
+      cur_v="${cur_v} ${part}"
+    fi
+  done
+  # 末项没有后续「工人名=」来收尾，单独收一次
+  if [[ "$cur_w" == "$want" ]]; then WORKER_MAP_VALUE="$cur_v"; WORKER_MAP_FOUND=1; fi
+  return 0
+}
+# headless 禁令：pane-run 命令行与 QWB_WORKER_ARGS 参数串共用同一条检查（按空白切词、整词匹配）
+has_headless_form() { [[ "$1" =~ (^|[[:space:]])(-p|--print|--exec|exec)(=|[[:space:]]|$) ]]; }
+
 LAUNCH_MODE="herdr"
-launch_worker=""; launch_value=""
-for launch_part in ${QWB_WORKER_LAUNCH:-}; do
-  launch_prefix="${launch_part%%=*}"; launch_is_worker=0
-  if [[ "$launch_part" == *=* ]]; then
-    for launch_known_worker in $QWB_WORKERS; do
-      [[ "$launch_prefix" == "$launch_known_worker" ]] && launch_is_worker=1 && break
-    done
-  fi
-  if [[ "$launch_is_worker" -eq 1 ]]; then
-    [[ "$launch_worker" == "$WORKER" ]] && LAUNCH_MODE="$launch_value"
-    launch_worker="$launch_prefix"
-    launch_value="${launch_part#*=}"
-  elif [[ -n "$launch_worker" ]]; then
-    launch_value="${launch_value} ${launch_part}"
-  fi
-done
-[[ "$launch_worker" == "$WORKER" ]] && LAUNCH_MODE="$launch_value"
+worker_map_get "${QWB_WORKER_LAUNCH:-}" "$WORKER"
+[[ "$WORKER_MAP_FOUND" -eq 1 ]] && LAUNCH_MODE="$WORKER_MAP_VALUE"
+WORKER_ARGS=""
+worker_map_get "${QWB_WORKER_ARGS:-}" "$WORKER"
+WORKER_ARGS="$WORKER_MAP_VALUE"
 PANE_COMMAND=""
 case "$LAUNCH_MODE" in
   herdr) ;;
@@ -153,8 +176,13 @@ case "$LAUNCH_MODE" in
       echo "错误：工人 '${WORKER}' 的 pane-run 命令行为空；合法启动方式：herdr / pane-run:<命令行>" >&2
       exit 1
     fi
-    if [[ "$PANE_COMMAND" =~ (^|[[:space:]])(-p|--print|--exec|exec)(=|[[:space:]]|$) ]]; then
+    if has_headless_form "$PANE_COMMAND"; then
       echo "错误：pane-run 只允许交互式命令，禁止 -p/--print/--exec/exec：${PANE_COMMAND}" >&2
+      exit 1
+    fi
+    # 一个工人的启动参数只能有一处：pane-run 的参数写在 LAUNCH 的命令行里
+    if [[ -n "$WORKER_ARGS" ]]; then
+      echo "错误：工人 '${WORKER}' 的启动方式是 pane-run，启动参数必须写在 QWB_WORKER_LAUNCH 的命令行里（如 ${WORKER}=pane-run:<命令> ${WORKER_ARGS}）——请把 QWB_WORKER_ARGS 里给 '${WORKER}' 配的值删掉，一个工人的启动参数只能有一处。" >&2
       exit 1
     fi
     ;;
@@ -163,6 +191,11 @@ case "$LAUNCH_MODE" in
     exit 1
     ;;
 esac
+# herdr 模式的参数串同样过 headless 禁令（与 pane-run 同一条检查、同一个词表）
+if has_headless_form "$WORKER_ARGS"; then
+  echo "错误：QWB_WORKER_ARGS 里工人 '${WORKER}' 的参数含 headless 形式（-p/--print/--exec/exec）——工人一律 Herdr 窗口交互式运行，参数串：${WORKER_ARGS}" >&2
+  exit 1
+fi
 NAME="${NAME:-qwb-$TASK_ID}"
 NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 
@@ -415,6 +448,50 @@ if [[ -n "$WORKTREE" ]]; then
   DIR="$(cd "$WORKTREE" && pwd)"
 fi
 
+# —— 派发前预置目录信任：claude/codex 对新目录弹信任框且不被权限参数跳过，起工人前把 $DIR
+# 预先标成受信任。只对实际派的这一个工人做；文件缺失/非法 → stderr 一行警告并跳过，
+# 信任框照弹、人来按，不阻塞派发。devin 的信任走启动参数（templates/config.sh QWB_WORKER_ARGS）。
+# 已受信任则完全不动文件（幂等：再派一次字节一致）。
+case "$WORKER" in
+  claude)
+    cj="${HOME:-}/.claude.json"
+    if [[ ! -f "$cj" ]]; then
+      echo "警告：$cj 不存在，跳过 claude 信任预置（信任框将照常弹出）" >&2
+    elif out="$(perl -MJSON::PP -e '
+        my ($f, $dir) = @ARGV;
+        open my $in, "<", $f or exit 2;
+        local $/; my $txt = <$in>; close $in;
+        my $j = eval { decode_json($txt) } or exit 1;
+        ref($j) eq "HASH" or exit 1;
+        my $p = $j->{projects} //= {};
+        ref($p) eq "HASH" or exit 1;
+        my $cur = $p->{$dir};
+        exit 0 if ref($cur) eq "HASH" && $cur->{hasTrustDialogAccepted};
+        $p->{$dir} = {} unless ref($cur) eq "HASH";
+        $p->{$dir}{hasTrustDialogAccepted} = JSON::PP::true;
+        my $tmp = "$f.qwb.$$";
+        open my $out, ">", $tmp or exit 3;
+        print {$out} encode_json($j), "\n" or exit 3;
+        close $out or exit 3;
+        rename $tmp, $f or exit 3;
+      ' "$cj" "$DIR" 2>&1)"; then
+      :
+    else
+      echo "警告：$cj 非法或不可写，跳过 claude 信任预置（信任框将照常弹出）：${out}" >&2
+    fi
+    ;;
+  codex)
+    ct="${HOME:-}/.codex/config.toml"
+    if [[ ! -f "$ct" ]]; then
+      echo "警告：$ct 不存在，跳过 codex 信任预置（信任框将照常弹出）" >&2
+    elif ! grep -qF "[projects.\"$DIR\"]" "$ct"; then
+      { [[ -s "$ct" && -n "$(tail -c1 "$ct")" ]] && printf '\n' >> "$ct"; } || true
+      printf '[projects."%s"]\ntrust_level = "trusted"\n' "$DIR" >> "$ct" \
+        || echo "警告：$ct 追加失败，跳过 codex 信任预置（信任框将照常弹出）" >&2
+    fi
+    ;;
+esac
+
 # —— 记账（F2）：state/场景基线在起任何工人前写；dispatch 在最终 pane 已知后、提示词发出前写 ——
 # 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
 lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"
@@ -498,7 +575,13 @@ sleep_ms() {
 
 case "$LAUNCH_MODE" in
   herdr)
-    herdr agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS"
+    # 启动参数：按空格切词追加到 `--` 之后（不做 shell 引号解析）；参数串为空时不加 `--`
+    start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
+    if [[ -n "$WORKER_ARGS" ]]; then
+      start_argv+=(--)
+      for start_arg in $WORKER_ARGS; do start_argv+=("$start_arg"); done
+    fi
+    herdr "${start_argv[@]}"
     herdr agent prompt "$NAME" "$PROMPT"
     ;;
   pane-run:*)

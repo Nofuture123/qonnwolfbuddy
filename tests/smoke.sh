@@ -24,6 +24,10 @@ fi
 echo "== 3. qwb-init.sh 装进临时假项目 =="
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# 信任预置会读写 $HOME/.claude.json 与 $HOME/.codex/config.toml：全程用假 HOME，不碰真家目录。
+# seed 一份合法 codex config，让 48 节这类断言 stderr 为空的用例不被「文件不存在」预置警告污染
+mkdir -p "$TMP/home/.codex"; printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$TMP/home/.codex/config.toml"
+export HOME="$TMP/home"
 bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
 
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
@@ -49,7 +53,7 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
   ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
@@ -343,7 +347,7 @@ for wname in workers '(codex)' note; do
   fi
   grep -q 'agent start' "$STUBLOG" && bad "--worker ${wname} 仍调用了 herdr agent start" || ok "--worker ${wname} 未调用 agent start"
 done
-printf '%s' "$r3out" | grep -q 'codex pi claude' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
+printf '%s' "$r3out" | grep -qF 'codex pi claude devin omp' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
 
 echo "== 16. R4：非法 state 变可见 =="
 ILF="$TMP/tasks/2099-01-06-illegal.md"
@@ -2437,7 +2441,254 @@ bi_out="$(bi_run)"; bi_rc=$?
   || bad "附页目录拒绝不对（rc=${bi_rc}，out=${bi_out}）"
 rmdir "$BIF"; rm -f "$BI_T.snap"
 
-echo "== 51. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
+echo "== 51. 工人最高权限启动：QWB_WORKER_ARGS 按工人追加 herdr agent start 的 -- 参数 =="
+# 场景（票 §1）：herdr 模式带参数｜参数含空格按词切｜未配置的工人不加 --（字节一致）｜
+#   pane-run 工人在 ARGS 里配了值则拒绝（零副作用）｜pane-run 命令行带权限参数照常且过 headless 检查｜
+#   参数里混入 headless 形式则拒绝（零副作用）｜模板默认值可被 lint 与 source 接受。
+# 真实调用序列仍全部经 stub herdr；stub 应答取自 tests/fixtures/herdr/ 真录（agent-start.json 等）。
+MPX="$TMP/maxperm"; mkdir -p "$MPX"; bash "$ROOT/bin/qwb-init.sh" "$MPX" >/dev/null
+printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' \
+  'QWB_WORKERS="codex claude devin omp pi cmd"' >> "$MPX/qwbuddy/config.sh"
+MPXT="$MPX/tasks/2099-04-01-"
+
+mp_task() { # $1=任务 id（短小写，便于断言 agent 名 qwb-<id>）
+  cat > "${MPXT}$1.md" <<EOF
+# $1
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given 任务书与工人配置合法
+When  主控派发
+Then  工人以配置的启动参数被拉起
+
+### user_失败
+Given 工人参数配错或含 headless 形式
+When  主控派发
+Then  在任何副作用之前拒绝
+EOF
+}
+mp_set() { # $1=键名 $2=值（空 = 删掉该键，即未声明）
+  sed -i '' "/^$1=/d" "$MPX/qwbuddy/config.sh"
+  [[ -n "$2" ]] && printf '%s="%s"\n' "$1" "$2" >> "$MPX/qwbuddy/config.sh"
+  return 0
+}
+mp_pre() { rm -rf "$MPX/qwbuddy/.controller.lock"; : > "$STUBLOG"; }
+mp_run() { ( cd "$MPX" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp HERDR_WORKSPACE_ID=wtestW \
+  bash qwbuddy/bin/qwb-run.sh "$@" ); }
+mp_clean() { # $1=任务 id：断言拒绝路径零副作用（无 herdr 调用/无 dispatch/无基线/state 未动/无锁）
+  local f="${MPXT}$1.md"
+  [[ -s "$STUBLOG" ]] && return 1
+  grep -q '^dispatch:' "$f" && return 1
+  grep -q '^scenarios-fp:' "$f" && return 1
+  grep -q '^state: blocked' "$f" || return 1
+  [[ -d "$MPX/qwbuddy/.controller.lock" ]] && return 1
+  return 0
+}
+# 参数未声明时默认走 herdr；QWB_WORKER_LAUNCH 只在个别用例里覆盖
+mp_set QWB_WORKER_LAUNCH ""; mp_set QWB_WORKER_ARGS ""
+
+# 51a herdr 模式带参数：agent start 行以 `-- <参数>` 结尾，agent prompt 照常，退出码 0
+mp_task mpstart; mp_set QWB_WORKER_ARGS "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions"
+mp_pre
+out="$(mp_run --task mpstart --worker codex --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "带 QWB_WORKER_ARGS 的 herdr 派发退出 0" || { bad "带参数派发非 0（rc=${rc}）"; printf '%s\n' "$out"; }
+grep -qxF 'herdr agent start qwb-mpstart --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG" \
+  && ok "agent start 行以「-- --dangerously-bypass-approvals-and-sandbox」结尾" \
+  || { bad "agent start 行未按预期追加参数："; grep '^herdr agent start' "$STUBLOG"; }
+grep -q '^herdr agent prompt qwb-mpstart ' "$STUBLOG" && ok "带参数时 agent prompt 照常" || bad "带参数时 agent prompt 缺失"
+grep -qF -e '--dangerously-bypass-approvals-and-sandbox --dangerously-skip-permissions' "$STUBLOG" \
+  && bad "claude 的参数串串进了 codex 的参数（切分越界）" || ok "claude 的参数未串进 codex 的参数"
+
+# 51b 参数含空格按词切：devin 得两个词，omp 的参数不串进来；换工人取各自的参数
+mp_task mpdev; mp_task mpomp
+mp_set QWB_WORKER_ARGS "devin=--permission-mode dangerous omp=--auto-approve"
+mp_pre
+out="$(mp_run --task mpdev --worker devin --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "含空格参数（devin）派发退出 0" || { bad "devin 派发非 0（rc=${rc}）"; printf '%s\n' "$out"; }
+grep -qxF 'herdr agent start qwb-mpdev --kind devin --pane w93:p7 --timeout 300 -- --permission-mode dangerous' "$STUBLOG" \
+  && ok "agent start 行以「-- --permission-mode dangerous」结尾（两个词）" \
+  || { bad "含空格参数未按词切："; grep '^herdr agent start' "$STUBLOG"; }
+grep -q 'omp=' "$STUBLOG" && bad "omp= 串进了 devin 的参数" || ok "stub 日志不含 omp=（切分到下一个工人名= 为止）"
+mp_pre
+out="$(mp_run --task mpomp --worker omp --here 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && grep -qxF 'herdr agent start qwb-mpomp --kind omp --pane w93:p7 --timeout 300 -- --auto-approve' "$STUBLOG" \
+  && ok "--worker omp 只带自己的「-- --auto-approve」" \
+  || { bad "omp 参数不对（rc=${rc}）："; grep '^herdr agent start' "$STUBLOG"; }
+
+# 51c 未配置的工人不加 --：整行与现状字节一致（无 `--`、无尾随空格）
+mp_task mpbare
+mp_set QWB_WORKER_ARGS ""
+mp_pre
+out="$(mp_run --task mpbare --worker codex --here 2>&1)"; rc=$?
+sl="$(grep '^herdr agent start' "$STUBLOG")"
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c '^herdr agent start' "$STUBLOG")" == "1" ]] \
+   && [[ "$sl" == "herdr agent start qwb-mpbare --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "QWB_WORKER_ARGS 未声明 → agent start 行与现状字节一致（无 --）" \
+  || { bad "未声明时 agent start 行变了（rc=${rc}）：${sl}"; }
+# 对照：ARGS 非空但不含该工人 → 该工人同样不加 --
+mp_task mpother
+mp_set QWB_WORKER_ARGS "claude=--dangerously-skip-permissions"
+mp_pre
+out="$(mp_run --task mpother --worker codex --here 2>&1)"; rc=$?
+sl="$(grep '^herdr agent start' "$STUBLOG")"
+{ [[ "$rc" -eq 0 ]] && [[ "$sl" == "herdr agent start qwb-mpother --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "ARGS 不含 codex= → codex 仍不加 --（逐工人生效）" \
+  || { bad "未列出的工人被加了参数（rc=${rc}）：${sl}"; }
+
+# 51d pane-run 工人在 ARGS 里配了值 → 在锁/worktree/tab/账本写之前拒绝并指回 LAUNCH
+mp_task mpcollide
+mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd"; mp_set QWB_WORKER_ARGS "cmd=--yolo"
+mp_pre
+out="$(mp_run --task mpcollide --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'QWB_WORKER_LAUNCH' \
+   && printf '%s' "$out" | grep -q '只能有一处' && mp_clean mpcollide; } \
+  && ok "pane-run 工人在 ARGS 里配值 → 拒绝且零副作用（rc=${rc}）" \
+  || { bad "pane-run 冲突未拦住或留了副作用（rc=${rc}）"; printf '%s\n' "$out"; }
+
+# 51e pane-run 命令行带权限参数照常，且不被 headless 检查误拒
+mp_task mppane
+mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd --yolo --trust"; mp_set QWB_WORKER_ARGS ""
+mp_pre
+out="$(mp_run --task mppane --worker cmd --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && grep -qxF 'herdr pane run w93:p7 cmd --yolo --trust' "$STUBLOG" \
+   && grep -q '^herdr agent rename w93:p7 qwb-mppane' "$STUBLOG" \
+   && ! grep -q 'agent start' "$STUBLOG"; } \
+  && ok "pane-run 命令行带 --yolo --trust 照常启动且未被误判 headless（rc=${rc}）" \
+  || { bad "pane-run 权限参数路径不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr ' "$STUBLOG"; }
+
+# 51f 参数里混入 headless 形式 → 拒绝；四种形式同一条检查，且只对配了该形式的工人生效
+# （任务 id 不互为前缀：--task 是按 id 模糊匹配的）
+mp_task mphead; mp_task mpfine
+mp_set QWB_WORKER_LAUNCH ""
+for hform in '-p' '--print' '--exec' 'exec'; do
+  mp_set QWB_WORKER_ARGS "claude=--dangerously-skip-permissions ${hform}"
+  mp_pre
+  out="$(mp_run --task mphead --worker claude --here 2>&1)"; rc=$?
+  { [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'headless' && mp_clean mphead; } \
+    && ok "ARGS 含 headless 形式「${hform}」→ 拒绝且零副作用（rc=${rc}）" \
+    || { bad "headless 形式「${hform}」未被拦（rc=${rc}）"; printf '%s\n' "$out"; }
+done
+# 对照：同一份配置里没配该形式的工人照常派发——检查逐工人生效，不整表拒绝
+mp_pre
+out="$(mp_run --task mpfine --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep '^herdr agent start' "$STUBLOG")" == "herdr agent start qwb-mpfine --kind codex --pane w93:p7 --timeout 300" ]]; } \
+  && ok "对照：同表里未配 headless 形式的工人照常派发" \
+  || { bad "对照失败——检查整表拒绝而非逐工人（rc=${rc}）"; printf '%s\n' "$out"; }
+
+# 51g 模板默认值：可被 source 与 bash -n 接受、被 lint 认作活键，且真派发时按工人生效
+mp_task mptmpl
+tmpl_args="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
+mp_set QWB_WORKER_ARGS "$tmpl_args"
+bash -n "$ROOT/templates/config.sh" && ok "bash -n templates/config.sh 退出 0" || bad "templates/config.sh 语法错误"
+if ( . "$ROOT/templates/config.sh"; [[ "$QWB_WORKER_ARGS" == "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous --respect-workspace-trust false omp=--auto-approve pi=--approve" ]] ); then
+  ok "模板默认 QWB_WORKER_ARGS 与票 §0 一致（5 个 herdr-kind 工人，devin 含信任参数）"
+else
+  bad "模板默认 QWB_WORKER_ARGS 与票不符"
+fi
+grep -q '^QWB_WORKER_ARGS="codex=' "$TMP/qwbuddy/config.sh" \
+  && ok "qwb-init 装出的 config.sh 带默认 QWB_WORKER_ARGS" || bad "安装的 config.sh 缺默认 QWB_WORKER_ARGS"
+lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
+   && printf '%s' "$lintout" | grep -q '键全部被.*引用'; } \
+  && ok "lint 过且「config 无死键」PASS（QWB_WORKER_ARGS 是活键）" \
+  || { bad "lint 未过或无死键检查 PASS（rc=${rc}）"; printf '%s\n' "$lintout"; }
+mp_pre
+out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && grep -qxF 'herdr agent start qwb-mptmpl --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG"; } \
+  && ok "用模板默认值真派发：codex 拿到自己的最高权限参数（rc=${rc}）" \
+  || { bad "模板默认值派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr agent start' "$STUBLOG"; }
+echo "== 52. 派发前预置目录信任（trust-preseed）=="
+# 场景（票 §1）：claude 写 ~/.claude.json（保留原有项目、幂等）｜codex 追加 ~/.codex/config.toml
+# 块（原内容不变、不重复追加）｜.claude.json 非法 → stderr 一行警告、文件不动、派发照常 rc=0。
+# HOME 已在顶部隔离到 $TMP/home。复用 51 节的 mp_* 装置（本节之后才 rm -rf $MPX）。
+mp_task tpc; mp_task tpx
+mp_set QWB_WORKER_LAUNCH ""; mp_set QWB_WORKER_ARGS ""
+tp_claude="$TMP/home/.claude.json"; tp_codex="$TMP/home/.codex/config.toml"
+rm -rf "$TMP/home"; mkdir -p "$TMP/home/.codex"
+printf '{"projects":{"/other/proj":{"hasTrustDialogAccepted":false},"/two":{"allowedTools":["Bash"]}}}' > "$tp_claude"
+printf '[projects."/existing/proj"]\ntrust_level = "trusted"\n' > "$tp_codex"
+tp_snap="$(cat "$tp_codex")"
+tp_projdir="$MPX"
+
+# 52a claude：写入 projects[<项目根>].hasTrustDialogAccepted=true，原有项目保留、仍是合法 JSON
+mp_pre
+out="$(mp_run --task tpc --worker claude --here 2>&1)"; rc=$?
+tp_read='my $j = decode_json(<STDIN>); my $p = $j->{projects} // {}; print(($p->{$ARGV[0]}{hasTrustDialogAccepted} ? "T" : "F"), (exists $p->{"/other/proj"} ? "o" : "x"), (exists $p->{"/two"} ? "w" : "x"))'
+tp_got="$(perl -MJSON::PP=decode_json -e "$tp_read" "$tp_projdir" < "$tp_claude" 2>/dev/null)"
+{ [[ "$rc" -eq 0 ]] && [[ "$tp_got" == "Tow" ]] && perl -MJSON::PP=decode_json -e 'decode_json(join "", <>)' < "$tp_claude"; } \
+  && ok "claude：hasTrustDialogAccepted=true 写入，原有两个项目保留，仍是合法 JSON" \
+  || { bad "claude 预置不对（rc=${rc}，读值=${tp_got:-不可解码}）"; printf '%s\n' "$out"; }
+
+# 52b claude 幂等：已 true 再派一次 → 文件字节不变
+n1=$(wc -c < "$tp_claude" | tr -d ' ')
+mp_pre
+mp_run --task tpc --worker claude --here >/dev/null 2>&1
+[[ "$(wc -c < "$tp_claude" | tr -d ' ')" == "$n1" ]] \
+  && ok "claude：已受信任再派一次文件字节不变（幂等）" \
+  || bad "claude：幂等失败，二次派发改写了文件"
+
+# 52c codex：尾部追加本项目根块，原内容不变；再派一次不重复追加
+mp_pre
+out="$(mp_run --task tpx --worker codex --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && [[ "$(head -2 "$tp_codex")" == "$tp_snap" ]] \
+   && grep -qxF '[projects."'"$tp_projdir"'"]' "$tp_codex" \
+   && grep -qxF 'trust_level = "trusted"' "$tp_codex"; } \
+  && ok "codex：尾部追加本项目块，原有内容逐字保留" \
+  || { bad "codex 预置不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$tp_codex"; }
+mp_pre
+mp_run --task tpx --worker codex --here >/dev/null 2>"$TMP/tp2.err"
+{ [[ "$(grep -cF '[projects."'"$tp_projdir"'"]' "$tp_codex")" == "1" ]] && [[ "$(cat "$tp_codex")" == "${tp_snap}
+[projects.\"$tp_projdir\"]
+trust_level = \"trusted\"" ]]; } \
+  && ok "codex：已受信任再派一次不重复追加（块恰一个、文件内容不变）" \
+  || { bad "codex：幂等失败（重复追加或内容漂移）"; echo "[dump] tp_codex:"; cat "$tp_codex"; echo "[dump] err2:"; cat "$TMP/tp2.err"; }
+
+# 52d 失败路径：.claude.json 非法 → stderr 一行警告、文件不动、派发照常 rc=0
+printf '{bad' > "$tp_claude"
+mp_pre
+out="$(mp_run --task tpc --worker claude --here 2>"$TMP/tp.err")"; rc=$?
+{ [[ "$rc" -eq 0 ]] \
+   && [[ "$(cat "$tp_claude")" == '{bad' ]] \
+   && [[ "$(grep -c '跳过 claude 信任预置' "$TMP/tp.err")" == "1" ]] \
+   && grep -qxF 'herdr agent start qwb-tpc --kind claude --pane w93:p7 --timeout 300' "$STUBLOG"; } \
+  && ok "claude.json 非法：stderr 恰一行警告、文件不动、派发照常 rc=0" \
+  || { bad "非法 JSON 路径不对（rc=${rc}）"; cat "$TMP/tp.err" >&2; printf '%s\n' "$out"; }
+# 对照：codex 工人不碰 claude.json（只对实际派的工人做）
+printf '{bad' > "$tp_claude"
+mp_pre
+mp_run --task tpx --worker codex --here >/dev/null 2>&1
+[[ "$(cat "$tp_claude")" == '{bad' ]] \
+  && ok "对照：派 codex 不碰 .claude.json（只对实际派的工人预置）" \
+  || bad "派 codex 却改写了 .claude.json"
+
+rm -rf "$MPX"
+
+echo "== 51h. 默认值自洽（2026-09-16 spec-defect 回归门）=="
+# 默认 QWB_WORKER_ARGS 串里出现的每个「工人名=」都必须在该串所属的默认 QWB_WORKERS 里，
+# 否则它不被当成新项，而是并进上一个工人的值（claude 曾因此被旁串 devin=/omp=）。
+# 反向验证：把默认工人表删回 "codex pi claude"，本条必须变红。
+dworkers="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKERS" )"
+dargs="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
+miss=""
+for tok in $dargs; do
+  case "$tok" in
+    *=*) nm="${tok%%=*}" ;;
+    *) continue ;;
+  esac
+  inself=0
+  for w in $dworkers; do [[ "$nm" == "$w" ]] && { inself=1; break; }; done
+  [[ "$inself" -eq 1 ]] || miss="${miss} ${nm}"
+done
+{ [[ -n "$dworkers" && -z "$miss" ]]; } \
+  && ok "默认 QWB_WORKER_ARGS 的每个「工人名=」都在默认 QWB_WORKERS 里（两条默认值自洽）" \
+  || bad "默认 ARGS 表含不在默认工人表里的名字（会被并进上一个值）:${miss}"
+
+echo "== 52. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
 # 独立项目跑本节：其他节会改写共享 $TMP 的 config.sh（如第 27 节追加 QWB_REWAKE_MS=0）与账本，
 # --block 的去重/REWAKE 判定依赖干净 config，不与它们共账本
 BP="$TMP/block-proj"; mkdir -p "$BP/tasks"; cp -R "$TMP/qwbuddy" "$BP/qwbuddy"
@@ -2502,7 +2753,7 @@ printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$BP/blk-far.sh"; chmod +x
   && ok "--block REWAKE 兑底：超期再叫 rc=2 + 新 wake 行" \
   || bad "--block REWAKE 兑底不对（rc=${blk_rc}，wakes=$(grep -c '^wake:' "$BLKD")）"
 
-echo "== 52. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
+echo "== 53. qwb-hook-claude-stop.sh：守卫 / 单飞 / 残留锁接管 =="
 # hook 内部以自身位置推项目根并跑 --block（读该项目 config.sh）——同样用独立项目防 config 污染
 HP="$TMP/hook-proj"; mkdir -p "$HP/tasks"; cp -R "$TMP/qwbuddy" "$HP/qwbuddy"
 cp "$ROOT/templates/config.sh" "$HP/qwbuddy/config.sh"   # 同上：覆盖回干净 config
@@ -2541,7 +2792,7 @@ hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
   && ok "hook 残留锁接管：rc=2 + 摘要 + 锁已清 + wake 行" \
   || bad "hook 接管不对（rc=${hook_rc}，out=${hook_out}）"
 
-echo "== 53. qwb-init.sh 合并 .claude/settings.json：幂等、不覆盖、非法 JSON 拒绝 =="
+echo "== 54. qwb-init.sh 合并 .claude/settings.json：幂等、不覆盖、非法 JSON 拒绝 =="
 # 场景：已有 PreToolUse 与别人的 Stop hook → 跑两次，qwb hook 恰一条，别人内容原样，合法 JSON
 mkdir -p "$TMP/.claude"
 SETJ="$TMP/.claude/settings.json"
@@ -2594,7 +2845,7 @@ out="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc=$?
   || bad "非法 JSON 拒绝不对（rc=${rc}，out=${out}）"
 rm -f "$TMP/settings.before" "$TMP/settings.bad"
 
-echo "== 54. status 值守三态：hook / tab（pane …）/ 未运行 =="
+echo "== 55. status 值守三态：hook / tab（pane …）/ 未运行 =="
 DYN="$TMP/herdr-dyn-s4"; mkdir -p "$DYN"; rm -f "$TMP/qwbuddy/.watch"
 stat4() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE_ID=wtestW \
     bash qwbuddy/bin/qwb-status.sh ); }
