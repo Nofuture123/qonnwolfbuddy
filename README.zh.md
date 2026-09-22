@@ -42,7 +42,7 @@ bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
 
 ## 每个主控只选一种值守入口
 
-Claude Code 使用已安装的 Stop hook。Pi 安装 `.pi/extensions/qwb-watch.ts` 后需重启或 `/reload`。Codex 在前台 tool call 中循环运行有界的 `qwb-wake.sh --block --max-ms 180000`。其他 harness 使用可见 tab 兜底：
+Claude Code 使用已安装的 Stop hook。Pi 使用 `.pi/extensions/qwb-watch.ts`：**每次开局取得主控锁后**执行 `/reload`，再用 `bash qwbuddy/bin/qwb-status.sh` 确认 `pi-ext` 值守进程存活。先加载扩展、后取得锁不会启动值守。Codex 在前台 tool call 中循环运行有界的 `qwb-wake.sh --block --max-ms 180000`。其他 harness 使用可见 tab 兜底：
 
 ```bash
 bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
@@ -50,7 +50,7 @@ bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
 
 兜底入口需要 Herdr pane 上下文。`--ensure` 不会从 `HERDR_PANE_ID` 自动读取唤醒目标；调用时传 `--pane`，或在目标稳定时有意配置 `QWB_CONTROLLER_PANE`。不要每次开局把临时 pane ID 持久化进配置。`--block` 通过主控锁和 `HERDR_PANE_ID` 复核归属，不需要目标 `--pane`。
 
-新工人和值守 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。配置的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目的该配置文件中有意指定 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
+新工人和值守 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。配置的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目的该配置文件中有意指定 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。可见 tab 的 `--ensure` 目前只在主控和值守 tab 属于同一 workspace 时具备已知复用路径；两者不同时，再次调用可能拒绝已登记在另一 workspace 的值守，跨 workspace 复用仍待运行时修复。
 
 ## 证据与路线图
 

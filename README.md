@@ -42,7 +42,7 @@ The controller runs the relevant project gate and records the result; a worker's
 
 ## One watch path per controller
 
-Claude Code uses its installed Stop hook. Pi uses `.pi/extensions/qwb-watch.ts` after restart or `/reload`. Codex loops a bounded `qwb-wake.sh --block --max-ms 180000` foreground tool call. Other harnesses use the visible-tab fallback:
+Claude Code uses its installed Stop hook. Pi uses `.pi/extensions/qwb-watch.ts`: after acquiring the controller lock on **each** startup, run `/reload`, then use `bash qwbuddy/bin/qwb-status.sh` to confirm a live `pi-ext` watch process. Loading the extension before acquiring the lock does not start its watch. Codex loops a bounded `qwb-wake.sh --block --max-ms 180000` foreground tool call. Other harnesses use the visible-tab fallback:
 
 ```bash
 bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
@@ -50,7 +50,7 @@ bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
 
 The fallback needs a Herdr pane context. `--ensure` does not infer the target pane from `HERDR_PANE_ID`; pass `--pane` at invocation or deliberately configure a stable `QWB_CONTROLLER_PANE`. Do not persist a transient pane ID at every startup. `--block` checks controller-lock ownership against `HERDR_PANE_ID` and needs no target `--pane`.
 
-New worker and watch tabs use `QWB_WORKSPACE` from the target project's `qwbuddy/config.sh`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown configured workspace is rejected. Across projects with no root match, deliberately configure the target project's workspace ID in that file; do not copy the controller's current ID blindly. The scripts source `config.sh`, so setting `QWB_WORKSPACE` only in the command environment does not override its assignment there.
+New worker and watch tabs use `QWB_WORKSPACE` from the target project's `qwbuddy/config.sh`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown configured workspace is rejected. Across projects with no root match, deliberately configure the target project's workspace ID in that file; do not copy the controller's current ID blindly. The scripts source `config.sh`, so setting `QWB_WORKSPACE` only in the command environment does not override its assignment there. The visible-tab `--ensure` path is only known to reuse a watch when the controller and watch tab are in the same workspace. When they differ, a later `--ensure` can reject the watch registered in the other workspace; cross-workspace reuse needs a runtime fix.
 
 ## Evidence and roadmap
 
