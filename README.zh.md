@@ -1,193 +1,61 @@
-# 🐺 Q-Wolf Buddy (`qwbuddy`)
+# Q-Wolf Buddy (`qwbuddy`)
 
-> **别再当 AI 编程助手的「人肉保姆」了。**  
-> 把你现有的 Claude Code、Codex、Pi、Devin 组装成一支**真正能自主闭环、自动唤醒、沙盒隔离、六亲不认独立验收**的工程团队。
+[English](README.md) · [MIT 许可证](LICENSE)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Shell: Bash](https://img.shields.io/badge/shell-bash%203.2+-4EAA25.svg)](https://www.gnu.org/software/bash/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests](https://img.shields.io/badge/tests-405%20passed-brightgreen.svg)]()
-[![Gates](https://img.shields.io/badge/quality%20gates-fast%200.7s%20%7C%20full%2045s-orange.svg)]()
+Q-Wolf Buddy 是仓库内的 AI 编程协作流程：Markdown 主账本记录需求与进度，Git worktree 隔离工人改动，Herdr 提供可见的 Agent 会话。主控负责派工、独立验收、安排审核和决定落地。
 
-<p align="center">
-  🌐 <a href="README.md">English</a> | <b>简体中文</b>
-</p>
+## 能力与边界
 
----
+- `qwb-run.sh` 检查 Given/When/Then 验收场景并记录指纹，默认把工人派到任务 worktree。
+- 工人向**项目主账本**追加进度和证据；主控独立运行项目声明的检查后才决定是否验收。
+- `qwb-wake.sh` 观察未结项。Claude Code 用 Stop hook，Pi 用扩展，Codex 用前台 checkpoint，其他 harness 可用可见 Herdr tab。
+- `qwb-status.sh` 报告账本和值守状态，`qwb-lock.sh` 维护主控锁。
 
-## 💡 解决了什么痛点与根本问题？
+主控进程退出后不会自动恢复。具体任务可能需要人工介入。测试通过不等于已具备生产条件。
 
-目前开发者使用单体 AI 编程工具（Claude Code、Codex、Cursor、Devin 等）时，普遍存在 **4 个根本性痛点**：
+## 依赖与起步
 
-1. **「离不开工位」的人肉轮询痛点**：  
-   你给后台工人派了个耗时任务，起身去喝水。15 分钟后工人干完了，但**主控 AI 的交互回合早已结束挂起**。主控不会主动回来验收代码，流水线僵死在半路。你必须坐在电脑前肉眼盯着进度，手动敲一句「继续/验收」。你成了连接两个 AI 之间的**人肉消息总线**。
-2. **「工作区被改炸」的代码污染痛点**：  
-   让 AI 修一个小 bug，它直接在主工作区随心所欲改了 30 个无关文件，搞乱了依赖锁文件，甚至改坏主分支。多个任务并行时，代码更是互相覆盖践踏。
-3. **「假绿骗人」的 AI 吹嘘痛点**：  
-   工人 AI 拍着胸脯说「功能已完美实现，所有测试全通！」——你一跑实际命令全是红字；甚至 AI 会投机取巧地把断言改成永远返回 `true`，制造虚假通过。
-4. **「自己审自己」的同质化自恋痛点**：  
-   同一个 Claude 或 GPT 会话，既负责写代码，又负责做审查。模型自身有认知盲区，同家族模型自审往往流于形式，根本发现不了潜在漏洞。
+运行脚本使用 Bash、Git、Herdr、带标准模块的 Perl，以及包含 `shasum` 的常见命令行工具。安装器用 Python 3 合并 Claude Code 的 `.claude/settings.json` Stop hook；缺少 Python 3 时会报告 hook 未安装。可选的 `--worker auto` 路由使用 `jq` 和已配置的 Typesafe API key。所选 Agent CLI 和项目质量门命令也须可用。下述检查使用 ShellCheck；Pi 扩展在 Pi 的 Node 环境运行。这些是工具用途，不是最低版本声明。这里未验证 Linux 支持。
 
-**QW Buddy 的解决之道：人类真正离席（AFK Coding）。**  
-开发者只负责在 Markdown 里提需求，接下来的**拆票、派工、并行沙盒隔离、完工自动唤醒、对抗性跑门验收、合入主分支**，全由系统自动闭环运转。
-
----
-
-## 🥊 相比 Grokbot 及传统 Coding Bot 有什么优势？我们做了什么改善？
-
-市面上存在类似 Grokbot、AutoGPT、CrewAI 或各类黑盒云端 Agent，QW Buddy 与它们有着本质的设计代差与工程改善：
-
-| 维度 | 传统 Coding Bot / Grokbot 等方案 | QW Buddy 的实质改善与优势 |
-|---|---|---|
-| **架构重量与依赖** | 依赖笨重的 Python 后台、Docker 容器、外部数据库或云端 API，动辄上万行代码，安装调试繁琐。 | **极简零依赖（瘦身 98%）**：仅 8 个单文件 POSIX Bash 脚本（~1000 行），无外挂数据库，2 秒复制进任何项目直接跑。 |
-| **工作区隔离性** | 多数直接在当前代码目录动工，多任务或返工时工作区被搞脏，回滚灾难。 | **物理级 Git Worktree 隔离**：每个任务全自动分配独立 `.worktrees/<task-id>` 沙盒，主分支纹丝不动。 |
-| **完工唤醒闭环** | 任务完成靠 Webhook / 人工刷新，会话挂死后无法自动接续。 | **毫秒级进展指纹守护（`qwb-wake.sh`）**：自动抓取账本 `sha1` 指纹变动，完工自动终端注入叫醒主控；带 30 分钟超时兜底。 |
-| **验收可信度** | 依赖工人汇报的「自述文本」或简单退出码，容易被假测试蒙混。 | **六亲不认的独立双门验收**：派发前冻结 Given/When/Then 场景指纹；主控唤醒后在项目根目录独立跑快/全质量门。 |
-| **代码审核机制** | 单一模型会话自导自演，或同家族模型互相吹捧。 | **强制跨模型家族对冲**：实现与审核**必须使用不同模型家族与独立会话**（如 Codex 编写，Claude 审核），由 lint 硬性把关。 |
-| **运行可见性** | 封装在黑盒容器或云端界面，报错难以直接调试。 | **全终端真实可见（No Blackbox）**：所有主控与工人在本地终端窗口（Herdr pane）真实交互，人随时可无缝接管。 |
-
----
-
-## 🔀 它解决的是「高并发任务」吗？—— 多 Agent 并发开发防踩踏
-
-> **明确定义**：它不是指 Web 后端的「高 QPS/高并发网络请求」，而是专门解决 **「多个 AI Agent 并发开发、协同记账、代码合入时的防踩踏与竞态安全（Concurrent Multi-Agent Engineering）」**。
-
-当你有多个任务需要同时派发给不同 AI 工人（例如一个改后端接口、一个写前端页面、一个做文档重构）时，QW Buddy 提供了工业级的并发安全保障：
-
-1. **多工作区并发隔离（Worktree Parallelism）**：  
-   每个任务自动建立独立的 Git Worktree 副本，多个工人在各自的物理目录中独立编码、互不干扰，彻底解决并发改代码时的文件锁与脏冲突。
-2. **原子就地记账防覆盖（消除 F2 致命缺陷）**：  
-   多工人可能同时向主账本追加状态行。早期版本存在快照整体覆盖被并发写入覆盖的致命漏洞；QW Buddy 经过对抗审核，重构为**原子就地逐行写入与行数校验**，确保多工人并发追加的 `done:`、证据与疑点 100% 不丢行。
-3. **收尾并发竞态防御（消除 H1 致命缺陷 / TOCTOU 防护）**：  
-   在合入或删除 worktree 时，如果工人刚好并发提交了新代码，传统脚本会删掉新代码。QW Buddy 在执行 `worktree remove` 之前毫秒级复核真实 HEAD 提交 OID，一旦发现并发提交立即拒绝删除并打标签保护。
-4. **主控并发互斥锁（`qwb-lock.sh`）**：  
-   基于文件系统原语的原子目录锁（`mkdir` 锁），防止多个主控会话在同一项目中同时发出冲突的派发或验收指令。
-5. **并发事件等待与预算调度（`qwb-wake.sh`）**：  
-   值守守护每轮扫描多个并发任务的未结项状态，按毫秒级时钟预算在各任务的终端 pane 之间平滑轮转等待，消除忙循环与重复等待。
-
----
-
-## 🏗️ 核心技术架构
-
-QW Buddy 采用自底向上的三层极简架构，以**纯文本 Markdown 账本**作为系统唯一的事实来源（Single Source of Truth）：
-
-```
-+---------------------------------------------------------------------------------+
-|                                1. 决策与规划层                                  |
-|  - 使用者（Developer）：仅需在 tasks/*.md 编写 Given/When/Then 需求规范         |
-|  - 主控 AI（Controller）：运行于 Herdr 终端，负责任务拆解、派发调度与最终验收   |
-+---------------------------------------------------------------------------------+
-           │                                                    ▲
-           │ 1. qwb-run.sh 派发任务                             │ 4. qwb-wake.sh 自动唤醒
-           │    (锁定 scenarios-fp 场景指纹)                     │    (注入提示词: "看账本")
-           ▼                                                    │
-+---------------------------------------------------------------------------------+
-|                                2. 隔离执行层                                    |
-|  - 工人 AI（Workers：Codex / Devin / Pi）：在独立终端标签页交互式运行           |
-|  - 物理工作区（Git Worktrees）：每个任务独占 .worktrees/<task-id>/ 物理沙盒     |
-|  - 行为受限：工人仅被允许编写实现代码，并在任务书末尾追加 working:/done:/blocked: |
-+---------------------------------------------------------------------------------+
-           │                                                    ▲
-           │ 2. 追加状态行与证据                                │ 3. 扫描未结项并比对指纹
-           ▼                                                    │
-+---------------------------------------------------------------------------------+
-|                                3. 状态与审计层                                  |
-|  - 项目账本（tasks/*.md）：状态机（running / blocked / verified）、证据与审计链  |
-|  - 守护进程（qwb-wake.sh）：实时计算 sha1(state + 最后状态行) 进展指纹          |
-|  - 质量门禁（qwb-test.sh / qwb-lint.sh）：快门(~0.7s) / 全门(~45s) 刚性拦截    |
-+---------------------------------------------------------------------------------+
-```
-
----
-
-## 🚀 60 秒极简上手
-
-### 第 1 步：装进你的项目
-从本仓根目录执行安装脚本（幂等安全，已装过不重复覆盖）：
+在本仓目录安装到已有 Git 项目：
 
 ```bash
-bash bin/qwb-init.sh /path/to/your-project
+bash bin/qwb-init.sh /path/to/project
 ```
 
-### 第 2 步：声明你的项目质量门
-打开你的项目里的 `qwbuddy/config.sh`，填上你平时的测试命令（不声明测试门会直接拒绝运行，杜绝假绿）：
+安装器将模板和运行脚本复制到 `<project>/qwbuddy/`，添加角色与任务文件，并在条件满足时安装 Pi 扩展和 Claude Code hook。已有 `qwbuddy/config.sh` 会保留；留意输出中是否有部分安装失败。
+
+在目标项目的 `qwbuddy/config.sh` 声明项目检查。例如项目本来使用 pnpm：
 
 ```bash
-# 例如 Node.js / TypeScript 项目：
-QWB_GATE_FAST='npm run lint'
-QWB_GATE_FULL='npm run lint && npm test'
+QWB_GATE_FAST='pnpm lint'
+QWB_GATE_FULL='pnpm lint && pnpm test'
 ```
 
-### 第 3 步：给主控 AI 发送开局指令
-在你的项目根目录打开主控会话（Claude Code、Pi 或 Codex），直接发一句：
-
-```text
-你现在是 QW buddy。请阅读 qwbuddy/QWBUDDY.md 并进入「主控」角色。
-```
-
-### 第 4 步：派发任务并启动自动唤醒
-写好你的需求（`tasks/2026-09-16-feat.md`，含验收场景），然后派发并启动守护：
+在项目根目录启动主控，让它阅读 `qwbuddy/QWBUDDY.md`。它先取得主控锁、点名未结项，再按当前 harness 选一种值守入口。按 `qwbuddy/TASK.md` 建立 `tasks/YYYY-MM-DD-topic.md`，写正常与失败路径验收场景，再由主控派工：
 
 ```bash
-# 派发进隔离 worktree
-bash qwbuddy/bin/qwb-run.sh --task 2026-09-16-feat --worker codex
-
-# 启动自动唤醒守护（工人完工自动叫醒主控）
-bash qwbuddy/bin/qwb-wake.sh --ensure --pane <主控-pane-id>
-```
-**现在，你可以关掉显示器去休息了。**
-
----
-
-## 🛠️ 工业级质量证明：不讲空话，只看证据
-
-QW Buddy 本身就是用它自己的这套标准，由多模型对抗迭代开发出来的：
-
-- **405 项严苛断言全绿**：
-  - 快门（`fast`，~0.7s）：全部脚本 `bash -n` 语法检查 + 零告警严格 `shellcheck`。
-  - 全门（`full`，~45s）：包含冒烟回归、虚构入口防御、契约校验、负例拦截等全部 405 项断言。
-- **真机真实闭环验证**：
-  - 由真实的 Devin（SWE-2 Max）在真实终端窗口中执行，Claude 担任主控，实测了完工唤醒、主控独立验收、蓄意反例识别以及 Worktree 安全归档（详见 `docs/E2E-RUNBOOK.md`）。
-- **9 份跨模型对抗审计 + 1 份架构咨询**：
-  - 经历 GPT-6 Astra（High/Medium）、Claude Fable 5.1 等多轮对抗性代码审查（详见 `docs/reviews/`）。
-- **消灭全部 6 大致命缺陷（Fatal 6 → 0）**：
-  1. *F3 唤醒死锁*：去重键摆脱单一 state 依赖，改用包含工人状态行的 SHA1 进展指纹。
-  2. *F4 值守崩溃*：容错终端注入失败，保证守护主循环永远不死。
-  3. *G1 Detached HEAD 丢代码*：全面废除分支名假设，以真实的 HEAD 提交 OID 进行校验与归档。
-  4. *H1 删除前竞态（TOCTOU）*：删除 worktree 前紧邻复核实际 HEAD，杜绝抹掉工人并发提交。
-  5. *F1 工人挂起主控沉睡*：引入 `QWB_REWAKE_MS` 超时兜底重叫，防工人无状态退出时主控被漏叫。
-  6. *F2 记账并发覆盖*：改快照全覆盖为原地原子更新，确保工人并发追加的状态行 100% 存活。
-
----
-
-## 📂 项目布局速览
-
-```
-qonnwolfbuddy/
-├── README.md               # 英文官方主页
-├── README.zh.md            # 中文官方主页
-├── docs/                   # 架构设计定稿、决策 ADRs、E2E 实测手册与 10 份审核报告
-├── templates/              # 装进目标项目的标准模板（QWBUDDY 手册、任务书模板、角色库）
-│   └── roles/              # 主控、审核者、执行者、咨询师 角色操作规范
-├── bin/                    # 运行时脚本（qwb-init、run、wake、status、worktree、test、lint 等）
-├── tests/                  # 405 项冒烟测试套件与 Herdr 契约真实基线
-└── tasks/                  # 项目自身账本与复盘教训库
+bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
 ```
 
----
+主控须自己执行相关质量门并记账，不能以工人自述代替验收。锁、审核和 worktree 收尾规则见[主控说明](templates/QWBUDDY.md)。
 
-## 🧭 路线图
+## 每个主控只选一种值守入口
 
-- [x] 核心架构定稿与 24 节 ADR 决策留痕（`docs/DESIGN.md`, `docs/DECISIONS.md`）
-- [x] POSIX Bash 纯脚本运行时与目标项目模板库
-- [x] 405 项覆盖正反例与反转验证的自动化测试套件
-- [x] 真实 Agent 终端多窗口闭环 E2E 验证（`docs/E2E-RUNBOOK.md`）
-- [x] 跨模型家族独立审核终审全绿验收（`docs/reviews/2026-09-15-fable-终审.md`）
-- [ ] 在更多开源及生产项目中实战收集工作流反馈
-- [ ] 自动化首次 Agent 启动时的环境信任握手
+Claude Code 使用已安装的 Stop hook。Pi 安装 `.pi/extensions/qwb-watch.ts` 后需重启或 `/reload`。Codex 在前台 tool call 中循环运行有界的 `qwb-wake.sh --block --max-ms 180000`。其他 harness 使用可见 tab 兜底：
 
----
+```bash
+bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
+```
 
-## 📄 开源许可证
+兜底入口需要 Herdr pane 上下文。`--ensure` 不会从 `HERDR_PANE_ID` 自动读取唤醒目标；调用时传 `--pane`，或在目标稳定时有意配置 `QWB_CONTROLLER_PANE`。不要每次开局把临时 pane ID 持久化进配置。`--block` 通过主控锁和 `HERDR_PANE_ID` 复核归属，不需要目标 `--pane`。
 
-本项目基于 [MIT License](LICENSE) 开源发布。
+新工人和值守 tab 的 workspace 选择顺序是：已声明的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。声明的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，可在本次调用环境指定目标项目的 `QWB_WORKSPACE`，或有意配置它；不要盲目写入主控当前 ID。
+
+## 证据与路线图
+
+在源码提交 `1c500b38c014be9e55aa33fede2735ebaaf17d16` 上，主控记录的 macOS 观测是：`fast` 1.38 秒、`full` 88.35 秒、smoke 567 PASS、review-identity PASS、lint PASS。该环境的 Node 为 v26.8.1、ShellCheck 0.11.0、Python 为 3.14.6、Herdr 为 0.9.1。这些是该源码与机器的记录，不是速度保证、最低版本或本次文档提交的测试证明。本票执行者只跑 fast 与 lint。
+
+[E2E 运行记录](docs/E2E-RUNBOOK.md)对应旧 `e917008` 基线，且首次派发有人工介入；它不能证明当前源码已有无人值守的真机闭环。生产使用仍在收敛审核。当前源码的无人介入真机验证、首次信任提示处理、长时间值守与重启恢复验证、生产场景试用仍待完成。
+
+仓库结构：`bin/` 是安装器和运行脚本（上述基线共 11 个 shell 文件）；`templates/` 是主控说明、任务与角色模板、配置和 Pi 扩展；`tests/` 是 smoke 与契约检查；`docs/` 是设计、审核和历史 E2E 记录；`tasks/` 是主账本。
