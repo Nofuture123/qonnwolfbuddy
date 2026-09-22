@@ -1,6 +1,6 @@
 # 生产生命周期返修
 
-state: running
+state: done
 
 ## 0. 范围
 
@@ -61,3 +61,22 @@ wake: 2026-09-22T07:34:37Z state=running fp=9e4009665c768ce5dd4c3baf1cbec80f824c
 scenarios-fp: bd79cb90412527aad1cdd8ad2041a55b5c2c3373
 working: 2026-09-22T07:48:22.931498+00:00 主控核实 runtime-r3 与 boundaries-r2 的单点 PASS；已在独立候选目录启动整合，仅 smoke 新增段冲突，交执行者按两边原意收尾，再做生命周期实现。主线源码未变。
 wake: 2026-09-22T07:48:42Z state=running fp=5cc82a78af665cf6f8508c12556ab3aa64a1c09d
+working: 2026-09-22T08:00:00Z 执行者在 production-lifecycle-fixes 完成独立整合 merge 7444a57c813ff9862241918938d887f2d8529447；父提交 178caed0bb2a9f8b8d2bbf5ab2cc0aa704242366 与 a8eec488a75d9cec8a006af4deeb310a3b7554b2。仅手解 tests/smoke.sh，保留 runtime 第 74 节及 boundary 第 75 节完整测试调用；bin/qwb-dispatch.sh、bin/qwb-init.sh、bin/qwb-worktree.sh、tests/boundary-readiness.sh 为已审父提交自动整合。验证 bash bin/qwb-test.sh fast、bash tests/runtime-readiness.sh、bash tests/boundary-readiness.sh 均 rc=0；日志在 /tmp/qwb-lifecycle-merge-*.log。后续生命周期业务提交以此 SHA 为基线。
+working: 2026-09-22T07:53:57Z 更正上一行误写的未来时间：整合 merge 7444a57c813ff9862241918938d887f2d8529447 的真实提交时间由 git show -s --format=%cI 核对为 2026-09-22T09:50:29+02:00，即 2026-09-22T07:50:29Z。上一行 08:00:00Z 非实取，不能作为完成时间证据；此更正行时间由 date -u 实取。
+wake: 2026-09-22T07:50:42Z state=running fp=e7e5c768b392909f925b0f8351ab064829925a52
+wake: 2026-09-22T07:54:43Z state=running fp=e621f907776f3616974a71af6987e77b45249e86
+working: 2026-09-22T08:01:20Z 执行者完成生命周期业务提交 56705466beeb72151b7aa1773f63680dba91d5c7（基线 merge 7444a57c813ff9862241918938d887f2d8529447）。red：Pi 晚获锁定向 node tests/pi-ext.test.mjs rc=1（预期 1、实得 0）；冻结 7444a57 真实宿主死亡定向 rc=1，复现宿主 SIGKILL 后孤儿写新 wake。green：Pi 14/14；bash tests/lifecycle-readiness.sh rc=0（真实宿主 SIGKILL 后子进程退出且无新 wake；hook A/B 回收交错单飞；假 Herdr 跨 workspace 创建/复用/失活恢复/错误目标/查询失败）；bash bin/qwb-test.sh fast rc=0；shellcheck tests/lifecycle-readiness.sh rc=0；git diff --check rc=0。日志 /tmp/qwb-lifecycle-*.log；临时项目由 TemporaryDirectory 清理，真实子进程 finally 兜底清理。未跑全门、真实 Pi reload 或真实 Herdr 跨 workspace，交主控统一验收；未 push、未 merge 其他分支。
+wake: 2026-09-22T08:02:45Z state=running fp=cf973b43ba367cf2830c3b3faad9c9781b493da5
+working: 2026-09-22T08:05:45Z 执行者按主控补充完成现有门真实性小提交 aa1c710e7148c952a522740691038be0c809903b；仅改 tests/smoke.sh 与 tests/lifecycle-readiness.sh。red：旧 run_pi_ext 在隔离 stub 下首次 pi-ext 实测 rc=1、第二次带 --experimental-strip-types 实测 rc=0，函数误返 0 且调用两次（/tmp/qwb-pi-runner-red.log）。green：独立 TypeScript 能力预检后选 Node/Node strip-types/Bun，三种 stub 分支实际测试各一次且失败均非零；本机真实执行器 Pi 14/14（/tmp/qwb-pi-runner-real.log）；生命周期定向 rc=0（/tmp/qwb-pi-runner-green.log）；快门、shellcheck、bash -n、diff check 均 rc=0。不跑全门、不动生命周期源码、不 push。
+wake: 2026-09-22T08:06:47Z state=running fp=f2c4dfc4bbd804a72fe6886a0959ef8c75cbb851
+wake: 2026-09-22T08:36:56Z state=running fp=f2c4dfc4bbd804a72fe6886a0959ef8c75cbb851
+wake: 2026-09-22T09:07:06Z state=running fp=f2c4dfc4bbd804a72fe6886a0959ef8c75cbb851
+wake: 2026-09-22T09:37:15Z state=running fp=f2c4dfc4bbd804a72fe6886a0959ef8c75cbb851
+wake: 2026-09-22T10:07:25Z state=running fp=f2c4dfc4bbd804a72fe6886a0959ef8c75cbb851
+
+working: 2026-09-22T10:19:25.768248+00:00 用户明确授权先按原生产票收尾，再依次执行三张改进票。生命周期 aa1c710 的独立 r1 为 AMEND：Pi 快速失锁重获可能双开、跨 workspace 缺登记查询失败误认领、宿主 SIGKILL 后残留死 PID 登记。已复用现有 Sol medium 执行会话返修；Sol high 原审核会话保留。新改进票尚未激活，待生产基线验收完成。
+wake: 2026-09-22T10:19:29Z state=running fp=0a82c04f70c9d2569f0082e3092dbb69a03235a7
+working: 2026-09-22T10:24:48Z 执行者完成原生产票 r1 三项 AMEND 返修，独立提交 fc0c29ccad205eda91404ef7ffaa95a14c7ab3d8（父 aa1c710e7148c952a522740691038be0c809903b），只改原票白名单。red：node tests/pi-ext.test.mjs rc=1，快速失锁重获在旧 close 前观测 spawns=2（/tmp/qwb-lifecycle-r1-pi-red.log）；bash tests/lifecycle-readiness.sh rc=1，真实 Pi 扩展宿主 SIGKILL 后残留旧 .watch（/tmp/qwb-lifecycle-r1-readiness-red.log）；冻结 aa1c710 的 bin/qwb-wake.sh 注入跨 workspace 定向 rc=1，缺登记 pane get 失败仍误认领（/tmp/qwb-lifecycle-r1-cross-red.log）。green：node tests/pi-ext.test.mjs 15/15 rc=0（/tmp/qwb-lifecycle-r1-pi-green.log）；bash tests/lifecycle-readiness.sh rc=0（/tmp/qwb-lifecycle-r1-readiness-green.log），含真实 Node 扩展宿主强退、旧 PID/实例条件清理和新登记保护、快速失锁/重获及跨 workspace 未知身份拒绝；bash bin/qwb-test.sh fast rc=0（/tmp/qwb-lifecycle-r1-fast.log）；shellcheck bin/qwb-wake.sh tests/lifecycle-readiness.sh、bash -n bin/qwb-wake.sh tests/smoke.sh、git diff --check 均 rc=0，ShellCheck 日志 /tmp/qwb-lifecycle-r1-shellcheck.log。临时目录 TemporaryDirectory 自动清理，真实测试子进程 finally 兜底清理。未跑 full、真实 Pi /reload、真实 Herdr 跨 workspace 或跨平台宿主；未 push/merge/清理 worktree；未触碰三张改进票。
+wake: 2026-09-22T10:25:31Z state=running fp=99e25ae4d46c288c0af03f649543412c5a068e78
+
+working: 2026-09-22T10:28:58.817319+00:00 主控收到 fc0c29c 独立 r2 PASS，三项 AMEND 已闭环；state=done，待整合全门与真实 Herdr 闭环。

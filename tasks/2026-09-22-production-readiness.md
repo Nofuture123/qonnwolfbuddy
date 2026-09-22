@@ -60,3 +60,15 @@ wake: 2026-09-22T06:44:21Z state=running fp=36e930d27e892c15433538d9f61b89737d9f
 wake: 2026-09-22T07:14:30Z state=running fp=36e930d27e892c15433538d9f61b89737d9fd194
 working: 2026-09-22T07:26:48.751254+00:00 文档 556d6aa 复审 PASS（待统一全门）；运行时 d9ed805 复审 AMEND 余1个父死锁交错；安装/路由/收尾 boundaries 已在独立 worktree 由新 Sol medium 会话执行。生命周期三项已实证待修，见 production-lifecycle 报告。没有当前候选全门或真机 PASS，生产目标未完成。
 wake: 2026-09-22T07:28:35Z state=running fp=4c1ca39f80b093436f849073ee113da459f561d0
+wake: 2026-09-22T07:58:44Z state=running fp=4c1ca39f80b093436f849073ee113da459f561d0
+working: 2026-09-22T07:59:53.754220+00:00 进展更新：runtime 856f870 与 boundaries a8eec48 的最后 AMEND 均已独立 PASS，docs 556d6aa 已 PASS，均汇入候选 7444a57。旧摘要中 d9ed805 尚有父死锁问题的状态已被 856f870 取代。当前仅生命周期实现进行中（hook单飞、Pi晚获锁/宿主死亡/关闭、跨workspace恢复）；执行者已用真实子进程复现旧基线宿主死亡后继续写 wake。最终生命周期复审、整合全门、当前候选真机闭环、清理与主线源码合入均未完成。
+wake: 2026-09-22T08:00:45Z state=running fp=230acc4bc2dac2ce0d70a643eaaa89afe8193d26
+wake: 2026-09-22T08:30:54Z state=running fp=230acc4bc2dac2ce0d70a643eaaa89afe8193d26
+wake: 2026-09-22T09:01:04Z state=running fp=230acc4bc2dac2ce0d70a643eaaa89afe8193d26
+wake: 2026-09-22T09:31:13Z state=running fp=230acc4bc2dac2ce0d70a643eaaa89afe8193d26
+wake: 2026-09-22T10:01:23Z state=running fp=230acc4bc2dac2ce0d70a643eaaa89afe8193d26
+
+working: 2026-09-22T10:19:25.768248+00:00 用户明确授权先按原生产票收尾，再依次执行三张改进票。生命周期 aa1c710 的独立 r1 为 AMEND：Pi 快速失锁重获可能双开、跨 workspace 缺登记查询失败误认领、宿主 SIGKILL 后残留死 PID 登记。已复用现有 Sol medium 执行会话返修；Sol high 原审核会话保留。新改进票尚未激活，待生产基线验收完成。
+wake: 2026-09-22T10:19:29Z state=running fp=0a82c04f70c9d2569f0082e3092dbb69a03235a7
+
+working: 2026-09-22T10:28:58.817319+00:00 生命周期 fc0c29c 独立 r2 PASS。开始整合候选全门与当前源码安装副本真实 Herdr 派发验收；生产总票尚未完成，三张改进票未激活。
