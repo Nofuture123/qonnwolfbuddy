@@ -15,11 +15,34 @@
 #   - hook 出错绝不能卡主控：一切错误写 qwbuddy/.hook.err 后 exit 0。
 set -uo pipefail
 
-cat >/dev/null 2>&1 || true   # 消费 stdin 的 hook JSON（本脚本不读内容，但不能堵住管道）
-
 SELF_BIN="${BASH_SOURCE[0]:-$0}"
 QWB_DIR="$(cd "$(dirname "$SELF_BIN")/.." && pwd)"   # <项目>/qwbuddy
 ROOT="$(cd "$QWB_DIR/.." && pwd)"                     # 项目根
+HOOK_LOCK="$QWB_DIR/.hook.lock"
+
+# 只在短暂的接管/释放临界区持有目录 inode 的内核锁；值守期间不占住主控正常锁操作。
+# 内部命令由带 flock 的 Perl 调用，FD 随子 Bash 继承；崩溃后内核自动释放。
+if [[ "${1:-}" == --lock-acquire || "${1:-}" == --lock-release ]]; then
+  [[ "${QWB_HOOK_GUARDED:-}" == "$PPID" ]] || exit 1
+  mode="$1"; token="$2"; hook_pid="$3"
+  if [[ "$mode" == --lock-acquire ]]; then
+    if [[ -d "$HOOK_LOCK" ]]; then
+      oldpid="$(cat "$HOOK_LOCK/pid" 2>/dev/null || true)"
+      [[ "$oldpid" =~ ^[0-9]+$ ]] && kill -0 "$oldpid" 2>/dev/null && exit 1
+      rm -rf "$HOOK_LOCK" || exit 1
+    fi
+    mkdir "$HOOK_LOCK" || exit 1
+    printf '%s\n' "$hook_pid" > "$HOOK_LOCK/pid" || exit 1
+    printf '%s\n' "$token" > "$HOOK_LOCK/token" || exit 1
+  else
+    [[ "$(cat "$HOOK_LOCK/token" 2>/dev/null || true)" == "$token" ]] || exit 0
+    [[ "$(cat "$HOOK_LOCK/pid" 2>/dev/null || true)" == "$hook_pid" ]] || exit 0
+    rm -rf "$HOOK_LOCK"
+  fi
+  exit $?
+fi
+
+cat >/dev/null 2>&1 || true   # 消费 stdin 的 hook JSON（本脚本不读内容，但不能堵住管道）
 
 # 1) 守卫：只有持有主控锁的 Claude 会话值守；锁不存在同样不值守。此路径不得有任何耗时副作用。
 owner=""
@@ -31,28 +54,26 @@ if [[ -z "$owner" || "$owner" != "${HERDR_PANE_ID:-}" ]]; then
 fi
 
 # 2) 单飞：Claude Code 不去重 async hook，每个 Stop 都会触发本脚本；同一时刻只允许一个 --block。
-HOOK_LOCK="$QWB_DIR/.hook.lock"
-take_lock() {
-  if mkdir "$HOOK_LOCK" 2>/dev/null; then
-    printf '%s\n' "$$" > "$HOOK_LOCK/pid" 2>/dev/null || true
-    return 0
-  fi
-  local lpid=""
-  lpid="$(cat "$HOOK_LOCK/pid" 2>/dev/null || true)"
-  if [[ -n "$lpid" ]] && kill -0 "$lpid" 2>/dev/null; then
-    return 1   # 已有活的单飞实例：立即让位
-  fi
-  # 残留死锁（宿主被 SIGKILL/断电等）：接管
-  rm -rf "$HOOK_LOCK" 2>/dev/null || true
-  mkdir "$HOOK_LOCK" 2>/dev/null || return 1   # 并发接管失败：本轮放弃，下次 Stop 再试
-  printf '%s\n' "$$" > "$HOOK_LOCK/pid" 2>/dev/null || true
-  return 0
+guard_lock() {
+  perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -e '
+    my ($dir, @cmd) = @ARGV;
+    open my $guard, "<", $dir or die "hook guard open: $!\n";
+    flock($guard, LOCK_EX) or die "hook guard flock: $!\n";
+    my $flags = fcntl($guard, F_GETFD, 0);
+    defined($flags) && fcntl($guard, F_SETFD, $flags & ~FD_CLOEXEC)
+      or die "hook guard fd: $!\n";
+    $ENV{QWB_HOOK_GUARDED} = $$;
+    my $rc = system @cmd;
+    exit 1 if $rc == -1;
+    exit 128 + ($rc & 127) if $rc & 127;
+    exit $rc >> 8;
+  ' "$QWB_DIR" bash "$SELF_BIN" "$1" "$HOOK_TOKEN" "$$"
 }
-if ! take_lock; then
+HOOK_TOKEN="$$:$(date +%s):${RANDOM}"
+if ! guard_lock --lock-acquire 2>> "$QWB_DIR/.hook.err"; then
   exit 0
 fi
-QWB_HOOK_LOCKDIR="$HOOK_LOCK"        # 须全局：EXIT 触发时本函数已不在栈上
-trap 'rm -rf "$QWB_HOOK_LOCKDIR"' EXIT
+trap 'guard_lock --lock-release 2>/dev/null || true' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

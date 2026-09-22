@@ -223,9 +223,16 @@ watch_check() {
     fi
     return 0
   fi
-  local rp="" dead="" qfail=0 v=""
+  local rp="" dead="" qfail=0 v="" target_ws=""
+  target_ws="$(resolve_workspace "$PROJECT_ROOT" 2>/dev/null)" || {
+    echo "值守：未知（目标 workspace 查询失败）"; return 0;
+  }
+  [[ -n "$target_ws" ]] || target_ws="${HERDR_WORKSPACE_ID:-}"
   [[ -f "$WATCHF" ]] && rp="$(watch_field pane)"
-  if ! watch_scan "${HERDR_WORKSPACE_ID:-}"; then
+  if [[ -n "$rp" && -n "$target_ws" && "$(watch_field workspace)" != "$target_ws" ]]; then
+    echo "值守：未知（登记 workspace 与当前项目目标不符）"; return 0
+  fi
+  if ! watch_scan "$target_ws"; then
     echo "值守：未知（herdr pane list 查询失败，无法确认值守是否在跑）"; return 0
   fi
   if [[ -n "$rp" && " ${WATCH_FOUND} " != *" ${rp} "* ]]; then
@@ -299,6 +306,11 @@ watch_ensure() {
   [[ "$tws" == "$ws" ]] \
     || { echo "错误：目标主控 pane ${PANE} 属于 workspace ${tws}（当前 ${ws}）——ensure 只在调用者 workspace 内行动" >&2; return 1; }
 
+  # 创建、扫描、登记、复用统一使用项目目标 workspace；主控仍可在调用者 workspace。
+  local tabws
+  tabws="$(resolve_workspace "$PROJECT_ROOT")" || return 1
+  [[ -n "$tabws" ]] || tabws="$ws"
+
   # 防并发 ensure 双开：独立 mkdir 原子锁（不能用主控锁——主控长期持有它，ensure 正是主控调用的）
   local WLOCK="$PROJECT_ROOT/qwbuddy/.watch.lock" rcr=0
   mkdir "$WLOCK" 2>/dev/null \
@@ -319,8 +331,8 @@ watch_ensure() {
 _ensure_body() {
   local rp="" scanrc=0 v="" np="" nv="" tries=0
   [[ -f "$WATCHF" ]] && rp="$(watch_field pane)"
-  # 扫描只限调用者 workspace——不动别的 workspace 的 pane
-  watch_scan "$ws" || scanrc=$?
+  # 只扫描本项目选定的值守 workspace。
+  watch_scan "$tabws" || scanrc=$?
   # 不确定态必须先于一切成功分支：list 挂或候选查不出 → 拒绝（fail-closed），不复用不新开
   if [[ "$scanrc" -ne 0 ]]; then
     echo "错误：herdr pane list 查询失败，无法排除已有值守——不擅自多开。修好 herdr 后重跑 --ensure" >&2
@@ -352,12 +364,15 @@ _ensure_body() {
   # 无活值守：登记 pane 还在且 shell 空闲 → 原地重启；占用/消失 → 另开新 tab。
   # 登记 pane 属于别的 workspace → 不认领不重启，拒绝给修复步骤。
   if [[ -n "$rp" ]]; then
+    [[ "$(watch_field workspace)" == "$tabws" ]] || {
+      echo "错误：登记 pane ${rp} 的 workspace 与项目目标 ${tabws} 不符——拒绝认领" >&2; return 1;
+    }
     local rinfo grc
     rinfo="$(pane_info "$rp")"; grc=$?
     if [[ "$grc" -eq 0 ]]; then
       local rws; rws="$(printf '%s' "$rinfo" | cut -f3)"
-      [[ "$rws" == "$ws" ]] || {
-        echo "错误：登记 pane ${rp} 属于 workspace ${rws}（当前 ${ws}）——跨 workspace 不认领不重启。" >&2
+      [[ "$rws" == "$tabws" ]] || {
+        echo "错误：登记 pane ${rp} 属于 workspace ${rws}（目标 ${tabws}）——不认领不重启。" >&2
         echo "修复：核实该 pane 后删掉 ${WATCHF} 登记重跑 --ensure；或到 workspace ${rws} 手工处理" >&2
         return 1; }
     elif [[ "$grc" -eq 2 ]]; then
@@ -390,14 +405,7 @@ _ensure_body() {
       gone) echo "登记 pane ${rp} 已不存在，另开新 tab" ;;
     esac
   fi
-  # 建 tab 的 workspace：项目声明的 QWB_WORKSPACE 优先，未声明按 worktree.repo_root 匹配项目根，
-  # 都没有才回退调用者 workspace。解析失败（声明了但查不到 / 查询失败 / 响应不合契约）→ 不建 tab、
-  # 不登记、不算确保成功。（复用既有 pane / 原地重启的分支不建 tab，pane 的 workspace 已定，不解析。）
-  local tabws
-  if ! tabws="$(resolve_workspace "$PROJECT_ROOT")"; then
-    return 1
-  fi
-  [[ -n "$tabws" ]] || tabws="$ws"
+  # tabws 在任何副作用之前已经确定，与扫描/复用范围相同。
   local tout
   tout="$(herdr tab create --workspace "$tabws" --cwd "$PROJECT_ROOT" --label "qwb-值守" --no-focus 2>&1)" \
     || { echo "错误：herdr tab create 失败：${tout}" >&2; return 1; }
@@ -605,6 +613,13 @@ wait_round() {
 # 只有「叫醒」动作不同：不 pane run，而是把同一份拼装打到 stdout、往票追加 wake: 行后以退出码 2 交还调用方。
 # 返回码：2 = 有可动作变化（已写 wake 行）；0 = 账本无未结项（不写任何行）；1 = 有未结项但无变化（内部）
 block_owner_ok() {
+  # Pi 以宿主 PID 绑定子进程；SIGKILL 后 PPID 改变，旧 pane 锁即使尚在也不能消费进展。
+  if [[ -n "${QWB_WATCH_PARENT_PID:-}" ]]; then
+    [[ "$QWB_WATCH_PARENT_PID" =~ ^[1-9][0-9]*$ ]] || return 1
+    local actual_parent
+    actual_parent="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$actual_parent" == "$QWB_WATCH_PARENT_PID" ]] || return 1
+  fi
   # 孤儿值守复核：主控锁不在本进程手里（换会话后被新主控接管 / 锁已不存在）→ 不消费唤醒。
   # HERDR_PANE_ID 为空（非 herdr 环境，如 smoke）跳过复核。
   [[ -n "${HERDR_PANE_ID:-}" ]] || return 0
@@ -620,11 +635,15 @@ block_round() {
   collect_due "$duef"
   local any="$OPEN_N" f st fp last lostpane
   if [[ -s "$duef" ]]; then
+    if ! block_owner_ok; then rm -f "$duef"; return 0; fi
     compose_msg "$duef"
+    local lost_host=0
     while IFS=$'\t' read -r f st fp last lostpane; do
+      if ! block_owner_ok; then lost_host=1; break; fi
       printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
         || echo "警告：wake 行写入失败（仍叫醒，下轮会重写）：$f" >&2
     done < "$duef"
+    if (( lost_host )); then rm -f "$duef"; return 0; fi
     printf '看账本：%d 张未结项有进展 →%s。只需读这些票。\n' "$DUE_N" "$DUE_MSG"
     rm -f "$duef"
     return 2

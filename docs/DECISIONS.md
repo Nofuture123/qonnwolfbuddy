@@ -489,3 +489,11 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 **Pi 探测**：`turn_end` 的 `--block --max-ms 1` 与常规值守共用 exit 2 合同：摘要只注入一次、清故障计数并立即恢复常规 `--block`。0 继续闲置，124 恢复值守，其他退出码退避。
 
 **派发失败**：保留 F2 的顺序，`state: running` 与 `scenarios-fp:` 在启动前写好并核验，完整 `dispatch:` 在投递前追加。记录该次追加的真实字节偏移；投递失败时核对本行内容，只原位把九字节前缀改成 `not-sent:`，再追加 `blocked:` 失败状态。账本不做整份快照覆盖或截断，其他工人并发追加的行保持原字节。`qwb-run.sh` 与 `qwb-lint.sh` 的场景块提取均把 `not-sent:` 视为运行记录终止行；即使验收场景是最后一节，也不改变原冻结指纹。只有本次新建的 tab 可关闭；显式 `--pane` 和复用工人的既有窗口不关闭。同名复用须有本票历史派发，并核对实际 worker、物理 cwd 和 workspace；任何查询未知均拒绝投递。本节取代 §三十一 E 对失败时“删除最后一行”和同名即复用的旧描述。
+
+## 三十四、生产生命周期返修（2026-09-22）
+
+Claude Stop hook 的 `.hook.lock` 接管和释放只在对项目 `qwbuddy/` 目录持内核 flock 的短临界区执行；值守本身不占该锁，以免挡住主控的正常锁操作。锁内复核活 PID，释放前复核本实例 token 与 PID；异常中断后的死 PID 由下次 hook 自动回收。
+
+Pi 扩展在晚获主控锁后的 `turn_end` 启动一个值守；失锁、shutdown 和旧代际回调不得续命。子进程带宿主 PID，`--block` 写 `wake:` 前复核真实 PPID，宿主 SIGKILL 后不消费新进展。扩展等 stdout/stderr 排空后判退出码，按 PID 只清自己的 `.watch`。此机制只验证了本机 Bash/Node/`ps` 路径；真实 Pi reload 与跨平台宿主行为仍待设备验证。
+
+可见 tab 的 `--ensure` 在任何副作用前解析项目目标 workspace，创建、扫描、登记、复用和失活恢复都使用该范围；主控 pane 仍核对为调用者 workspace 的指定目标。错误目标及查询未知时拒绝行动。

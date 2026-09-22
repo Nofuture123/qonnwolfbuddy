@@ -13,8 +13,8 @@
 //     退避到顶注入一次 `[qwb-wake] 值守故障：…`——这是叫醒主控去修，不是通知使用者。
 //   单飞：扩展内只持一个子进程；session_start 重复触发（/new、/resume、reload）先杀旧再起新。
 //   session_shutdown 与 pi 进程退出 → 杀子进程（spawn 不 detach）。
-import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -23,7 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // 方法语法（非属性箭头）保持双变兼容：ChildProcess 的 stdout/stderr/on 可直接赋给本接口。
 export interface WatchTextStream {
   setEncoding(enc: string): unknown;
-  on(ev: "data", cb: (chunk: string) => void): unknown;
+  on(ev: "data" | "end", cb: (chunk: string) => void): unknown;
 }
 
 export interface WatchChildLike {
@@ -50,7 +50,7 @@ export interface WatchCoreDeps {
   schedule: (ms: number, fn: () => void) => { cancel(): void };
   readLockOwner: (root: string) => string | null;
   writeWatch: (root: string, pid: number | undefined, cmd: string) => void;
-  clearWatch: (root: string) => void;
+  clearWatch: (root: string, pid: number | undefined) => void;
   appendErr: (root: string, line: string) => void;
   nowIso?: () => string;
 }
@@ -67,6 +67,7 @@ export function createWatchCore(d: WatchCoreDeps) {
   let warned = false; // 退避到顶告警只发一次
   let idleAfterZero = false; // exit 0 后闲置，等 turn_end 探测
   let generation = 0; // 会话代际：被单飞替换的旧子进程的 exit 回调不作数
+  let stopped = false;
 
   function ownsLock(): boolean {
     if (!d.paneId) return false;
@@ -75,46 +76,69 @@ export function createWatchCore(d: WatchCoreDeps) {
 
   function killChild() {
     if (!child) return;
+    const old = child;
+    child = null;
+    generation += 1;
     try {
-      child.kill();
+      old.kill();
     } catch {
       // 已死的子进程 kill 报错无所谓
     }
-    child = null;
+    d.clearWatch(d.root, old.pid);
   }
 
   function startChild(args: string[], isProbe: boolean, onStdout?: (text: string) => void) {
-    killChild(); // 单飞：起新的先杀旧的（session_start 重复触发）
+    if (stopped || !ownsLock() || child) return;
     generation += 1;
     const gen = generation;
     idleAfterZero = false;
     let out = "";
-    const c = d.spawnChild("bash", [wakeBin, ...args], { cwd: d.root, env: process.env });
+    const c = d.spawnChild("bash", [wakeBin, ...args], {
+      cwd: d.root, env: { ...process.env, QWB_WATCH_PARENT_PID: String(process.pid) },
+    });
     child = c;
     childIsProbe = isProbe;
     if (!isProbe) {
       d.writeWatch(d.root, c.pid, `bash ${wakeBin} ${args.join(" ")}`.trim());
     }
     c.stdout?.setEncoding("utf8");
+    let stdoutDone = c.stdout === null;
+    let stderrDone = c.stderr === null;
+    let exitCode: number | null = null;
+    let exited = false;
+    let settled = false;
+    const finish = () => {
+      if (!exited || !stdoutDone || !stderrDone || settled) return;
+      settled = true;
+      if (gen !== generation || child !== c || stopped) return;
+      child = null;
+      if (!isProbe) d.clearWatch(d.root, c.pid);
+      if (!ownsLock()) return;
+      onExit(exitCode == null ? -1 : exitCode, isProbe, out);
+    };
     c.stdout?.on("data", (chunk: string) => {
       out += chunk;
     });
+    c.stdout?.on("end", () => { stdoutDone = true; finish(); });
     c.stderr?.setEncoding("utf8");
     c.stderr?.on("data", () => {
       // stderr 目前只进 .pi-watch.err 的场景不截取内容，保持丢弃
     });
+    c.stderr?.on("end", () => { stderrDone = true; finish(); });
     c.on("exit", (code) => {
-      if (gen !== generation || child !== c) return; // 已被单飞替换 / shutdown 杀掉
-      child = null;
-      onExit(code == null ? -1 : code, isProbe, out);
+      exited = true;
+      exitCode = code;
+      finish();
     });
     c.on("error", (err) => {
-      if (gen !== generation) return; // 旧子进程的迟来 error
+      if (gen !== generation || stopped || settled) return; // 旧子进程的迟来 error
+      settled = true;
       // ENOENT 等同步类失败：exit 事件可能不来，这里按故障退避处理
       if (child === c) {
         child = null;
+        if (!isProbe) d.clearWatch(d.root, c.pid);
       }
-      fail(-1, `spawn 失败：${err?.message ?? err}`);
+      if (ownsLock()) fail(-1, `spawn 失败：${err?.message ?? err}`);
     });
     if (onStdout) onStdout(out);
   }
@@ -124,6 +148,7 @@ export function createWatchCore(d: WatchCoreDeps) {
   }
 
   function fail(code: number, note?: string) {
+    if (stopped || !ownsLock()) return;
     failures += 1;
     const ts = d.nowIso ? d.nowIso() : new Date().toISOString();
     d.appendErr(d.root, `${ts} exit=${code} 连续失败 ${failures} 次${note ? ` ${note}` : ""}`);
@@ -146,7 +171,7 @@ export function createWatchCore(d: WatchCoreDeps) {
     }
     restartTimer = d.schedule(delay, () => {
       restartTimer = null;
-      startBlock();
+      if (!stopped && ownsLock()) startBlock();
     });
   }
 
@@ -183,19 +208,24 @@ export function createWatchCore(d: WatchCoreDeps) {
 
   return {
     onSessionStart() {
-      if (!ownsLock()) return; // 非锁主：不动
+      if (stopped || !ownsLock() || child || restartTimer) return;
       startBlock();
     },
     onTurnEnd() {
-      if (child || restartTimer) return; // 值守在跑或退避等待中：不动
-      if (!idleAfterZero) return; // 只有 exit-0 闲置态才探测
+      if (stopped) return;
       if (!ownsLock()) {
+        generation += 1;
+        if (restartTimer) { restartTimer.cancel(); restartTimer = null; }
+        killChild();
         idleAfterZero = false;
         return;
       }
+      if (child || restartTimer) return; // 值守在跑或退避等待中：不动
+      if (!idleAfterZero) { startBlock(); return; } // 晚获锁
       startChild(["--block", "--max-ms", "1"], true);
     },
     shutdown() {
+      stopped = true;
       generation += 1; // 迟来的 exit 回调全部作废
       if (restartTimer) {
         restartTimer.cancel();
@@ -246,6 +276,26 @@ function readIntervalMs(root: string): number {
   return 120000;
 }
 
+// Pi 会话之间对 .watch 的写与条件删除须共用一个短内核临界区，避免旧实例读后删掉新登记。
+function editPiWatch(root: string, pid: number | undefined, line: string) {
+  execFileSync("perl", ["-MFcntl=:flock", "-e", String.raw`
+    my ($dir, $pid, $line) = @ARGV;
+    open my $guard, "<", $dir or die "watch guard open: $!\n";
+    flock($guard, LOCK_EX) or die "watch guard flock: $!\n";
+    my $path = "$dir/.watch";
+    if ($line eq "") {
+      open my $old, "<", $path or exit 0;
+      my $current = <$old> // "";
+      close $old;
+      unlink $path if index($current, "kind=pi-ext pid=$pid ") == 0;
+    } else {
+      open my $out, ">", $path or die "watch write: $!\n";
+      print {$out} $line or die "watch write: $!\n";
+      close $out or die "watch close: $!\n";
+    }
+  `, resolve(root, "qwbuddy"), String(pid ?? 0), line], { stdio: "ignore" });
+}
+
 export default function (pi: ExtensionAPI) {
   const root = process.cwd();
   const core = createWatchCore({
@@ -260,13 +310,10 @@ export default function (pi: ExtensionAPI) {
     },
     readLockOwner: readLockOwnerDefault,
     writeWatch: (r, pid, cmd) => {
-      writeFileSync(
-        resolve(r, "qwbuddy", ".watch"),
-        `kind=pi-ext pid=${pid ?? 0} started=${new Date().toISOString()} cmd=${cmd}\n`,
-      );
+      editPiWatch(r, pid, `kind=pi-ext pid=${pid ?? 0} started=${new Date().toISOString()} cmd=${cmd}\n`);
     },
-    clearWatch: (r) => {
-      rmSync(resolve(r, "qwbuddy", ".watch"), { force: true });
+    clearWatch: (r, pid) => {
+      editPiWatch(r, pid, "");
     },
     appendErr: (r, line) => {
       appendFileSync(resolve(r, "qwbuddy", ".pi-watch.err"), `${line}\n`);

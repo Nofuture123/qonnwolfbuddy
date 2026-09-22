@@ -28,23 +28,27 @@ function makeFakeChild(pid, script = []) {
     kill() {
       c.killed = true;
     },
-    exit(code, stdoutText = "") {
+    exit(code, stdoutText = "", { drain = true } = {}) {
       c.stdout.push(stdoutText);
       for (const cb of c.exitCbs) cb(code, null);
+      if (drain) { c.stdout.end(); c.stderr.end(); }
     },
   };
   return c;
 }
 function makeStream() {
   const cbs = [];
+  const endCbs = [];
   return {
     cbs,
     push(text) {
       for (const cb of cbs) cb(text);
     },
+    end() { for (const cb of endCbs) cb(); },
     setEncoding() {},
     on(ev, cb) {
       if (ev === "data") cbs.push(cb);
+      if (ev === "end") endCbs.push(cb);
     },
   };
 }
@@ -59,6 +63,7 @@ function makeHarness({ owner = "wT:p1", paneId = "wT:p1", intervalMs = 100 } = {
     errLines: [],
   };
   let nextPid = 100;
+  let currentOwner = owner;
   const deps = {
     root,
     paneId,
@@ -80,20 +85,22 @@ function makeHarness({ owner = "wT:p1", paneId = "wT:p1", intervalMs = 100 } = {
         },
       };
     },
-    readLockOwner: () => owner,
+    readLockOwner: () => currentOwner,
     writeWatch: (r, pid, cmd) => {
       state.watch = `kind=pi-ext pid=${pid ?? 0} started=x cmd=${cmd}`;
     },
-    clearWatch: () => {
-      state.watch = null;
-      state.watchCleared += 1;
+    clearWatch: (r, pid) => {
+      if (state.watch?.startsWith(`kind=pi-ext pid=${pid ?? 0} `)) {
+        state.watch = null;
+        state.watchCleared += 1;
+      }
     },
     appendErr: (r, line) => {
       state.errLines.push(line);
     },
     nowIso: () => "2026-01-01T00:00:00Z",
   };
-  return { core: createWatchCore(deps), state };
+  return { core: createWatchCore(deps), state, setOwner: (value) => { currentOwner = value; } };
 }
 
 function flushTimers(state) {
@@ -188,11 +195,10 @@ function ok(name) {
   core.onSessionStart();
   const first = state.spawns[0].child;
   core.onSessionStart();
-  assert.ok(first.killed, "A 被 kill");
-  assert.equal(state.spawns.length, 2, "spawn 第 2 次被调");
-  assert.ok(!state.spawns[1].child.killed, "新子进程活着");
-  assert.equal(core.child, state.spawns[1].child, "同一时刻活的子进程恰好 1 个");
-  ok("session_start 重复：旧被 kill、spawn 第 2 次、活的恰 1 个");
+  assert.ok(!first.killed, "现有值守继续运行");
+  assert.equal(state.spawns.length, 1, "重复事件不得生成重叠子进程");
+  assert.equal(core.child, first);
+  ok("session_start 重复：复用现有子进程，单飞");
 }
 
 // 场景 7：exit 0 后 turn_end 探测（复用 --block --max-ms 1 判定）
@@ -261,6 +267,60 @@ function ok(name) {
   assert.ok(!existsSync(join(r, "qwbuddy", ".watch")), "未写 .watch");
   ok(".pi-watch.err 默认实现落盘");
   rmSync(r, { recursive: true, force: true });
+}
+
+// 生命周期回归：开局无锁，晚获锁后在现有 turn_end 自动启动；失锁不续命。
+{
+  const { core, state, setOwner } = makeHarness({ owner: "wOther:p9" });
+  core.onSessionStart();
+  assert.equal(state.spawns.length, 0);
+  setOwner("wT:p1");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "晚获锁应自动启动一个值守");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "重复事件不得多开");
+  setOwner("wOther:p9");
+  core.onTurnEnd();
+  assert.ok(state.spawns[0].child.killed, "失锁须杀旧子进程");
+  state.spawns[0].child.exit(2, "旧会话输出");
+  assert.equal(state.messages.length, 0);
+  ok("晚获锁自动值守、重复事件单飞、失锁停旧实例");
+}
+
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart();
+  const c = state.spawns[0].child;
+  core.shutdown();
+  core.onTurnEnd();
+  core.onSessionStart();
+  assert.equal(state.spawns.length, 1, "shutdown 后旧回调不得重启");
+  assert.equal(state.watch, null, "shutdown 只清本实例登记");
+  c.exit(2, "迟到摘要");
+  assert.equal(state.messages.length, 0);
+  ok("shutdown 终态阻止重启并清本实例登记");
+}
+
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart();
+  const c = state.spawns[0].child;
+  c.exit(2, "前半摘要", { drain: false });
+  c.stdout.push("后半摘要");
+  c.stdout.end();
+  c.stderr.end();
+  assert.equal(state.messages.length, 1);
+  assert.ok(state.messages[0].includes("后半摘要"), "退出后管道排空的尾部摘要须交付");
+  ok("exit 先于 stdout 排空时仍交付完整摘要");
+}
+
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart();
+  state.watch = "kind=pi-ext pid=999 started=new cmd=new";
+  core.shutdown();
+  assert.equal(state.watch, "kind=pi-ext pid=999 started=new cmd=new", "旧会话不能删除新会话登记");
+  ok("旧会话 shutdown 不清新会话登记");
 }
 
 console.log(`pi-ext tests: ${passed} passed`);

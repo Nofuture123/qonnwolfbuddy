@@ -3435,8 +3435,8 @@ run_pi_ext() {
   return 1
 }
 extout="$(run_pi_ext)"; extrc=$?
-{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 10 passed'; } \
-  && ok "pi 扩展单元测试 10 项通过（锁主/非锁主/exit 2/0/退避告警/单飞/探测/shutdown）" \
+{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 14 passed'; } \
+  && ok "pi 扩展单元测试 14 项通过（锁主/晚获锁/退出交付/退避/清理）" \
   || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
 if command -v node >/dev/null 2>&1; then
@@ -3501,6 +3501,14 @@ if bash "$ROOT/tests/boundary-readiness.sh" > "$TMP/boundary-readiness.log" 2>&1
 else
   bad "生产边界定向回归失败"
   grep -E '^(FAIL|BOUNDARY)' "$TMP/boundary-readiness.log" >&2 || true
+fi
+
+echo "== 76. 生产生命周期定向回归 =="
+if bash "$ROOT/tests/lifecycle-readiness.sh" > "$TMP/lifecycle-readiness.log" 2>&1; then
+  ok "生产生命周期真实子进程与跨 workspace 定向回归通过"
+else
+  bad "生产生命周期定向回归失败"
+  grep -E '^(FAIL|LIFECYCLE|Traceback|AssertionError)' "$TMP/lifecycle-readiness.log" >&2 || true
 fi
 
 
