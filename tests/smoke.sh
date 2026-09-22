@@ -127,7 +127,7 @@ case "\${1:-} \${2:-}" in
                 if [[ "\$n" -le "\${HERDR_AGENT_GET_FAILS:-0}" ]]; then fix agent-get-error.json >&2; exit 1; fi
                 if [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/agent-get-\$(san "\${3:-}").json";
                 elif [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/agent-get-\$(san "\${3:-}").err" >&2; exit 1;
-                elif [[ "${3:-}" == *:* ]]; then fix agent-get-cmd.json;
+                elif [[ "\${3:-}" == *:* ]]; then fix agent-get-cmd.json;
                 else fix agent-get-error.json >&2; exit 1; fi ;;
   "agent rename") fix agent-get-cmd.json ;;
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
@@ -1538,7 +1538,8 @@ ensreset
 printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w93:p7"
 mk_get w93:p7 "$ENSP"; mk_proc w93:p7 shell "$ENSP"
-sout="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" bash qwbuddy/bin/qwb-status.sh )"
+sout="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" \
+  HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-status.sh )"
 printf '%s' "$sout" | grep -q '值守：未运行' \
   && ok "值守退出 shell 仍在 → status 报未运行（不报运行）" || { bad "status 把活 pane 当成值守健康"; printf '%s\n' "$sout"; }
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
@@ -1715,8 +1716,8 @@ out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest
 echo "== 45. 主控返修：换主控不复用错误目标 / cwd预检不造资源 / 未确认不算成功 =="
 # 场景（返修票 user_切换主控不能复用错误目标）：值守在跑但指向旧主控 → 拒绝给步骤，非0零副作用
 ensreset
-mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w93:p1,agent"
-mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP" "wold:pA"
+mk_plist "$DYN/pane-list.json" "w8Z:pZ@wtestW" "w93:p1,agent"
+mk_get w8Z:pZ "$ENSP" "" wtestW; mk_proc w8Z:pZ wake "$ENSP" "wold:pA"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 { [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'wold:pA' && printf '%s' "$out" | grep -q 'wtest:ctl' \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
@@ -1916,18 +1917,22 @@ prmln="$(grep -n 'pane run w93:p7 你是本任务的执行者' "$STUBLOG" | head
 grep -q '^dispatch: .* worker=cmd agent=qwb-disp pane=w93:p7 ' "$LM/tasks/2099-02-01-paneok.md" \
   && ok "pane-run dispatch 记录最终 pane" || bad "pane-run dispatch 内容错误"
 
-# 47b pane-run：假时钟推进到 300ms 仍未检测到 agent，保留 dispatch，不发送 prompt。
+# 47b pane-run：假时钟推进到 300ms 仍未检测到 agent，本次 dispatch 原位标为 not-sent 并记 blocked，不发送 prompt。
 mk_launch_task panetimeout
 : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"; echo 0 > "$LMNOW"; : > "$LMSLEEP"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=99 \
   HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
   QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task panetimeout --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '检测超时' && printf '%s' "$out" | grep -q 'w93:p7' \
-   && printf '%s' "$out" | grep -q '手工排查'; } \
-  && ok "pane-run 300ms 检测超时给出 pane 与手工排查" || { bad "pane-run 超时输出不对（rc=${rc}）"; printf '%s\n' "$out"; }
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'pane-run 工人检测' \
+   && printf '%s' "$out" | grep -q '超时（300ms）' && printf '%s' "$out" | grep -q 'pane=w93:p7' \
+   && printf '%s' "$out" | grep -q '查 herdr pane read / process-info / agent get'; } \
+  && ok "pane-run 300ms 检测超时给出 pane 与排查命令" || { bad "pane-run 超时输出不对（rc=${rc}）"; printf '%s\n' "$out"; }
 [[ "$(cat "$LMNOW")" -eq 300 ]] && ok "pane-run 超时由假时钟精确推进 300ms" || bad "pane-run 假时钟未停在 300ms"
-grep -q '^dispatch: .* worker=cmd .* pane=w93:p7 ' "$LM/tasks/2099-02-01-panetimeout.md" \
-  && ok "pane-run 超时仍保留完整 dispatch" || bad "pane-run 超时丢失 dispatch"
+{ grep -q '^not-sent: .* worker=cmd .* pane=w93:p7 ' "$LM/tasks/2099-02-01-panetimeout.md" \
+   && grep -q '^blocked: .*step=pane-run 工人检测 rc=1 pane=w93:p7' "$LM/tasks/2099-02-01-panetimeout.md" \
+   && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-panetimeout.md" \
+   && grep -q '^herdr tab close w93:t7' "$STUBLOG"; } \
+  && ok "pane-run 超时原位标记 not-sent、记录 blocked 并关闭新 tab" || bad "pane-run 超时失败记账或清理不对"
 [[ "$(grep -c 'pane run w93:p7' "$STUBLOG" || true)" -eq 1 ]] \
   && ok "pane-run 超时后无第二次 pane run（未发提示词）" || bad "pane-run 超时后仍发送提示词"
 
