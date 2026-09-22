@@ -1,0 +1,50 @@
+# 生产级收敛：正确性、速度与 token 成本
+
+state: running
+
+主控：Codex；用户授权审核、优化本项目至生产级。
+基线：1c500b38c014be9e55aa33fede2735ebaaf17d16，main，开局工作区干净。
+
+## 完成条件
+
+1. 安装与升级保护项目既有配置，运行态不污染受版本控制配置；依赖与支持范围准确。
+2. 锁、派发、值守、账本、worktree 收尾的失败与并发路径不丢工作、不重复消费、不假报成功。
+3. 当前候选通过快门、全门与独立可见审核；真实 Herdr 闭环验证绑定候选和工具版本，历史、mock、未验证分别标明。
+4. 以当前运行测量门耗时和唤醒次数；默认空闲值守不消耗模型 token；不以重试、放宽断言换速度。
+5. README、安装指引、运行手册与实际能力一致；遗留风险和明确不保证的边界可查。
+
+## 第一轮审核（最多三个审点）
+
+只读冻结基线，不递归派发，不跑全门；主控负责一次全门。
+源码白名单：bin/qwb-lock.sh、bin/qwb-run.sh、bin/qwb-wake.sh、bin/qwb-lib.sh、bin/qwb-hook-claude-stop.sh、templates/pi-extensions/qwb-watch.ts。
+参考：templates/QWBUDDY.md、templates/config.sh、docs/DESIGN.md、docs/DECISIONS.md、tests/smoke.sh、tests/pi-ext.test.mjs。
+
+1. 锁获取、死锁回收和并发互斥是否真正保证唯一主控。
+2. 值守去重、消费时机、子进程退出和失败恢复是否遗漏或重复唤醒并浪费 token。
+3. 派发在启动/投递失败及重派时，是否误记成功、复用错误工人或污染工作目录。
+
+审核结果只写 docs/reviews/2026-09-22-production-runtime.md，每条给问题、准确 file:line、复现或静态证据、影响、最小修复。最多三个最重要发现，区分已复现与推断，给 PASS/AMEND；不要自行修改源码。
+
+## 验收场景
+
+### 正常路径：候选交付可追溯
+Given 固定候选版本和当前工具环境
+When 执行必要检查与真实闭环
+Then 结果、耗时、产物、清理和审核结论绑定相同候选，不以旧结果替代。
+
+### 失败路径：检查通过不足以证明生产可用
+Given 存在并发、恢复缺陷或真实闭环缺证
+When 单元及静态门通过
+Then 保持任务未完成，补齐修复与证据，不宣布生产就绪。
+
+## 当前证据
+
+working: 2026-09-22 开局核实 HERDR_ENV=1、当前 pane 和 codex PATH；Herdr 0.9.1；Node v26.8.1；ShellCheck 0.11.0。仓库没有根 AGENTS.md/CLAUDE.md，遵循用户提供全局规范与母本模板主控职责。
+working: 基线 fast rc=0，real 1.38s；full 正在执行，结果待回收。历史 E2E-RUNBOOK 绑定 e917008 且首次派发有人为介入，不构成当前候选无人干预证明。
+wake: 2026-09-22T06:38:20Z state=running fp=37a3e48bf00c9ea800808c1c0fd03053b64491c2
+
+working: 基线 full 实跑 rc=0，real 88.35s；smoke 567 PASS / 0 FAIL，review-identity PASS，lint PASS。原始日志 /tmp/qwb-production-fast.log 与 /tmp/qwb-production-full.log。安装临时复现 rc=0，但 qwbuddy/.pi-watch.err 未被 gitignore 忽略（.watch 对照已忽略）；临时目录已清理。此项待修。
+working: 用户新增约束：本窗口禁止创建 pane；后续只复用已有窗口。已启动的 runtime 审核与 production-docs 执行继续回收，不再扩容。
+wake: 2026-09-22T06:42:21Z state=running fp=ce104aa280a4b060be80481aea6c4ce84ce3cd46
+working: 用户今日指定执行 GPT Sol medium、审核 GPT Sol high，覆盖模板跨家族默认。旧 Pi/Claude 已停止，未交付不计验收；原执行/审核 pane 已移至独立后台 tab，当前主控 tab 仅一个 pane。新两个 Codex TUI 已核实模型/effort 且任务均进入 working。
+wake: 2026-09-22T06:44:21Z state=running fp=36e930d27e892c15433538d9f61b89737d9fd194
