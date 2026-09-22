@@ -155,20 +155,34 @@ if [[ "$WORKER" == "auto" ]]; then
   [[ -f "$DISPATCH_BIN" ]] || { echo "错误：找不到 ${DISPATCH_BIN}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新" >&2; exit 1; }
   DP_ERR="$(mktemp)"
   DP_RC=0
-  DP_OUT="$(bash "$DISPATCH_BIN" "$TASK_FILE" --project "$PROJECT_ROOT" 2>"$DP_ERR")" || DP_RC=$?
+  DP_OUT="$(bash "$DISPATCH_BIN" "$TASK_FILE" --project "$PROJECT_ROOT" --json 2>"$DP_ERR")" || DP_RC=$?
   if [[ "$DP_RC" -ne 0 ]]; then
     cat "$DP_ERR" >&2; rm -f "$DP_ERR"
     echo "错误：auto 派工配置错误（qwb-dispatch 退出码 ${DP_RC}）——修好 qwbuddy/dispatch-rules.json 后重派；本次派发未发生、无副作用。" >&2
     exit "$DP_RC"
   fi
-  DP_STATUS="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  status: //p' | head -1)"
+  # JSON 是唯一机器契约。必须是单个对象，字段与状态匹配；诊断文字不参与选择。
+  if ! printf '%s\n' "$DP_OUT" | jq -s -e '
+    length == 1 and (.[0] |
+    type == "object" and
+    (.status == "clear" or .status == "off" or .status == "error" or .status == "ambiguous") and
+    (.default_worker | type == "string" and test("^[^[:space:][:cntrl:]]+$")) and
+    ((has("reason") | not) or (.reason | type == "string")) and
+    (if .status == "clear" then
+      (.worker | type == "string" and test("^[^[:space:][:cntrl:]]+$"))
+     else (has("worker") | not) end))
+  ' >/dev/null 2>&1; then
+    cat "$DP_ERR" >&2; rm -f "$DP_ERR"
+    echo "错误：auto 派工结构化结果非法，拒绝派发（无副作用）" >&2
+    exit 2
+  fi
+  DP_STATUS="$(jq -r '.status' <<<"$DP_OUT")"
   if [[ "$DP_STATUS" == "clear" ]]; then
-    WORKER="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  worker: //p' | head -1)"
+    WORKER="$(jq -r '.worker' <<<"$DP_OUT")"
     echo "qwb-run: auto 派工命中 → ${WORKER}" >&2
   else
-    WORKER="$(jq -r '.default.worker // empty' "$PROJECT_ROOT/qwbuddy/dispatch-rules.json" 2>/dev/null || true)"
-    [[ -n "$WORKER" ]] || WORKER="pi"
-    DP_REASON="$(printf '%s\n' "$DP_OUT" | sed -n 's/^  reason: //p' | head -1)"
+    WORKER="$(jq -r '.default_worker' <<<"$DP_OUT")"
+    DP_REASON="$(jq -r '.reason // empty' <<<"$DP_OUT")"
     { cat "$DP_ERR"; echo "qwb-run: auto 派工未命中（status=${DP_STATUS}${DP_REASON:+，${DP_REASON}}），按默认工人 ${WORKER} 继续派发"; } >&2
   fi
   rm -f "$DP_ERR"

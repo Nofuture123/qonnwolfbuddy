@@ -7,13 +7,13 @@
 # floor、spendPriority、captain 审批流——qwb 派工只是"选一个工人"）。
 #
 # 用法:
-#   qwb-dispatch.sh <brief文件> [--project <项目根>]
+#   qwb-dispatch.sh <brief文件> [--project <项目根>] [--json]
 #     <brief文件>   任务简报（通常就是任务书路径；全文作为 state.task.brief 发给模型）
 #     --project     项目根（默认当前目录）：规则在 <项目根>/qwbuddy/dispatch-rules.json，
 #                   key 可在 <项目根>/.env；state.task.project 用项目根的目录名
 #
 # 开关（opt-in）：TYPESAFE_API_KEY 取进程环境变量，否则读 <项目根>/.env（环境变量优先）；
-#   两处都无 → stderr 一行 "qwb-dispatch: off"，exit 0，零网络调用，行为与没有本工具完全一致。
+#   两处都无 → stderr 一行 "qwb-dispatch: off"，exit 0，零网络调用。
 #   key 纪律（照抄上游）：key 只存一个 shell 变量、经文件描述符 `3< <(...)` 传给 curl 的
 #   Authorization 头、启动任何子进程前 unset TYPESAFE_API_KEY；不打印、不落日志、不落盘。
 # 规则文件：<项目根>/qwbuddy/dispatch-rules.json（模板：QW buddy 母本仓 templates/dispatch-rules.json）。
@@ -65,15 +65,21 @@ no_rules() {
 }
 emit_error() {
   echo "qwb-dispatch: error（$1）" >&2
+  if [ "$JSON_MODE" -eq 1 ]; then
+    jq -cn --arg reason "$1" --arg default "$DEFAULT_WORKER" \
+      '{status:"error",reason:$reason,default_worker:$default}'
+    exit 0
+  fi
   printf 'qwb-dispatch:\n  status: error\n  reason: %s\n' "$1"
   exit 0
 }
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time()*1000'; }
 
-BRIEF='' PROJECT_ROOT=''
+BRIEF='' PROJECT_ROOT='' JSON_MODE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) [ $# -ge 2 ] || die "--project 需要一个值"; PROJECT_ROOT=$2; shift 2 ;;
+    --json) JSON_MODE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) die "未知参数 $1" ;;
     *) [ -z "$BRIEF" ] || die "brief 文件只能给一个"; BRIEF=$1; shift ;;
@@ -86,18 +92,15 @@ done
 PROJECT_ROOT=$(cd "$PROJECT_ROOT" && pwd)
 RULES_PATH="${PROJECT_ROOT}/qwbuddy/dispatch-rules.json"
 
-# ---- 开关门（opt-in）：环境变量优先，其次 <项目根>/.env；都无 → off，零网络调用 ----
-if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
-  TYPESAFE_API_KEY_PRIVATE=$(env_get TYPESAFE_API_KEY "${PROJECT_ROOT}/.env")
-fi
-if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
-  echo "qwb-dispatch: off（环境变量与 ${PROJECT_ROOT}/.env 都没有 TYPESAFE_API_KEY）" >&2
-  exit 0
-fi
-
-# ---- 输入与规则 ----
-[ -r "$BRIEF" ] || die "brief 文件不可读: ${BRIEF}"
-[ -e "$RULES_PATH" ] || [ -L "$RULES_PATH" ] || no_rules
+# ---- 输入与规则：先验证快照，坏规则不能被无 key 开关绕过 ----
+[ -e "$RULES_PATH" ] || [ -L "$RULES_PATH" ] || {
+  if [ "$JSON_MODE" -eq 1 ]; then
+    echo "qwb-dispatch: no rules（${RULES_PATH} 不存在）" >&2
+    printf '%s\n' '{"status":"off","default_worker":"pi"}'
+    exit 0
+  fi
+  no_rules
+}
 [ -r "$RULES_PATH" ] || die "规则文件不可读: ${RULES_PATH}"
 command -v jq >/dev/null 2>&1 || die "需要 jq"
 RULES=$(mktemp) || die "mktemp 失败"
@@ -108,6 +111,8 @@ chmod 400 "$RULES" || die "无法保护规则快照"
 
 # schema 校验：rules 数组、每条非空 when + 合法 worker（非空、无空白/控制字符）、default 存在。
 # 坏文件 exit 2——配置错误不许被绕过或静默跳过。
+rules_count=$(jq -s 'length' "$RULES" 2>/dev/null) || die "规则文件不是合法 JSON: ${RULES_PATH}"
+[ "$rules_count" -eq 1 ] || die "规则文件必须恰好一个顶层 JSON 对象: ${RULES_PATH}"
 rules_err=$(jq -r '
   def worker_ok($w): ($w | type) == "string" and ($w | test("^[^[:space:][:cntrl:]]+$"));
   if type != "object" then "顶层必须是对象"
@@ -120,6 +125,20 @@ rules_err=$(jq -r '
   else empty end
 ' "$RULES" 2>/dev/null) || die "规则文件不是合法 JSON: ${RULES_PATH}"
 [ -z "$rules_err" ] || die "规则文件不合 schema: ${RULES_PATH} - ${rules_err}"
+DEFAULT_WORKER=$(jq -r '.default.worker' "$RULES") || die "读取默认工人失败"
+
+# ---- 开关门（opt-in）：环境变量优先，其次 <项目根>/.env；都无 → off，零网络调用 ----
+if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
+  TYPESAFE_API_KEY_PRIVATE=$(env_get TYPESAFE_API_KEY "${PROJECT_ROOT}/.env")
+fi
+if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
+  echo "qwb-dispatch: off（环境变量与 ${PROJECT_ROOT}/.env 都没有 TYPESAFE_API_KEY）" >&2
+  if [ "$JSON_MODE" -eq 1 ]; then
+    jq -cn --arg default "$DEFAULT_WORKER" '{status:"off",default_worker:$default}'
+  fi
+  exit 0
+fi
+[ -r "$BRIEF" ] || die "brief 文件不可读: ${BRIEF}"
 
 # ---- 请求：与上游同形。state 只带 project 名 + brief 全文；一个 choice 问题，
 # 选项 = 每条规则的 when + 固定 default 选项。模型看不到 worker 名。 ----
@@ -191,7 +210,13 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     $ev + {status: "clear", worker: $rule.worker, note: "规则命中"}
   end') || emit_error "解析失败"
 
-# ---- 输出（TOON 风格）：动态字段全部压平换行/制表符，防止注入伪行 ----
+# ---- 输出：机器模式只输出单个 JSON 对象；展示模式保持原有文本 ----
+if [ "$JSON_MODE" -eq 1 ]; then
+  jq -cn --argjson result "$RESULT" --arg default "$DEFAULT_WORKER" \
+    '$result + {default_worker:$default}' || die "JSON 输出失败"
+  exit 0
+fi
+# 动态字段全部压平换行/制表符，防止注入伪行。
 TEXT=$(jq -r '
   def flat: tostring | gsub("[\t\r\n]"; " ");
   def show($v): ($v // "-") | flat;

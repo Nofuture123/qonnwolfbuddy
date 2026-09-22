@@ -2303,6 +2303,7 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 sed -i '' '/^QWB_WORKSPACE=/d' "$ENSP/qwbuddy/config.sh"
 
 echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/响应校验/key 纪律 + qwb-run auto 集成）=="
+bash "$ROOT/tests/optional-routing.sh" && ok "可选路由公开 CLI 结构化契约" || bad "可选路由公开 CLI 结构化契约"
 # 假 curl 手法沿 firstmate tests/fm-dispatch-resolve.test.sh：记录 argv/请求体/fd3 头/子进程环境，
 # 按 FAKE_CURL_* 应答。零网络、零真 key。
 DT="$(mktemp -d)"
