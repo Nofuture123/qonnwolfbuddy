@@ -57,3 +57,6 @@ working: 用户新增约束：本窗口禁止创建 pane；后续只复用已有
 wake: 2026-09-22T06:42:21Z state=running fp=ce104aa280a4b060be80481aea6c4ce84ce3cd46
 working: 用户今日指定执行 GPT Sol medium、审核 GPT Sol high，覆盖模板跨家族默认。旧 Pi/Claude 已停止，未交付不计验收；原执行/审核 pane 已移至独立后台 tab，当前主控 tab 仅一个 pane。新两个 Codex TUI 已核实模型/effort 且任务均进入 working。
 wake: 2026-09-22T06:44:21Z state=running fp=36e930d27e892c15433538d9f61b89737d9fd194
+wake: 2026-09-22T07:14:30Z state=running fp=36e930d27e892c15433538d9f61b89737d9fd194
+working: 2026-09-22T07:26:48.751254+00:00 文档 556d6aa 复审 PASS（待统一全门）；运行时 d9ed805 复审 AMEND 余1个父死锁交错；安装/路由/收尾 boundaries 已在独立 worktree 由新 Sol medium 会话执行。生命周期三项已实证待修，见 production-lifecycle 报告。没有当前候选全门或真机 PASS，生产目标未完成。
+wake: 2026-09-22T07:28:35Z state=running fp=4c1ca39f80b093436f849073ee113da459f561d0

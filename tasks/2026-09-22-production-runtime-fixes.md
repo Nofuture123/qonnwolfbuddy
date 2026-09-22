@@ -1,12 +1,12 @@
 # 生产运行时三项返修
 
-state: running
+state: done
 
 ## 0. 目标与范围
 
 修复 docs/reviews/2026-09-22-production-runtime.md 在 1c500b38c014be9e55aa33fede2735ebaaf17d16 上复现的三个审点。执行 GPT Sol medium，独立审核 GPT Sol high（用户今日指定，覆盖模板跨家族默认）。不得创建 pane/tab 或递归派发。
 
-源码白名单：bin/qwb-lock.sh、bin/qwb-run.sh、bin/qwb-lib.sh、templates/pi-extensions/qwb-watch.ts。
+源码白名单：bin/qwb-lock.sh、bin/qwb-run.sh、bin/qwb-lib.sh、bin/qwb-lint.sh、templates/pi-extensions/qwb-watch.ts。
 测试白名单：tests/smoke.sh、tests/pi-ext.test.mjs、tests/runtime-readiness.sh（如需要独立定向入口）、tests/fixtures/herdr/ 内仅本票必需的夹具。
 文档白名单：docs/DECISIONS.md、templates/config.sh（仅新增必要依赖/明确契约时）。不要改 README、历史任务和主工作区源码。
 
@@ -50,3 +50,13 @@ wake: 2026-09-22T06:48:22Z state=running fp=9e4009665c768ce5dd4c3baf1cbec80f824c
 
 scenarios-fp: 999802e2d02b7ca521a2778ba3cfa5097c8c1d17
 working: 2026-09-22T06:49:14.194251+00:00 主控通过现有 Herdr 执行会话交接，已观察 working。执行 GPT Sol medium；实现目录 .worktrees/production-runtime-fixes；现有 CLI 仍起于 production-docs，要求每条工具显式 workdir，两个 worktree 均暂留。此为主控人工调度，未把它记作 qwb-run 自动派发成功。
+wake: 2026-09-22T06:50:23Z state=running fp=865061aa5a881ef5981c8032b85c8c708f1efb4f
+working: 主控定向核对发现新增 not-sent: 记录若紧接最后的验收场景块，会被现有 scenario_block 算入场景：原 sha1=9d3c091285ea132f9b9a4f2dd738f1267f91cb12，失败记账后=8e967eb697228b6a31904303c4da23d8c124c106（Given/When/Then 未变）。补 bin/qwb-lint.sh 到源码白名单，仅同步新运行时记录前缀的场景边界；验收场景正文未改，不改冻结值。要求加场景为末节的失败后重派/ lint 回归，不放宽断言。
+wake: 2026-09-22T07:12:30Z state=running fp=9f293a086c674fe2022a39e8282ff53845bf56a8
+done: 2026-09-22T07:15:44Z executor=codex commit=d9ed8052ccbcfbc1e286ade07853026a3ae5d470 base=1c500b38c014be9e55aa33fede2735ebaaf17d16; whitelist only: bin/qwb-lock.sh, bin/qwb-run.sh, bin/qwb-lint.sh, templates/pi-extensions/qwb-watch.ts, tests/smoke.sh, tests/pi-ext.test.mjs, tests/runtime-readiness.sh, docs/DECISIONS.md. First red: bash tests/runtime-readiness.sh rc=1, fixed interleaving A_rc=0 B_rc=0; new prompt failure rc=9 left dispatch and tab, same-name without history and mismatched worker/cwd/workspace delivered; node tests/pi-ext.test.mjs rc=1 probe exit=2 messages=[]; last-section not-sent regression before boundary fix: lint rc=1 scenario fingerprint mismatch and retry rc=1, original scenarios-fp unchanged. Final: bash bin/qwb-test.sh fast rc=0; bash tests/runtime-readiness.sh rc=0, 17 PASS; node tests/pi-ext.test.mjs rc=0, 10 passed; bash bin/qwb-lint.sh rc=0 LINT PASS; git diff --check rc=0. No full gate, real Herdr/E2E, push, merge or worktree cleanup. Source state remains running for controller audit.
+wake: 2026-09-22T07:16:31Z state=running fp=bc01abb480d598699f06370de3fdd8aef8f7200d
+working: 2026-09-22T07:26:48.750984+00:00 独立复审 d9ed805 为 AMEND，仅剩 Perl flock 父进程被 SIGKILL 后内层回收仍存活的真实交错；见 docs/reviews/2026-09-22-production-runtime-r2.md。未人为注入 QWB_LOCK_GUARDED。Pi probe 与派发 diff 的定向复核通过（runtime 17 PASS、pi 10 passed）；不算全门。下一次返修仅修同一内核锁在完整临界区存续并补受控父死测试，不重改已通过部分。state 保持 running，候选不合入。
+wake: 2026-09-22T07:28:35Z state=running fp=6b9022c62fb0c6972f003940af253bebb0ba0fb0
+done: 2026-09-22T07:36:41Z executor=codex second-amend commit=856f87049bab37eb9e42dcf3fe491373003ca864 base=d9ed8052ccbcfbc1e286ade07853026a3ae5d470; only bin/qwb-lock.sh, tests/runtime-readiness.sh, tests/smoke.sh, docs/DECISIONS.md. Directed red: bash tests/runtime-readiness.sh rc=1, B entered before A resumed (B rc=0), 2 FAIL; raw /tmp/qwb-production-runtime-r3-red.log. Fix: locked FD explicitly inherited by inner Bash for full recovery/release critical section. Final: bash bin/qwb-test.sh fast rc=0; bash tests/runtime-readiness.sh rc=0, 18 PASS; bash -n and git diff --check rc=0. Raw logs /tmp/qwb-production-runtime-r3-fast.log and /tmp/qwb-production-runtime-r3-runtime.log. Test temp directory removed by trap; ps found no matching residual process; worktree clean. No full gate, push, merge, worktree cleanup, or Pi/run/lint changes. state remains running for controller audit.
+wake: 2026-09-22T07:38:39Z state=running fp=6b1c1acd2b4ae50ea777882f0bcf4c32270fe19d
+working: 2026-09-22T07:49:05.448441+00:00 主控收回候选 856f87049bab37eb9e42dcf3fe491373003ca864 的最后一项独立复核 PASS（docs/reviews/2026-09-22-production-runtime-r3.md）；与前轮已通过部分共同覆盖本票。state=done，等待最终整合候选全门和真机验收，暂不标 verified。
