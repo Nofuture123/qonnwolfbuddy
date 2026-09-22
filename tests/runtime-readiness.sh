@@ -17,6 +17,9 @@ rm -f "$PROJECT/qwbuddy/brief-include.md" # 保持验收场景确为任务书末
 cat > "$TMP/bin/rm" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${QWB_HOLD_RM:-}" == 1 && "$*" == *'.controller.lock'* ]]; then
+  if [[ -n "${QWB_GUARD_PID_FILE:-}" ]]; then
+    ps -o ppid= -p "$PPID" | tr -d ' ' > "$QWB_GUARD_PID_FILE"
+  fi
   : > "$QWB_RM_READY"
   read -r _ < "$QWB_RM_GATE"
 fi
@@ -65,19 +68,40 @@ out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$
   && ok "无法判活的锁 fail-closed" || bad "未知锁被回收：$out"
 bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
 [[ ! -d "$LOCK" ]] && ok "release 清理锁目录" || bad "release 未清理锁目录"
-(
-  perl -MFcntl=:flock -e '
-    open my $f, "<", $ARGV[0] or die $!;
-    flock($f, LOCK_EX) or die $!;
-    open my $m, ">", $ARGV[1] or die $!; close $m;
-    sleep 30;
-  ' "$PROJECT/qwbuddy" "$TMP/guard-ready"
-) &
-guard_pid=$!
-for _ in {1..200}; do [[ -e "$TMP/guard-ready" ]] && break; sleep 0.01; done
-kill -9 "$guard_pid" 2>/dev/null; wait "$guard_pid" 2>/dev/null
-out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
-[[ "$rc" -eq 0 ]] && ok "异常终止后内核互斥自动释放" || bad "异常终止后无法获取：$out"
+# 正常入口的 Perl 父进程被杀时，仍在 rm 等待的内层回收必须继续持锁。
+mkdir "$LOCK"; printf '2020-01-01T00:00:00Z pid:999999\n' > "$LOCK/owner"
+mkfifo "$TMP/parent-death-gate"
+PATH="$TMP/bin:$PATH" QWB_HOLD_RM=1 QWB_RM_READY="$TMP/parent-death-ready" \
+  QWB_RM_GATE="$TMP/parent-death-gate" QWB_GUARD_PID_FILE="$TMP/parent-death-guard-pid" \
+  bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" \
+  > "$TMP/parent-death-A.out" 2>&1 &
+parent_death_a=$!
+for _ in {1..200}; do [[ -s "$TMP/parent-death-guard-pid" && -e "$TMP/parent-death-ready" ]] && break; sleep 0.01; done
+if [[ ! -s "$TMP/parent-death-guard-pid" || ! -e "$TMP/parent-death-ready" ]]; then
+  bad "父进程死亡交错：A 未到达受控回收点"
+else
+  guard_pid="$(cat "$TMP/parent-death-guard-pid")"
+  [[ "$(ps -o comm= -p "$guard_pid" 2>/dev/null)" == *perl* ]] \
+    || bad "父进程死亡交错：目标不是正常入口的 Perl 持锁父进程"
+  kill -9 "$guard_pid" 2>/dev/null
+  (
+    bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:1"
+    echo $? > "$TMP/parent-death-B.rc"
+  ) > "$TMP/parent-death-B.out" 2>&1 &
+  parent_death_b=$!
+  for _ in {1..100}; do [[ -e "$TMP/parent-death-B.rc" ]] && break; sleep 0.01; done
+  [[ ! -e "$TMP/parent-death-B.rc" ]] && ok "父死后内层回收仍持内核锁" \
+    || bad "父死后 B 在 A 回收完成前进入临界区：$(cat "$TMP/parent-death-B.rc")"
+  printf 'go\n' > "$TMP/parent-death-gate"
+  wait "$parent_death_a" 2>/dev/null
+  wait "$parent_death_b"
+  brc="$(cat "$TMP/parent-death-B.rc")"
+  for _ in {1..200}; do [[ -f "$LOCK/owner" ]] && break; sleep 0.01; done
+  final_owner="$(cat "$LOCK/owner" 2>/dev/null)"
+  [[ "$brc" -ne 0 && "$final_owner" == *"pid:$$" ]] \
+    && ok "父死交错后活锁未被夺" \
+    || bad "父死交错后 owner 被覆盖：B rc=$brc owner=$final_owner"
+fi
 bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
 
 # 假 Herdr 只提供本票会调用的 API，不创建真窗口。

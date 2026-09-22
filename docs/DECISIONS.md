@@ -484,7 +484,7 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 
 ## 三十三、生产运行时返修：锁回收、Pi 探测与派发失败（2026-09-22）
 
-**锁回收**：单独的 `mkdir .controller.lock` 不能保护「判死→删除→重建」整体。acquire/release 先用 Perl `Fcntl::flock` 对持续存在的项目 `qwbuddy/` 目录加独占锁，再在持锁区处理原有目录锁；目录删除重建不改变被锁 inode，进程异常终止时内核释放互斥。Perl 或 flock 不可用即报错，不降级为无互斥回收。原有「只回收已死 owner、未知拒绝」不变。
+**锁回收**：单独的 `mkdir .controller.lock` 不能保护「判死→删除→重建」整体。acquire/release 先用 Perl `Fcntl::flock` 对持续存在的项目 `qwbuddy/` 目录加独占锁，并清除该已加锁 FD 的 close-on-exec 标志，让实际执行回收/释放的 Bash 继承同一内核锁，覆盖完整临界区；即使 Perl 父进程被 SIGKILL，Bash 结束前其他获取者仍不能进入。目录删除重建不改变被锁 inode；最后一个持锁进程退出时内核释放互斥。Perl 或 flock 不可用即报错，不降级为无互斥回收。原有「只回收已死 owner、未知拒绝」不变。
 
 **Pi 探测**：`turn_end` 的 `--block --max-ms 1` 与常规值守共用 exit 2 合同：摘要只注入一次、清故障计数并立即恢复常规 `--block`。0 继续闲置，124 恢复值守，其他退出码退避。
 

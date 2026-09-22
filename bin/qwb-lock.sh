@@ -43,15 +43,20 @@ OWNER="${OWNER:-${HERDR_PANE_ID:-pid:$$}}"
 
 # qwbuddy 目录在锁目录被删除、重建时保持同一个 inode。锁它而非锁 .controller.lock
 # 或一次性 guard 文件，避免两个回收者各锁一个 inode；内核在进程退出时自动释放 flock。
-# acquire/release 的完整临界区都在 Perl 持锁进程等待的子进程里，任何失败不静默降级。
+# 子 Bash 实际执行完整临界区，因此必须继承同一个已加锁 FD；Perl 父进程死亡时
+# 子 Bash 仍持有内核锁，直到回收/释放结束。任何失败不静默降级。
 if [[ "$CMD" != status && "${QWB_LOCK_GUARDED:-}" != "$PPID" ]]; then
   [[ -d "$PROJECT_ROOT/qwbuddy" ]] || { echo "错误：$PROJECT_ROOT/qwbuddy 不存在（先跑 qwb-init.sh）" >&2; exit 1; }
   command -v perl >/dev/null 2>&1 \
     || { echo "错误：主控锁需要 Perl Fcntl::flock，本机找不到 perl，拒绝无锁执行" >&2; exit 1; }
-  perl -MFcntl=:flock -e '
+  perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -e '
     my ($dir, @cmd) = @ARGV;
     open my $guard, "<", $dir or die "错误：无法打开主控锁保护目录 ${dir}：$!\n";
     flock($guard, LOCK_EX) or die "错误：无法对主控锁保护目录 $dir 加 flock：$!\n";
+    my $fd_flags = fcntl($guard, F_GETFD, 0);
+    defined($fd_flags) or die "错误：无法读取主控锁 FD 标志：$!\n";
+    fcntl($guard, F_SETFD, $fd_flags & ~FD_CLOEXEC)
+      or die "错误：无法让主控锁 FD 继承到回收进程：$!\n";
     $ENV{QWB_LOCK_GUARDED} = $$;
     my $rc = system @cmd;
     die "错误：主控锁操作无法启动：$!\n" if $rc == -1;
