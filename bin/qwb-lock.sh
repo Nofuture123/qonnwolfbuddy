@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# qwb-lock.sh —— 主控锁：mkdir 原子目录锁，防两个主控同时动手
+# qwb-lock.sh —— 主控锁：对稳定的 qwbuddy 目录加内核 flock，串行化创建/回收/释放
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 用法: qwb-lock.sh <acquire|release|status> [选项]
 
-  acquire   抢锁：建 qwbuddy/.controller.lock 目录并写 owner 文件；已被占用则先判活：
+  acquire   抢锁：互斥下建 qwbuddy/.controller.lock 并写 owner；已被占用则判活：
             锁主 pid 已退出 / pane 已不存在 → 自动回收残留锁后重新获锁；
             锁主仍活或查不出死活（herdr 不在 PATH / 查询报错）→ 拒绝（fail-closed，不猜）
   release   放锁：删除锁目录（只在确认是残留锁时用；不做自动夺锁）
@@ -40,6 +40,26 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 ME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
 OWNER="${OWNER:-${HERDR_PANE_ID:-pid:$$}}"
+
+# qwbuddy 目录在锁目录被删除、重建时保持同一个 inode。锁它而非锁 .controller.lock
+# 或一次性 guard 文件，避免两个回收者各锁一个 inode；内核在进程退出时自动释放 flock。
+# acquire/release 的完整临界区都在 Perl 持锁进程等待的子进程里，任何失败不静默降级。
+if [[ "$CMD" != status && "${QWB_LOCK_GUARDED:-}" != "$PPID" ]]; then
+  [[ -d "$PROJECT_ROOT/qwbuddy" ]] || { echo "错误：$PROJECT_ROOT/qwbuddy 不存在（先跑 qwb-init.sh）" >&2; exit 1; }
+  command -v perl >/dev/null 2>&1 \
+    || { echo "错误：主控锁需要 Perl Fcntl::flock，本机找不到 perl，拒绝无锁执行" >&2; exit 1; }
+  perl -MFcntl=:flock -e '
+    my ($dir, @cmd) = @ARGV;
+    open my $guard, "<", $dir or die "错误：无法打开主控锁保护目录 ${dir}：$!\n";
+    flock($guard, LOCK_EX) or die "错误：无法对主控锁保护目录 $dir 加 flock：$!\n";
+    $ENV{QWB_LOCK_GUARDED} = $$;
+    my $rc = system @cmd;
+    die "错误：主控锁操作无法启动：$!\n" if $rc == -1;
+    exit 128 + ($rc & 127) if $rc & 127;
+    exit $rc >> 8;
+  ' "$PROJECT_ROOT/qwbuddy" bash "$ME" "$CMD" --project "$PROJECT_ROOT" --owner "$OWNER"
+  exit $?
+fi
 
 lock_holder() {
   if [[ -f "$LOCK_DIR/owner" ]]; then cat "$LOCK_DIR/owner"; else echo "（无 owner 文件）"; fi

@@ -2,7 +2,7 @@
 // 不依赖 pi 进程：createWatchCore 全依赖注入，子进程/时钟/消息全部假件。
 // 由 tests/smoke.sh 调用；node ≥23.6 直跑，旧 node 退回 --experimental-strip-types，或 bun。
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWatchCore, WAKE_PREFIX } from "../templates/pi-extensions/qwb-watch.ts";
@@ -224,6 +224,23 @@ function ok(name) {
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
+  state.spawns[0].child.exit(0, "");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2, "turn_end 已启动 probe");
+  state.spawns[1].child.exit(2, "看账本：新进展\n");
+  assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：新进展`], "probe exit 2 交付恰好一条摘要");
+  assert.equal(core.failures, 0, "probe exit 2 不计故障");
+  assert.deepEqual(state.errLines, [], "probe exit 2 不写故障日志");
+  assert.equal(state.timers.length, 0, "probe exit 2 不进入退避");
+  assert.equal(state.spawns.length, 3, "probe exit 2 立即恢复常规值守");
+  assert.deepEqual(state.spawns[2].args.slice(1), ["--block"], "恢复值守不带探测上限");
+  ok("turn_end probe exit 2：摘要交付一次，无故障退避，立即恢复常规值守");
+}
+
+// 场景 9：shutdown 杀子进程且迟来回调不作数
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart();
   const c = state.spawns[0].child;
   core.shutdown();
   assert.ok(c.killed, "shutdown 杀子进程");
@@ -243,6 +260,8 @@ function ok(name) {
   assert.ok(readFileSync(join(r, "qwbuddy", ".pi-watch.err"), "utf8").includes("exit=1"));
   assert.ok(!existsSync(join(r, "qwbuddy", ".watch")), "未写 .watch");
   ok(".pi-watch.err 默认实现落盘");
+  rmSync(r, { recursive: true, force: true });
 }
 
 console.log(`pi-ext tests: ${passed} passed`);
+rmSync(root, { recursive: true, force: true });

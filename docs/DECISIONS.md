@@ -482,3 +482,10 @@ working:  spec-resolved: <impl|spec> + 逐项回应与证据           ← 只�
 
 **与 firstmate 的边界**：只取「持子进程 + follow-up 注入」这一个机制；不搬分支监督、lease、generation ledger、远程 secondmate。Pi 扩展 API 以官方文档实测为准（本机 pi 0.86.1，`extensions.md`：`session_start`/`session_shutdown`/`turn_end` 事件、`pi.sendUserMessage` 的 `deliverAs: "followUp"`），firstmate 只是可行性先例不是规格来源。
 
+## 三十三、生产运行时返修：锁回收、Pi 探测与派发失败（2026-09-22）
+
+**锁回收**：单独的 `mkdir .controller.lock` 不能保护「判死→删除→重建」整体。acquire/release 先用 Perl `Fcntl::flock` 对持续存在的项目 `qwbuddy/` 目录加独占锁，再在持锁区处理原有目录锁；目录删除重建不改变被锁 inode，进程异常终止时内核释放互斥。Perl 或 flock 不可用即报错，不降级为无互斥回收。原有「只回收已死 owner、未知拒绝」不变。
+
+**Pi 探测**：`turn_end` 的 `--block --max-ms 1` 与常规值守共用 exit 2 合同：摘要只注入一次、清故障计数并立即恢复常规 `--block`。0 继续闲置，124 恢复值守，其他退出码退避。
+
+**派发失败**：保留 F2 的顺序，`state: running` 与 `scenarios-fp:` 在启动前写好并核验，完整 `dispatch:` 在投递前追加。记录该次追加的真实字节偏移；投递失败时核对本行内容，只原位把九字节前缀改成 `not-sent:`，再追加 `blocked:` 失败状态。账本不做整份快照覆盖或截断，其他工人并发追加的行保持原字节。`qwb-run.sh` 与 `qwb-lint.sh` 的场景块提取均把 `not-sent:` 视为运行记录终止行；即使验收场景是最后一节，也不改变原冻结指纹。只有本次新建的 tab 可关闭；显式 `--pane` 和复用工人的既有窗口不关闭。同名复用须有本票历史派发，并核对实际 worker、物理 cwd 和 workspace；任何查询未知均拒绝投递。本节取代 §三十一 E 对失败时“删除最后一行”和同名即复用的旧描述。

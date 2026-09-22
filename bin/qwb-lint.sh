@@ -175,7 +175,7 @@ echo "== 7. 已派发任务书的验收场景与冻结 =="
 scenario_block() {
   awk '
     inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|wake|worktree|scenarios-fp):/) { inblk=0 }
+    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
     inblk==1 { print }
   ' "$1"
 }

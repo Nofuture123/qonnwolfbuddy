@@ -151,13 +151,6 @@ export function createWatchCore(d: WatchCoreDeps) {
   }
 
   function onExit(code: number, wasProbe: boolean, out: string) {
-    if (wasProbe) {
-      // turn_end 探测：0 = 无未结项（继续闲置）；124 = 有未结项（重新值守）；其他 = 故障
-      if (code === 124) startBlock();
-      else if (code === 0) idleAfterZero = true;
-      else fail(code);
-      return;
-    }
     if (code === 2) {
       failures = 0;
       warned = false;
@@ -170,6 +163,13 @@ export function createWatchCore(d: WatchCoreDeps) {
         d.appendErr(d.root, `exit=2 摘要注入失败`);
       }
       startBlock(); // 立即重启下一轮
+      return;
+    }
+    if (wasProbe) {
+      // turn_end 探测：2 已按普通唤醒处理；0 = 无未结项；124 = 有未结项。
+      if (code === 124) startBlock();
+      else if (code === 0) idleAfterZero = true;
+      else fail(code);
       return;
     }
     if (code === 0) {

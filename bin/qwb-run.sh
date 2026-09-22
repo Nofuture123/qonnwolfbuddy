@@ -264,7 +264,7 @@ fi
 scenario_block() {
   awk '
     inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|wake|worktree|scenarios-fp):/) { inblk=0 }
+    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
     inblk==1 { print }
   ' "$1"
 }
@@ -359,9 +359,62 @@ fi
 # 同名 agent 存在（按名字查询）且状态 idle/done → 复用：不建 tab、不 agent start，
 # dispatch: 行的 pane 写它现有的 pane，直接 agent prompt 续派（提示词前加返工/续派说明）；
 # working/blocked → 拒绝派发（工人还在干，别打断）；查询失败（非 not_found）→ fail-closed 拒绝。
-# 应答里 agent 名与本任务名不同（按名查询正常不会发生）或无名字段 → 视为无同名工人，走新开路径。
+# 应答里 agent 名与本任务名不同或缺身份字段 → 拒绝，不猜接收者。
 REUSE_PANE=""
 TAB_ID=""
+validate_reuse() {
+  local expected_dir actual_dir expected_ws caller_info pane_out pane_meta
+  local pane_id pane_kind pane_cwd pane_ws pane_dir last_dispatch hist_dir
+  if [[ "$HERE" -eq 1 ]]; then expected_dir="$PROJECT_ROOT"
+  elif [[ -n "$WORKTREE" ]]; then expected_dir="$WORKTREE"
+  else expected_dir="$PROJECT_ROOT/.worktrees/$TASK_ID"; fi
+  expected_dir="$(cd "$expected_dir" 2>/dev/null && pwd -P)" \
+    || { echo "错误：复用目标目录不存在，拒绝投递" >&2; return 1; }
+  actual_dir="$(cd "$ag_cwd" 2>/dev/null && pwd -P)" \
+    || { echo "错误：复用工人 cwd 无法确认：$ag_cwd" >&2; return 1; }
+  expected_ws="$(resolve_workspace "$PROJECT_ROOT")" || return 1
+  if [[ -z "$expected_ws" ]]; then
+    expected_ws="${HERDR_WORKSPACE_ID:-}"
+    if [[ -z "$expected_ws" && -n "${HERDR_PANE_ID:-}" ]]; then
+      caller_info="$(herdr pane get "$HERDR_PANE_ID" 2>&1)" \
+        || { echo "错误：无法查询调用者 workspace：$caller_info" >&2; return 1; }
+      expected_ws="$(printf '%s' "$caller_info" | perl -MJSON::PP=decode_json -0777 -e '
+        my $j=eval{decode_json(<STDIN>)}; my $w=$j->{result}{pane}{workspace_id};
+        print $w if defined $w && !ref $w;' || true)"
+    fi
+  fi
+  [[ -n "$expected_ws" ]] \
+    || { echo "错误：无法确认复用目标 workspace，拒绝投递" >&2; return 1; }
+  pane_out="$(herdr pane get "$ag_pane" 2>&1)" \
+    || { echo "错误：复用 pane $ag_pane 查询失败：$pane_out" >&2; return 1; }
+  pane_meta="$(printf '%s' "$pane_out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{pane};
+    exit 1 unless ref $p eq "HASH";
+    my $cwd=$p->{foreground_cwd}//$p->{cwd};
+    for my $v ($p->{pane_id},$p->{agent},$cwd,$p->{workspace_id}) {
+      exit 1 unless defined $v && !ref $v && $v ne "";
+    }
+    printf "%s\t%s\t%s\t%s",$p->{pane_id},$p->{agent},$cwd,$p->{workspace_id};' || true)"
+  [[ -n "$pane_meta" ]] \
+    || { echo "错误：复用 pane $ag_pane 身份无法解析，拒绝投递" >&2; return 1; }
+  pane_id="$(printf '%s' "$pane_meta" | cut -f1)"
+  pane_kind="$(printf '%s' "$pane_meta" | cut -f2)"
+  pane_cwd="$(printf '%s' "$pane_meta" | cut -f3)"
+  pane_ws="$(printf '%s' "$pane_meta" | cut -f4)"
+  pane_dir="$(cd "$pane_cwd" 2>/dev/null && pwd -P)" \
+    || { echo "错误：复用 pane cwd 无法确认：$pane_cwd" >&2; return 1; }
+  [[ "$ag_kind" == "$WORKER" && "$pane_kind" == "$WORKER" \
+     && "$ag_pane" == "$pane_id" && "$actual_dir" == "$expected_dir" \
+     && "$pane_dir" == "$expected_dir" && "$ag_ws" == "$expected_ws" \
+     && "$pane_ws" == "$expected_ws" ]] \
+    || { echo "错误：同名工人 $NAME 的 worker/cwd/workspace 与本次目标不符，拒绝复用" >&2; return 1; }
+  last_dispatch="$(grep '^dispatch:' "$TASK_FILE" | tail -1 || true)"
+  hist_dir="${last_dispatch##* dir=}"
+  hist_dir="$(cd "$hist_dir" 2>/dev/null && pwd -P || true)"
+  [[ -n "$last_dispatch" && "$last_dispatch" == *" worker=$WORKER agent=$NAME pane=$ag_pane dir="* \
+     && "$hist_dir" == "$expected_dir" ]] \
+    || { echo "错误：同名工人 $NAME 没有匹配本票的既有 dispatch 身份，拒绝认领" >&2; return 1; }
+}
 if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
   ag_out="$(herdr agent get "$NAME" 2>&1)" && ag_rc=0 || ag_rc=$?
   if [[ "$ag_rc" -eq 0 ]]; then
@@ -370,17 +423,26 @@ if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
       my $a = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH" && ref $j->{result}{agent} eq "HASH")
         ? $j->{result}{agent} : undef;
       exit 1 unless $a;
-      for my $k ($a->{agent_status}, $a->{pane_id}) { exit 1 unless defined $k && !ref $k; }
-      printf "%s\t%s\t%s", (defined $a->{name} && !ref $a->{name} ? $a->{name} : ""),
-        $a->{agent_status}, $a->{pane_id};' || true)"
+      for my $k ($a->{name}, $a->{agent_status}, $a->{pane_id}, $a->{agent},
+                 $a->{workspace_id}) { exit 1 unless defined $k && !ref $k && $k ne ""; }
+      my $cwd = $a->{foreground_cwd} // $a->{cwd};
+      exit 1 unless defined $cwd && !ref $cwd && $cwd ne "";
+      printf "%s\t%s\t%s\t%s\t%s\t%s", $a->{name}, $a->{agent_status},
+        $a->{pane_id}, $a->{agent}, $cwd, $a->{workspace_id};' || true)"
     if [[ -n "$ag_meta" ]]; then
       ag_name="$(printf '%s' "$ag_meta" | cut -f1)"
       ag_stat="$(printf '%s' "$ag_meta" | cut -f2)"
       ag_pane="$(printf '%s' "$ag_meta" | cut -f3)"
+      ag_kind="$(printf '%s' "$ag_meta" | cut -f4)"
+      ag_cwd="$(printf '%s' "$ag_meta" | cut -f5)"
+      ag_ws="$(printf '%s' "$ag_meta" | cut -f6)"
+      [[ "$ag_name" == "$NAME" ]] \
+        || { echo "错误：查询同名工人 ${NAME} 却得到 ${ag_name}，拒绝复用" >&2; exit 1; }
       if [[ "$ag_name" == "$NAME" ]]; then
         case "$ag_stat" in
           idle|done)
             [[ -n "$ag_pane" ]] || { echo "错误：同名工人 ${NAME} 状态 ${ag_stat} 但缺 pane_id，无法复用（fail-closed）：${ag_out}" >&2; exit 1; }
+            validate_reuse || exit 1
             REUSE_PANE="$ag_pane"
             ;;
           working|blocked)
@@ -654,36 +716,65 @@ elif [[ -z "$PANE" ]]; then
 fi
 
 # 最终 pane 已知后追加完整 dispatch，随后才启动工人并发送提示词。
-# 记下追加前状态（是否已有尾换行、行数），启动失败时用它们把本行原样回滚掉。
+# 记下本次 append 的真实偏移（同一 fd 的写后位置），供失败时只改本行前缀。
 DISPATCH_LINE="$(printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR")"
-DISPATCH_HAD_NL=1
-{ [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && { DISPATCH_HAD_NL=0; printf '\n' >> "$TASK_FILE"; }; }
-lines_predisp="$(wc -l < "$TASK_FILE" | tr -d ' ')"
-printf '%s\n' "$DISPATCH_LINE" >> "$TASK_FILE" \
+DISPATCH_OFFSET="$(perl -MFcntl=O_WRONLY,O_APPEND -e '
+  my ($f, $line) = @ARGV;
+  open my $r, "<", $f or die "读任务书失败: $!\n";
+  binmode $r;
+  my $prefix = "";
+  if (-s $r) {
+    seek($r, -1, 2) or die "读取尾字节失败: $!\n";
+    read($r, my $last, 1) == 1 or die "读取尾字节失败: $!\n";
+    $prefix = "\n" if $last ne "\n";
+  }
+  close $r;
+  sysopen my $w, $f, O_WRONLY|O_APPEND or die "打开任务书失败: $!\n";
+  binmode $w;
+  my $record = $prefix . $line . "\n";
+  my $n = syswrite($w, $record);
+  die "dispatch 追加失败: $!\n" unless defined $n && $n == length $record;
+  my $end = sysseek($w, 0, 1);
+  die "获取 dispatch 偏移失败: $!\n" unless defined $end;
+  print $end - length($line) - 1;
+  close $w or die "关闭任务书失败: $!\n";
+' "$TASK_FILE" "$DISPATCH_LINE")" \
   || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
 # 自检：任务书原有行不得丢失（行数只增不减）
 lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
 (( lines_after >= lines_before )) \
   || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
 
-# 启动失败时的 dispatch 行回滚：只删最后一行，且必须是本次写的那一行（防误删别人的行）；
-# 追加前无尾换行的，把为对齐而补的那个换行也一并还原，字节回到追加前。
+# 只把本次 dispatch: 的 9 字节前缀原位改成 not-sent:（同长度）。
+# 不截断、不 rename 整份账本；其他工人即使在其后并发追加，也不会被覆盖。
 undo_dispatch_line() {
   perl -e '
-    my ($f, $line, $had_nl) = @ARGV;
-    open my $in, "<", $f or die "读任务书失败: $!\n";
-    my @l = <$in>; close $in;
-    die "最后一行不是本次写的 dispatch 行，不敢删（请人工核对 ${f}）\n"
-      unless @l && $l[-1] eq "$line\n";
-    pop @l;
-    if (!$had_nl && @l) { $l[-1] =~ s/\n\z//; }
-    my $tmp = "$f.undo.$$";
-    open my $out, ">", $tmp or die "写临时文件失败: $!\n";
-    print {$out} @l; close $out or die "写临时文件失败: $!\n";
-    rename $tmp, $f or die "替换任务书失败: $!\n";
-  ' "$TASK_FILE" "$DISPATCH_LINE" "$DISPATCH_HAD_NL" \
-    && [[ "$(wc -l < "$TASK_FILE" | tr -d ' ')" == "$lines_predisp" ]]
+    my ($f, $line, $off) = @ARGV;
+    open my $fh, "+<", $f or die "打开任务书失败: $!\n";
+    binmode $fh;
+    seek($fh, $off, 0) or die "定位本次 dispatch 失败: $!\n";
+    my $actual = <$fh>;
+    die "本次 dispatch 已变动，不敢改写\n" unless defined $actual && $actual eq "$line\n";
+    seek($fh, $off, 0) or die "重新定位失败: $!\n";
+    my $n = syswrite($fh, "not-sent:");
+    die "原位标记失败: $!\n" unless defined $n && $n == 9;
+    close $fh or die "关闭任务书失败: $!\n";
+  ' "$TASK_FILE" "$DISPATCH_LINE" "$DISPATCH_OFFSET"
+}
+delivery_failed() {
+  local step="$1" rc="$2" detail="$3"
+  # 只关闭本次创建的 tab；已有 --pane 或复用工人的 pane 永不关闭。
+  if [[ -n "$TAB_ID" ]]; then
+    herdr tab close "$TAB_ID" >/dev/null 2>&1 \
+      || echo "警告：本次 tab ${TAB_ID} 关闭失败，请手工核对" >&2
+  fi
+  undo_dispatch_line \
+    || echo "警告：本次 dispatch 原位撤销失败，需人工核对 $TASK_FILE" >&2
+  printf 'blocked: %s 派发投递失败 step=%s rc=%s pane=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$step" "$rc" "$PANE" >> "$TASK_FILE"
+  printf '错误：%s 失败（退出码 %s）：\n%s\n' "$step" "$rc" "$detail" >&2
+  exit 1
 }
 
 now_ms() {
@@ -700,11 +791,12 @@ sleep_ms() {
 case "$LAUNCH_MODE" in
   herdr)
     if [[ -n "$REUSE_PANE" ]]; then
-      # 复用既有工人：不建 tab、不 agent start，直接 prompt 续派（pane 已在 dispatch 行里留痕）
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
-      herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
+      prompt_rc=0
+      prompt_out="$(herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}" 2>&1)" || prompt_rc=$?
+      [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
+      printf '%s\n' "$prompt_out"
     else
-      # 启动参数：按空格切词追加到 `--` 之后（不做 shell 引号解析）；参数串为空时不加 `--`
       start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
       if [[ -n "$WORKER_ARGS" ]]; then
         start_argv+=(--)
@@ -712,46 +804,40 @@ case "$LAUNCH_MODE" in
       fi
       start_rc=0
       start_out="$(herdr "${start_argv[@]}" 2>&1)" || start_rc=$?
-      if [[ "$start_rc" -ne 0 ]]; then
-        # 起工人失败 → 不留副作用：关刚建的 tab（--pane 复用没建 tab，无 TAB_ID 不关）、
-        # 删刚写的 dispatch 行（只删最后一行且必须是本次写的那行），把 herdr 原始错误原样上报。
-        if [[ -n "$TAB_ID" ]]; then
-          herdr tab close "$TAB_ID" >/dev/null 2>&1 \
-            || echo "警告：tab ${TAB_ID} 关闭失败，请手动跑：herdr tab close ${TAB_ID}" >&2
-        fi
-        undo_dispatch_line \
-          || echo "警告：dispatch 行回滚失败——任务书可能残留一条死 dispatch 行，请人工核对 ${TASK_FILE}" >&2
-        printf '错误：herdr agent start 失败（退出码 %s）：\n%s\n' "$start_rc" "$start_out" >&2
-        exit 1
-      fi
+      [[ "$start_rc" -eq 0 ]] || delivery_failed "herdr agent start" "$start_rc" "$start_out"
       printf '%s\n' "$start_out"
-      herdr agent prompt "$NAME" "$PROMPT"
+      prompt_rc=0
+      prompt_out="$(herdr agent prompt "$NAME" "$PROMPT" 2>&1)" || prompt_rc=$?
+      [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
+      printf '%s\n' "$prompt_out"
     fi
     ;;
   pane-run:*)
-    herdr pane run "$PANE" "$PANE_COMMAND"
+    run_rc=0
+    run_out="$(herdr pane run "$PANE" "$PANE_COMMAND" 2>&1)" || run_rc=$?
+    [[ "$run_rc" -eq 0 ]] || delivery_failed "herdr pane run（启动）" "$run_rc" "$run_out"
     detect_started="$(now_ms)"
     while ! herdr agent get "$PANE" >/dev/null 2>&1; do
       detect_elapsed=$(( $(now_ms) - detect_started ))
       if (( detect_elapsed >= START_MS )); then
-        {
-          echo "错误：pane-run 工人检测超时（${START_MS}ms），pane=${PANE}"
-          echo "手工排查：herdr pane read ${PANE} --source recent-unwrapped --lines 120"
-          echo "          herdr pane process-info --pane ${PANE}"
-          echo "          herdr agent get ${PANE}"
-        } >&2
-        exit 1
+        delivery_failed "pane-run 工人检测" 1 "超时（${START_MS}ms），pane=${PANE}；查 herdr pane read / process-info / agent get"
       fi
       detect_left=$(( START_MS - detect_elapsed ))
       (( detect_left > 100 )) && detect_left=100
       sleep_ms "$detect_left"
     done
-    herdr agent rename "$PANE" "$NAME"
-    # 非官方 kind 只有进程检测，没有 herdr prompt adapter；直接向交互 pane 输入一行。
-    herdr pane run "$PANE" "$PROMPT"
-    # Command Code 对长文本可能先完成粘贴、同次 Enter 未提交；只有状态未转换时才补一次 Enter。
-    herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout 300 >/dev/null 2>&1 \
-      || herdr pane send-keys "$PANE" enter
+    rename_rc=0
+    rename_out="$(herdr agent rename "$PANE" "$NAME" 2>&1)" || rename_rc=$?
+    [[ "$rename_rc" -eq 0 ]] || delivery_failed "herdr agent rename" "$rename_rc" "$rename_out"
+    prompt_rc=0
+    prompt_out="$(herdr pane run "$PANE" "$PROMPT" 2>&1)" || prompt_rc=$?
+    [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr pane run（提示词）" "$prompt_rc" "$prompt_out"
+    printf '%s\n' "$prompt_out"
+    if ! herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout 300 >/dev/null 2>&1; then
+      enter_rc=0
+      enter_out="$(herdr pane send-keys "$PANE" enter 2>&1)" || enter_rc=$?
+      [[ "$enter_rc" -eq 0 ]] || delivery_failed "herdr pane send-keys" "$enter_rc" "$enter_out"
+    fi
     ;;
 esac
 

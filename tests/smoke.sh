@@ -127,7 +127,8 @@ case "\${1:-} \${2:-}" in
                 if [[ "\$n" -le "\${HERDR_AGENT_GET_FAILS:-0}" ]]; then fix agent-get-error.json >&2; exit 1; fi
                 if [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/agent-get-\$(san "\${3:-}").json";
                 elif [[ -f "\$DYNH/agent-get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/agent-get-\$(san "\${3:-}").err" >&2; exit 1;
-                else fix agent-get-cmd.json; fi ;;
+                elif [[ "${3:-}" == *:* ]]; then fix agent-get-cmd.json;
+                else fix agent-get-error.json >&2; exit 1; fi ;;
   "agent rename") fix agent-get-cmd.json ;;
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
   "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
@@ -3322,14 +3323,23 @@ When  再派
 Then  拒绝且零副作用
 EOF
 mkdir -p "$RUP/dyn"
-# 同名 idle 工人片场：真录 agent-get-cmd.json 改 name/pane（san(qwb-reuset)=qwbreuset）
-sed -e 's/wAB:p3/wX:p5/g' -e 's/wAB:t3/wX:t5/g' -e 's/"agent":"cmd"/"agent":"pi","name":"qwb-reuset"/' \
+# 同名 idle 工人片场：真录 agent-get-cmd.json 改为本票真实 worker、物理 cwd 与 workspace。
+ru_physical="$(cd "$RUP" && pwd -P)"
+sed -e 's/wAB:p3/wX:p5/g' -e 's/wAB:t3/wX:t5/g' -e 's/wAB/wX/g' \
+  -e "s|/private/tmp|$ru_physical|g" -e 's/"agent":"cmd"/"agent":"pi","name":"qwb-reuset"/' \
   "$FIXDIR/agent-get-cmd.json" | sed '/^#/d' > "$RUP/dyn/agent-get-qwbreuset.json"
+sed -e 's/w8Z:pY/wX:p5/g' -e 's/w8Z:tR/wX:t5/g' -e 's/w8Z/wX/g' \
+  -e "s|/private/tmp/qwb02probe/untrusted-dir|$ru_physical|g" \
+  -e 's/"agent_status":"unknown"/"agent":"pi","agent_status":"idle"/' \
+  "$FIXDIR/pane-get-shell.json" | sed '/^#/d' > "$RUP/dyn/get-wXp5.json"
+printf '{"result":{"workspaces":[{"workspace_id":"wX","focused":true,"worktree":{"repo_root":"%s"}}]}}\n' \
+  "$ru_physical" > "$RUP/dyn/workspace-list.json"
 ru_task="$RUP/tasks/2099-01-01-reuset.md"
+printf 'dispatch: historical worker=pi agent=qwb-reuset pane=wX:p5 dir=%s\n' "$ru_physical" >> "$ru_task"
 # (a) idle → 复用：无 tab create、无 agent start、有 agent prompt，dispatch pane=现有 pane
 : > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
 ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
-  bash qwbuddy/bin/qwb-run.sh --task reuset --worker pi --here 2>&1 )"; ru_rc=$?
+  bash qwbuddy/bin/qwb-run.sh --task reuset --worker pi --here --accept-new-scenarios 2>&1 )"; ru_rc=$?
 { [[ "$ru_rc" -eq 0 ]] && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
   && grep -q 'agent prompt qwb-reuset ' "$STUBLOG" \
   && grep -q '这是返工/续派' "$STUBLOG" \
@@ -3351,6 +3361,7 @@ ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
   || { bad "working 拒绝路径不对（rc=${ru_rc}）"; printf '%s\n' "$ru_out"; cat "$STUBLOG"; }
 # (c) 无同名工人 + agent start 失败 → 关刚建 tab、回滚 dispatch 行、exit 1 上报原始错误
 rm "$RUP/dyn/agent-get-qwbreuset.json"   # 回到无同名工人：走新开 tab 路径
+cp "$FIXDIR/agent-get-error.json" "$RUP/dyn/agent-get-qwbrollback.err"
 cat > "$RUP/tasks/2099-01-02-rollback.md" <<'EOF'
 # rollback
 state: blocked
@@ -3377,11 +3388,13 @@ rb_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
   bash qwbuddy/bin/qwb-run.sh --task rollback --worker pi --here 2>&1 )"; rb_rc=$?
 { [[ "$rb_rc" -ne 0 ]] && printf '%s' "$rb_out" | grep -q 'agent_name_taken' \
   && printf '%s' "$rb_out" | grep -q 'agent start 失败' \
-  && [[ "$(wc -l < "$rb_task" | tr -d ' ')" -eq "$rb_before" ]] \
+  && [[ "$(wc -l < "$rb_task" | tr -d ' ')" -eq "$((rb_before + 2))" ]] \
   && [[ "$(grep -c '^dispatch:' "$rb_task")" -eq 1 ]] \
+  && [[ "$(grep -c '^not-sent:' "$rb_task")" -eq 1 ]] \
+  && grep -q '^blocked: .*派发投递失败' "$rb_task" \
   && grep -q 'tab create' "$STUBLOG" && grep -q 'tab close w93:t7' "$STUBLOG" \
   && ! grep -q 'agent prompt' "$STUBLOG"; } \
-  && ok "agent start 失败（agent_name_taken）→ 关刚建 tab、dispatch 行回滚到写前行数、exit 1 原始错误上报" \
+  && ok "agent start 失败（agent_name_taken）→ 关本次 tab、历史 dispatch 保留、本次原位标记未投递、exit 1 原始错误上报" \
   || { bad "回滚路径不对（rc=${rb_rc}）"; printf '%s\n' "$rb_out"; cat "$STUBLOG"; }
 
 echo "== 70. 开局点名改用 qwb-status.sh（省 token）=="
@@ -3413,8 +3426,8 @@ run_pi_ext() {
   return 1
 }
 extout="$(run_pi_ext)"; extrc=$?
-{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 9 passed'; } \
-  && ok "pi 扩展单元测试 9 项通过（锁主/非锁主/exit 2/0/退避告警/单飞/探测/shutdown）" \
+{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 10 passed'; } \
+  && ok "pi 扩展单元测试 10 项通过（锁主/非锁主/exit 2/0/退避告警/单飞/探测/shutdown）" \
   || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
 if command -v node >/dev/null 2>&1; then
@@ -3462,6 +3475,16 @@ out="$(stat69)"
   && ok "status：pi-ext pid 死 → 值守：未运行" \
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
+
+echo "== 74. 生产运行时返修定向负例 =="
+runtime_out="$(bash "$ROOT/tests/runtime-readiness.sh" 2>&1)"; runtime_rc=$?
+if [[ "$runtime_rc" -eq 0 ]] && printf '%s' "$runtime_out" | grep -q 'RUNTIME READINESS PASS' &&
+  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 17 ]]; then
+  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 17 项通过"
+else
+  bad "运行时定向测试失败（rc=$runtime_rc)"
+  printf '%s\n' "$runtime_out"
+fi
 
 
 # 新节必须加在本行之前
