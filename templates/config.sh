@@ -1,15 +1,7 @@
 # QW buddy 配置——bash 可直接 source；这就是唯一来源，直接改这里
-QWB_WORKERS="codex pi claude devin omp"   # 工人表（空格分隔；启动方式可由下一项按工人覆盖）
-                                       # 注意：本表也是 QWB_WORKER_ARGS / QWB_WORKER_LAUNCH 的「工人名=」边界表——
-                                       # 表里没有的名字不会被当成新项，而是并进上一个值。两条默认值必须自洽。
-QWB_WORKER_LAUNCH=""                   # 可选：工人名=herdr|pane-run:<交互命令>；值可含空格，遇下一个工人名= 才结束
-# 启动参数：默认让所有 herdr-kind 工人以最高权限启动——工人在隔离 worktree 里干活、产物由主控验收，
-# 审批提示没人点只会卡死流程（见 docs/DECISIONS.md「为什么最高权限」）。格式与 QWB_WORKER_LAUNCH 同款：
-# 「工人名=参数串」，值可含空格、遇下一个工人名= 才结束；参数按空格切词追加到 herdr agent start 的 `--` 之后
-# （未列出/空值不加 `--`）。参数串同样禁 headless（-p/--print/--exec/exec）。
-# pane-run 工人的参数写在 QWB_WORKER_LAUNCH 的命令行里（如 cmd=pane-run:cmd --yolo --trust）——
-# 在这里再给它配值会被拒绝派发，一个工人的启动参数只能有一处。
-QWB_WORKER_ARGS="codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous --respect-workspace-trust false omp=--auto-approve pi=--approve"
+QWB_WORKERS="codex pi claude devin omp"   # 工人表；每个名字须在 workers.sh 有且仅有一条声明
+# 启动方式与逐项 argv 见同目录 workers.sh。旧 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS
+# 必须用母本仓 qwb-init.sh --migrate-worker-config <项目根> 显式迁移。
 QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
 QWB_WAKE_INTERVAL_MS=120000            # 值守每轮等待预算（毫秒）
 QWB_REWAKE_MS=1800000                  # 时间兜底重叫：仅对 state=running 的票生效——距上次叫醒超过它仍未结项就再叫一次（0 = 关闭）；
@@ -34,7 +26,7 @@ QWB_GATE_FAST=""                       # 快门：快、无外部依赖，改一
 QWB_GATE_FULL=""                       # 全门：完整检查，合并前跑
 # —— 以下仅为人/AI 阅读，脚本不读 ——
 # 工人能力档：codex=强实现（复杂代码、重构）｜pi=快速便宜（常规执行、机械改动、调研）｜claude=难活/审核（架构判断、对抗审查、前端）
-#             默认工人表里的 devin/omp 也在 QWB_WORKER_ARGS 默认串内（同样最高权限启动）；能力档按实际产品判断
+#             默认工人表里的 devin/omp 也在 workers.sh（同样最高权限启动）；能力档按实际产品判断
 # 派工规则：复杂架构/高风险→强档；常规实现/机械改动→快档；审核必须换模型家族；联网/实时信息按能力挑
 #           派工前可查 quota-axi；模型判定 = 智力档 × 额度现状（额度只是参考）
 # 硬规矩：工人一律 Herdr 窗口交互式运行（禁 headless）；零通知使用者；只用 Herdr；超时一律毫秒

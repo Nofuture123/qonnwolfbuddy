@@ -53,7 +53,7 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp" && -z "$QWB_WORKER_LAUNCH" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp" && -z "${QWB_WORKER_LAUNCH:-}" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
   ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
@@ -381,6 +381,7 @@ echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
 GP="$TMP/gitp"
 mkdir -p "$GP/tasks" "$GP/.worktrees" "$GP/qwbuddy"
 cp "$TMP/qwbuddy/config.sh" "$GP/qwbuddy/config.sh"
+cp "$ROOT/templates/workers.sh" "$GP/qwbuddy/workers.sh"
 git -C "$GP" init -q
 git -C "$GP" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
 WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
@@ -1166,9 +1167,9 @@ EOF
 [[ -d "$GP/.worktrees/m6def" ]] \
   && ok "默认派发创建了 .worktrees/m6def 隔离副本" || bad "默认派发未建隔离副本（M6 未修）"
 ddir="$(grep '^dispatch:' "$M6T" | tail -1 | sed -n 's/.*dir=\([^[:space:]]*\).*/\1/p')"
-[[ "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
+[[ -n "$ddir" && -d "$GP/.worktrees/m6def" && "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
   && ok "dispatch 行 dir= 指向隔离副本" || bad "dir= 未指向隔离副本（${ddir}）"
-[[ "$ddir" != "$(cd "$GP" && pwd)" ]] \
+[[ -n "$ddir" && -d "$GP/.worktrees/m6def" && "$ddir" != "$(cd "$GP" && pwd)" ]] \
   && ok "dir= 绝不是项目根" || bad "dir= 仍是项目根（M6 未修）"
 # --worktree 复用既有副本仍可用
 M6W="$GP/tasks/2099-01-33-m6reuse.md"
@@ -1176,7 +1177,7 @@ sed 's/m6def/m6reuse/' "$M6T" > "$M6W"
 ( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:gp bash "$TMP/qwbuddy/bin/qwb-run.sh" --task m6reuse --worker codex --worktree "$GP/.worktrees/m6def" ) >/dev/null \
   && ok "--worktree 复用既有副本仍可派发" || bad "--worktree 派发被拒"
 ddir="$(grep '^dispatch:' "$M6W" | tail -1 | sed -n 's/.*dir=\([^[:space:]]*\).*/\1/p')"
-[[ "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
+[[ -n "$ddir" && -d "$GP/.worktrees/m6def" && "$ddir" == "$(cd "$GP/.worktrees/m6def" && pwd)" ]] \
   && ok "--worktree dir= 所给副本" || bad "--worktree dir 不对（${ddir}）"
 # 负例：--here 与 --worktree 同给 → 互斥拒绝
 if ( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:gp bash "$TMP/qwbuddy/bin/qwb-run.sh" --task m6reuse --worker codex --here --worktree "$GP" ) >/dev/null 2>&1; then
@@ -2045,7 +2046,7 @@ EOF
 chmod +x "$TMP/launch-now.sh" "$TMP/launch-sleep.sh"
 
 # 47a pane-run：检测延迟两次后成功；顺序、寻址目标与 dispatch pane 均取 tab create 的 pane。
-printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd"' >> "$LM/qwbuddy/config.sh"
+printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd' 'qwb_worker zcode herdr' > "$LM/qwbuddy/workers.sh"
 mk_launch_task paneok
 : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"; echo 0 > "$LMNOW"; : > "$LMSLEEP"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_FAIL=wait HERDR_AGENT_GET_FAILS=2 \
@@ -2054,7 +2055,7 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_FAIL=wait HER
 [[ "$rc" -eq 0 ]] && ok "pane-run 检测延迟后派发成功" || { bad "pane-run 成功路径 rc=${rc}"; printf '%s\n' "$out"; }
 calls="$(cat "$STUBLOG")"
 { [[ "$(grep -c 'agent get w93:p7' "$STUBLOG" || true)" -ge 3 ]] \
-   && grep -q 'pane run w93:p7 cmd' "$STUBLOG" \
+   && grep -q "pane run w93:p7 'cmd'" "$STUBLOG" \
    && grep -q 'agent rename w93:p7 qwb-disp' "$STUBLOG" \
    && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-paneok.md" "$STUBLOG" \
    && grep -q '写完状态行再收工' "$STUBLOG" \
@@ -2064,7 +2065,7 @@ calls="$(cat "$STUBLOG")"
   && ok "pane-run 直打后无状态转换会补 Enter，且不走 agent start/prompt" \
   || { bad "pane-run 调用序列不完整"; printf '%s\n' "$calls"; }
 tabln="$(grep -n 'tab create' "$STUBLOG" | head -1 | cut -d: -f1)"
-runln="$(grep -n 'pane run w93:p7 cmd' "$STUBLOG" | head -1 | cut -d: -f1)"
+runln="$(grep -n "pane run w93:p7 'cmd'" "$STUBLOG" | head -1 | cut -d: -f1)"
 getln="$(grep -n 'agent get w93:p7' "$STUBLOG" | head -1 | cut -d: -f1)"
 renln="$(grep -n 'agent rename w93:p7 qwb-disp' "$STUBLOG" | head -1 | cut -d: -f1)"
 prmln="$(grep -n 'pane run w93:p7 你是本任务的执行者' "$STUBLOG" | head -1 | cut -d: -f1)"
@@ -2093,33 +2094,33 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAI
   && ok "pane-run 超时后无第二次 pane run（未发提示词）" || bad "pane-run 超时后仍发送提示词"
 
 # 47c 非法方式在锁/窗口/账本之前拒绝。
-printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=teleport"' >> "$LM/qwbuddy/config.sh"
+printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd teleport' 'qwb_worker zcode herdr' > "$LM/qwbuddy/workers.sh"
 mk_launch_task badmode
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task badmode --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'herdr' && printf '%s' "$out" | grep -q 'pane-run:<命令行>' \
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'herdr' && printf '%s' "$out" | grep -q 'pane-run' \
    && ! printf '%s' "$out" | grep -q 'zcodecli-chat' && [[ ! -s "$STUBLOG" ]] \
    && [[ ! -d "$LM/qwbuddy/.controller.lock" ]] && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-badmode.md"; } \
   && ok "非法启动方式在全部副作用前拒绝并列出合法方式" || { bad "非法启动方式拒绝不完整（rc=${rc}）"; printf '%s\n' "$out"; }
 
-printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd -p"' >> "$LM/qwbuddy/config.sh"
+printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd -p' 'qwb_worker zcode herdr' > "$LM/qwbuddy/workers.sh"
 mk_launch_task headless
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task headless --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '只允许交互式' && [[ ! -s "$STUBLOG" ]] \
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'headless' && [[ ! -s "$STUBLOG" ]] \
    && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-headless.md"; } \
   && ok "pane-run 拒绝 -p 等 headless 命令且零副作用" \
   || { bad "pane-run headless 禁令未生效（rc=${rc}）"; printf '%s\n' "$out"; }
 
 # 47d 值含空格：按下一个「工人名=」切分，zcode 启动命令保持完整的 zcodecli chat。
-printf '%s\n' 'QWB_WORKER_LAUNCH="cmd=pane-run:cmd zcode=pane-run:zcodecli chat"' >> "$LM/qwbuddy/config.sh"
+printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd' 'qwb_worker zcode pane-run zcodecli chat' > "$LM/qwbuddy/workers.sh"
 mk_launch_task zspace
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=1 \
   HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
   QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task zspace --worker zcode --here --name qwb-disp 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "含空格的 zcode pane-run 派发成功" || { bad "zcode 空格命令 rc=${rc}"; printf '%s\n' "$out"; }
-{ grep -qx 'herdr pane run w93:p7 zcodecli chat' "$STUBLOG" \
+{ grep -qxF "herdr pane run w93:p7 'zcodecli' 'chat'" "$STUBLOG" \
    && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-zspace.md" "$STUBLOG" \
    && grep -q 'agent wait w93:p7 --until working --until done --until blocked --timeout 300' "$STUBLOG" \
    && ! grep -q 'pane send-keys w93:p7 enter' "$STUBLOG" \
@@ -2654,11 +2655,45 @@ When  主控派发
 Then  在任何副作用之前拒绝
 EOF
 }
-mp_set() { # $1=键名 $2=值（空 = 删掉该键，即未声明）
-  sed -i '' "/^$1=/d" "$MPX/qwbuddy/config.sh"
-  [[ -n "$2" ]] && printf '%s="%s"\n' "$1" "$2" >> "$MPX/qwbuddy/config.sh"
-  return 0
+MP_LAUNCH=""; MP_ARGS=""
+mp_emit_workers() { # 历史用例的长串输入仅在测试夹具里转换；运行入口只读 workers.sh
+  MP_LAUNCH="$MP_LAUNCH" MP_ARGS="$MP_ARGS" MP_OUT="$MPX/qwbuddy/workers.sh" python3 - <<'PYWORKERS'
+import os, shlex
+names = ("codex", "claude", "devin", "omp", "pi", "cmd")
+def parse(raw):
+    result, current = {}, None
+    for word in raw.split():
+        prefix = word.split("=", 1)[0]
+        if "=" in word and prefix in names:
+            current = prefix
+            result[current] = [word.split("=", 1)[1]]
+        elif current is not None:
+            result[current].append(word)
+    return {key: " ".join(value) for key, value in result.items()}
+launch, args = parse(os.environ["MP_LAUNCH"]), parse(os.environ["MP_ARGS"])
+with open(os.environ["MP_OUT"], "w") as out:
+    for name in names:
+        mode = launch.get(name, "herdr")
+        params = args.get(name, "")
+        if mode.startswith("pane-run:"):
+            words = [name, "pane-run", *mode[len("pane-run:"):].split()]
+        else:
+            words = [name, mode, *params.split()]
+        out.write("qwb_worker " + " ".join(shlex.quote(x) for x in words) + "\n")
+        if mode.startswith("pane-run:") and params:
+            out.write("qwb_worker " + " ".join(shlex.quote(x) for x in [name, "herdr", *params.split()]) + "\n")
+PYWORKERS
 }
+mp_set() { # $1=键名 $2=值；旧输入只用于保留已有公开派发断言
+  case "$1" in
+    QWB_WORKER_LAUNCH) MP_LAUNCH="$2"; mp_emit_workers ;;
+    QWB_WORKER_ARGS) MP_ARGS="$2"; mp_emit_workers ;;
+    *) sed -i '' "/^$1=/d" "$MPX/qwbuddy/config.sh"
+       [[ -n "$2" ]] && printf '%s="%s"\n' "$1" "$2" >> "$MPX/qwbuddy/config.sh"
+       return 0 ;;
+  esac
+}
+
 mp_pre() { rm -rf "$MPX/qwbuddy/.controller.lock"; : > "$STUBLOG"; }
 mp_run() { ( cd "$MPX" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp HERDR_WORKSPACE_ID=wtestW \
   bash qwbuddy/bin/qwb-run.sh "$@" ); }
@@ -2728,8 +2763,8 @@ mp_task mpcollide
 mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd"; mp_set QWB_WORKER_ARGS "cmd=--yolo"
 mp_pre
 out="$(mp_run --task mpcollide --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'QWB_WORKER_LAUNCH' \
-   && printf '%s' "$out" | grep -q '只能有一处' && mp_clean mpcollide; } \
+{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '重复启动定义' \
+   && mp_clean mpcollide; } \
   && ok "pane-run 工人在 ARGS 里配值 → 拒绝且零副作用（rc=${rc}）" \
   || { bad "pane-run 冲突未拦住或留了副作用（rc=${rc}）"; printf '%s\n' "$out"; }
 
@@ -2738,7 +2773,7 @@ mp_task mppane
 mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd --yolo --trust"; mp_set QWB_WORKER_ARGS ""
 mp_pre
 out="$(mp_run --task mppane --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && grep -qxF 'herdr pane run w93:p7 cmd --yolo --trust' "$STUBLOG" \
+{ [[ "$rc" -eq 0 ]] && grep -qxF "herdr pane run w93:p7 'cmd' '--yolo' '--trust'" "$STUBLOG" \
    && grep -q '^herdr agent rename w93:p7 qwb-mppane' "$STUBLOG" \
    && ! grep -q 'agent start' "$STUBLOG"; } \
   && ok "pane-run 命令行带 --yolo --trust 照常启动且未被误判 headless（rc=${rc}）" \
@@ -2765,20 +2800,25 @@ out="$(mp_run --task mpfine --worker codex --here 2>&1)"; rc=$?
 
 # 51g 模板默认值：可被 source 与 bash -n 接受、被 lint 认作活键，且真派发时按工人生效
 mp_task mptmpl
-tmpl_args="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
-mp_set QWB_WORKER_ARGS "$tmpl_args"
-bash -n "$ROOT/templates/config.sh" && ok "bash -n templates/config.sh 退出 0" || bad "templates/config.sh 语法错误"
-if ( . "$ROOT/templates/config.sh"; [[ "$QWB_WORKER_ARGS" == "codex=--dangerously-bypass-approvals-and-sandbox claude=--dangerously-skip-permissions devin=--permission-mode dangerous --respect-workspace-trust false omp=--auto-approve pi=--approve" ]] ); then
-  ok "模板默认 QWB_WORKER_ARGS 与票 §0 一致（5 个 herdr-kind 工人，devin 含信任参数）"
+cp "$ROOT/templates/workers.sh" "$MPX/qwbuddy/workers.sh"
+printf '%s\n' 'qwb_worker cmd herdr' >> "$MPX/qwbuddy/workers.sh"
+bash -n "$ROOT/templates/config.sh" && bash -n "$ROOT/templates/workers.sh" \
+  && ok "bash -n config.sh / workers.sh 退出 0" || bad "工人配置模板语法错误"
+if grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker claude herdr --dangerously-skip-permissions' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker devin herdr --permission-mode dangerous --respect-workspace-trust false' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker omp herdr --auto-approve' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker pi herdr --approve' "$ROOT/templates/workers.sh"; then
+  ok "模板默认参数与票 §0 一致（5 个 herdr-kind 工人，devin 含信任参数）"
 else
-  bad "模板默认 QWB_WORKER_ARGS 与票不符"
+  bad "模板默认参数与票不符"
 fi
-grep -q '^QWB_WORKER_ARGS="codex=' "$TMP/qwbuddy/config.sh" \
-  && ok "qwb-init 装出的 config.sh 带默认 QWB_WORKER_ARGS" || bad "安装的 config.sh 缺默认 QWB_WORKER_ARGS"
+grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$TMP/qwbuddy/workers.sh" \
+  && ok "qwb-init 装出的 workers.sh 带默认权限参数" || bad "安装的 workers.sh 缺默认参数"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
 { [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
    && printf '%s' "$lintout" | grep -q '键全部被.*引用'; } \
-  && ok "lint 过且「config 无死键」PASS（QWB_WORKER_ARGS 是活键）" \
+  && ok "lint 过且「config 无死键」PASS" \
   || { bad "lint 未过或无死键检查 PASS（rc=${rc}）"; printf '%s\n' "$lintout"; }
 mp_pre
 out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
@@ -2854,24 +2894,24 @@ mp_run --task tpx --worker codex --here >/dev/null 2>&1
 rm -rf "$MPX"
 
 echo "== 51h. 默认值自洽（2026-09-16 spec-defect 回归门）=="
-# 默认 QWB_WORKER_ARGS 串里出现的每个「工人名=」都必须在该串所属的默认 QWB_WORKERS 里，
-# 否则它不被当成新项，而是并进上一个工人的值（claude 曾因此被旁串 devin=/omp=）。
-# 反向验证：把默认工人表删回 "codex pi claude"，本条必须变红。
 dworkers="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKERS" )"
-dargs="$( . "$ROOT/templates/config.sh"; printf '%s' "$QWB_WORKER_ARGS" )"
+dargs="$(awk '$1 == "qwb_worker" { print $2 }' "$ROOT/templates/workers.sh")"
 miss=""
-for tok in $dargs; do
-  case "$tok" in
-    *=*) nm="${tok%%=*}" ;;
-    *) continue ;;
-  esac
+for w in $dworkers; do
+  table_count=0; definition_count=0
+  for nm in $dworkers; do [[ "$nm" == "$w" ]] && table_count=$((table_count+1)); done
+  for nm in $dargs; do [[ "$nm" == "$w" ]] && definition_count=$((definition_count+1)); done
+  [[ "$table_count" -eq 1 && "$definition_count" -eq 1 ]] \
+    || miss="${miss} ${w}(table=${table_count},definition=${definition_count})"
+done
+for nm in $dargs; do
   inself=0
   for w in $dworkers; do [[ "$nm" == "$w" ]] && { inself=1; break; }; done
   [[ "$inself" -eq 1 ]] || miss="${miss} ${nm}"
 done
-{ [[ -n "$dworkers" && -z "$miss" ]]; } \
-  && ok "默认 QWB_WORKER_ARGS 的每个「工人名=」都在默认 QWB_WORKERS 里（两条默认值自洽）" \
-  || bad "默认 ARGS 表含不在默认工人表里的名字（会被并进上一个值）:${miss}"
+{ [[ -n "$dworkers" && -z "$miss" && "$(printf '%s' "$dworkers" | wc -w | tr -d ' ')" == "5" ]]; } \
+  && ok "默认 workers.sh 的每个工人都在 QWB_WORKERS 且声明唯一" \
+  || bad "默认 workers.sh 含未知或重复工人:${miss}"
 
 echo "== 53. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形化核心）=="
 # 独立项目跑本节：其他节会改写共享 $TMP 的 config.sh（如第 27 节追加 QWB_REWAKE_MS=0）与账本，
@@ -3686,6 +3726,14 @@ if bash "$ROOT/tests/lifecycle-readiness.sh" > "$TMP/lifecycle-readiness.log" 2>
 else
   bad "生产生命周期定向回归失败"
   grep -E '^(FAIL|LIFECYCLE|Traceback|AssertionError)' "$TMP/lifecycle-readiness.log" >&2 || true
+fi
+
+echo "== 77. 工人配置 argv 与显式迁移定向回归 =="
+if python3 "$ROOT/tests/worker-config.py" > "$TMP/worker-config.log" 2>&1; then
+  ok "工人配置 argv、提前拒绝与显式迁移定向回归通过"
+else
+  bad "工人配置定向回归失败"
+  cat "$TMP/worker-config.log"
 fi
 
 

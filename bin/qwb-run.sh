@@ -28,13 +28,9 @@ usage() {
   -h, --help            显示本帮助
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
-启动方式：config.sh 的 QWB_WORKER_LAUNCH 可按工人覆盖为 pane-run:<交互命令>；未列出走 herdr。
-启动参数：config.sh 的 QWB_WORKER_ARGS 可按工人给启动参数（格式与 QWB_WORKER_LAUNCH 同款：
-    工人名=参数串，值可含空格、遇下一个「工人名=」前缀才结束，同一工人取最后一项）。参数串按空格
-    切词追加到 herdr agent start 的 `--` 之后；为空（未列出/空值）则不加 `--`，与不配置时字节一致。
-    参数串同样过 headless 禁令（-p/--print/--exec/exec）。pane-run 工人的参数只能写在
-    QWB_WORKER_LAUNCH 的命令行里——QWB_WORKER_ARGS 里再给它配值即拒绝派发（一个工人的启动参数
-    只能有一处），两类检查都在锁/worktree/tab/账本写之前完成。
+启动方式与 argv：qwbuddy/workers.sh 每工人一条 qwb_worker 声明；herdr 和 pane-run
+    参数均逐项保真。旧配置须先运行母本仓 qwb-init.sh
+    --migrate-worker-config <项目根>；检查在锁/worktree/tab/账本写之前完成。
 新建隔离副本后、开 tab / 记账之前，config.sh 的 QWB_WORKTREE_SETUP 非空时会在副本目录里
 bash -c 执行一次（如 pnpm install --offline --frozen-lockfile && cp ../../.env .env），供
 monorepo 副本自装依赖/环境；stdout/stderr 透传，非 0 → 拒绝派发、副本保留供排查
@@ -107,12 +103,50 @@ fi
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
 
-# 工人须在 config.sh 的 QWB_WORKERS 里；QWB_WORKER_LAUNCH 只覆盖启动方式。
-# 配置唯一来源是 bash 文件：直接 source，不再解析 JSON。
+# 工人须在 config.sh 的 QWB_WORKERS 里；启动定义另见 workers.sh。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }
-QWB_WORKERS=""; QWB_WORKER_LAUNCH=""; QWB_WORKER_ARGS=""; QWB_AGENT_START_MS=""; QWB_WORKTREE_SETUP=""
+unset QWB_WORKER_LAUNCH QWB_WORKER_ARGS
+QWB_WORKERS=""; QWB_AGENT_START_MS=""; QWB_WORKTREE_SETUP=""
 # shellcheck source=/dev/null
 . "$CONF"
+if [[ ${QWB_WORKER_LAUNCH+x} || ${QWB_WORKER_ARGS+x} ]]; then
+  echo "错误：检测到旧 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS；先运行母本仓 bin/qwb-init.sh --migrate-worker-config '$PROJECT_ROOT'，不可直接派发" >&2
+  exit 1
+fi
+WORKERS_CONF="$PROJECT_ROOT/qwbuddy/workers.sh"
+[[ -f "$WORKERS_CONF" ]] || { echo "错误：缺少 ${WORKERS_CONF}；若 QWB_WORKERS 是定制表，请按 templates/workers.sh 手动创建逐工人声明；旧长串配置须显式迁移，默认配置可重跑母本仓 bin/qwb-init.sh" >&2; exit 1; }
+QWB_CONFIG_NAMES=(); QWB_CONFIG_MODES=(); QWB_CONFIG_OFFSETS=(); QWB_CONFIG_COUNTS=(); QWB_CONFIG_ARGV=()
+has_headless_arg() { [[ "$1" == -p || "$1" == --print || "$1" == --exec || "$1" == exec || "$1" == -p=* || "$1" == --print=* || "$1" == --exec=* || "$1" == exec=* ]]; }
+qwb_worker() {
+  local name="${1:-}" mode="${2:-}" known seen
+  shift 2 || { echo "错误：workers.sh 声明缺少工人名或启动方式" >&2; return 1; }
+  known=0
+  for seen in $QWB_WORKERS; do [[ "$seen" == "$name" ]] && known=1; done
+  [[ "$known" -eq 1 ]] || { echo "错误：workers.sh 有未知工人 '${name}'（不在 QWB_WORKERS）" >&2; return 1; }
+  for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do
+    [[ "$seen" == "$name" ]] && { echo "错误：workers.sh 工人 '${name}' 重复启动定义" >&2; return 1; }
+  done
+  case "$mode" in
+    herdr) ;;
+    pane-run) [[ $# -ge 1 && -n "$1" ]] || { echo "错误：工人 '${name}' 的 pane-run 须有非空可执行文件" >&2; return 1; } ;;
+    *) echo "错误：工人 '${name}' 启动方式 '${mode}' 非法（herdr / pane-run）" >&2; return 1 ;;
+  esac
+  QWB_CONFIG_NAMES+=("$name"); QWB_CONFIG_MODES+=("$mode")
+  QWB_CONFIG_OFFSETS+=("${#QWB_CONFIG_ARGV[@]}"); QWB_CONFIG_COUNTS+=("$#")
+  QWB_CONFIG_ARGV+=("$@")
+}
+# shellcheck source=/dev/null
+. "$WORKERS_CONF"
+listed=()
+for w in $QWB_WORKERS; do
+  for seen in "${listed[@]+"${listed[@]}"}"; do
+    [[ "$seen" == "$w" ]] && { echo "错误：QWB_WORKERS 中工人 '${w}' 重复" >&2; exit 1; }
+  done
+  listed+=("$w")
+  count=0
+  for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do [[ "$seen" == "$w" ]] && count=$((count+1)); done
+  [[ "$count" -eq 1 ]] || { echo "错误：工人 '${w}' 在 workers.sh 缺少唯一启动定义" >&2; exit 1; }
+done
 # —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
 # clear → 解析出的工人；off/error/ambiguous → 默认工人（规则文件的 default.worker，无规则文件则 pi），
 # stderr 一行说明，不阻塞派发；qwb-dispatch 非零退出（规则文件坏等配置错误）→ 拒绝派发，不许绕过。
@@ -150,69 +184,31 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
-# 工人配置表解析：QWB_WORKER_LAUNCH（启动方式）与 QWB_WORKER_ARGS（启动参数）共用这一份实现。
-# 格式 `工人名=值`，值可含空格、遇下一个「工人名=」前缀才结束（工人名取 QWB_WORKERS 整词表）；
-# 同一工人出现多次取最后一项。结果经全局回带：WORKER_MAP_FOUND（0/1 是否列出）+ WORKER_MAP_VALUE，
-# 不用命令替换（子 shell 回不带变量），也能区分「未列出」与「列出但值为空」。
-worker_map_get() {  # $1=映射串 $2=工人名
-  local map="$1" want="$2" part prefix is_worker cur_w="" cur_v="" known
-  WORKER_MAP_VALUE=""; WORKER_MAP_FOUND=0
-  for part in $map; do
-    prefix="${part%%=*}"; is_worker=0
-    if [[ "$part" == *=* ]]; then
-      for known in $QWB_WORKERS; do
-        [[ "$prefix" == "$known" ]] && is_worker=1 && break
-      done
-    fi
-    if [[ "$is_worker" -eq 1 ]]; then
-      # 前一项到此结束：它正是要查的工人就收下它的值（重复出现时后一项覆盖前一项）
-      if [[ "$cur_w" == "$want" ]]; then WORKER_MAP_VALUE="$cur_v"; WORKER_MAP_FOUND=1; fi
-      cur_w="$prefix"; cur_v="${part#*=}"
-    elif [[ -n "$cur_w" ]]; then
-      cur_v="${cur_v} ${part}"
-    fi
+WORKER_ARGV=(); PANE_COMMAND=""
+for i in "${!QWB_CONFIG_NAMES[@]}"; do
+  [[ "${QWB_CONFIG_NAMES[i]}" == "$WORKER" ]] || continue
+  LAUNCH_MODE="${QWB_CONFIG_MODES[i]}"
+  offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
+  for ((j=0; j<count; j++)); do WORKER_ARGV+=("${QWB_CONFIG_ARGV[offset+j]}"); done
+  break
+done
+for arg in "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}"; do
+  has_headless_arg "$arg" && { echo "错误：工人 '${WORKER}' 参数含 headless 形式：${arg}" >&2; exit 1; }
+done
+if [[ "$LAUNCH_MODE" == pane-run ]]; then
+  quote_shell_arg() {
+    local rest="$1" quoted="'"
+    while [[ "$rest" == *"'"* ]]; do
+      quoted="${quoted}${rest%%\'*}'\\''"
+      rest="${rest#*\'}"
+    done
+    printf "%s%s'" "$quoted" "$rest"
+  }
+  PANE_COMMAND=""
+  for arg in "${WORKER_ARGV[@]}"; do
+    quoted="$(quote_shell_arg "$arg")"
+    PANE_COMMAND="${PANE_COMMAND:+${PANE_COMMAND} }${quoted}"
   done
-  # 末项没有后续「工人名=」来收尾，单独收一次
-  if [[ "$cur_w" == "$want" ]]; then WORKER_MAP_VALUE="$cur_v"; WORKER_MAP_FOUND=1; fi
-  return 0
-}
-# headless 禁令：pane-run 命令行与 QWB_WORKER_ARGS 参数串共用同一条检查（按空白切词、整词匹配）
-has_headless_form() { [[ "$1" =~ (^|[[:space:]])(-p|--print|--exec|exec)(=|[[:space:]]|$) ]]; }
-
-LAUNCH_MODE="herdr"
-worker_map_get "${QWB_WORKER_LAUNCH:-}" "$WORKER"
-[[ "$WORKER_MAP_FOUND" -eq 1 ]] && LAUNCH_MODE="$WORKER_MAP_VALUE"
-WORKER_ARGS=""
-worker_map_get "${QWB_WORKER_ARGS:-}" "$WORKER"
-WORKER_ARGS="$WORKER_MAP_VALUE"
-PANE_COMMAND=""
-case "$LAUNCH_MODE" in
-  herdr) ;;
-  pane-run:*)
-    PANE_COMMAND="${LAUNCH_MODE#pane-run:}"
-    if [[ -z "$PANE_COMMAND" ]]; then
-      echo "错误：工人 '${WORKER}' 的 pane-run 命令行为空；合法启动方式：herdr / pane-run:<命令行>" >&2
-      exit 1
-    fi
-    if has_headless_form "$PANE_COMMAND"; then
-      echo "错误：pane-run 只允许交互式命令，禁止 -p/--print/--exec/exec：${PANE_COMMAND}" >&2
-      exit 1
-    fi
-    # 一个工人的启动参数只能有一处：pane-run 的参数写在 LAUNCH 的命令行里
-    if [[ -n "$WORKER_ARGS" ]]; then
-      echo "错误：工人 '${WORKER}' 的启动方式是 pane-run，启动参数必须写在 QWB_WORKER_LAUNCH 的命令行里（如 ${WORKER}=pane-run:<命令> ${WORKER_ARGS}）——请把 QWB_WORKER_ARGS 里给 '${WORKER}' 配的值删掉，一个工人的启动参数只能有一处。" >&2
-      exit 1
-    fi
-    ;;
-  *)
-    echo "错误：工人 '${WORKER}' 的启动方式 '${LAUNCH_MODE}' 非法；合法启动方式：herdr / pane-run:<命令行>" >&2
-    exit 1
-    ;;
-esac
-# herdr 模式的参数串同样过 headless 禁令（与 pane-run 同一条检查、同一个词表）
-if has_headless_form "$WORKER_ARGS"; then
-  echo "错误：QWB_WORKER_ARGS 里工人 '${WORKER}' 的参数含 headless 形式（-p/--print/--exec/exec）——工人一律 Herdr 窗口交互式运行，参数串：${WORKER_ARGS}" >&2
-  exit 1
 fi
 NAME_GIVEN=0
 [[ -n "$NAME" ]] && NAME_GIVEN=1
@@ -595,7 +591,7 @@ fi
 
 # —— 派发前预置目录信任：claude/codex 对新目录弹信任框且不被权限参数跳过，起工人前把 $DIR
 # 预先标成受信任。只对实际派的这一个工人做；文件缺失/非法 → stderr 一行警告并跳过，
-# 信任框照弹、人来按，不阻塞派发。devin 的信任走启动参数（templates/config.sh QWB_WORKER_ARGS）。
+# 信任框照弹、人来按，不阻塞派发。devin 的信任走 workers.sh 启动参数。
 # 已受信任则完全不动文件（幂等：再派一次字节一致）。
 case "$WORKER" in
   claude)
@@ -791,9 +787,9 @@ case "$LAUNCH_MODE" in
       printf '%s\n' "$prompt_out"
     else
       start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
-      if [[ -n "$WORKER_ARGS" ]]; then
+      if [[ ${#WORKER_ARGV[@]} -gt 0 ]]; then
         start_argv+=(--)
-        for start_arg in $WORKER_ARGS; do start_argv+=("$start_arg"); done
+        start_argv+=("${WORKER_ARGV[@]}")
       fi
       start_rc=0
       start_out="$(herdr "${start_argv[@]}" 2>&1)" || start_rc=$?
@@ -805,7 +801,7 @@ case "$LAUNCH_MODE" in
       printf '%s\n' "$prompt_out"
     fi
     ;;
-  pane-run:*)
+  pane-run)
     run_rc=0
     run_out="$(herdr pane run "$PANE" "$PANE_COMMAND" 2>&1)" || run_rc=$?
     [[ "$run_rc" -eq 0 ]] || delivery_failed "herdr pane run（启动）" "$run_rc" "$run_out"

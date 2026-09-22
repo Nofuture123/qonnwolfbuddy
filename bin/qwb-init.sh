@@ -5,11 +5,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 用法: qwb-init.sh <项目根目录>
+      qwb-init.sh --migrate-worker-config <项目根目录>
 
 把 templates/ 与 bin/ 装进 <项目>/qwbuddy/，建 tasks/ 与 tasks/lessons/，
 并把钩子片段追加进 AGENTS.md / CLAUDE.md（幂等，可重复运行）。
 
 选项:
+  --migrate-worker-config  显式迁移旧长串配置；先备份，不猜测歧义项
   -h, --help    显示本帮助
 EOF
 }
@@ -17,6 +19,8 @@ EOF
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
+MIGRATE=0
+if [[ "${1:-}" == --migrate-worker-config ]]; then MIGRATE=1; shift; fi
 [[ $# -eq 1 ]] || { usage >&2; exit 2; }
 
 [[ -d "$1" ]] || { echo "错误：项目目录不存在：$1" >&2; exit 1; }
@@ -26,6 +30,114 @@ TPL="$SRC/../templates"
 
 [[ -d "$TPL" ]] || { echo "错误：找不到模板目录 ${TPL}——本脚本只在 QW buddy 母本仓运行（安装副本里的同名文件属历史残留，请改用母本仓 bin/qwb-init.sh 的绝对路径）" >&2; exit 1; }
 
+if [[ "$MIGRATE" -eq 1 ]]; then
+  conf="$ROOT/qwbuddy/config.sh"; workers="$ROOT/qwbuddy/workers.sh"
+  [[ -f "$conf" ]] || { echo "错误：迁移所需 config.sh 不存在：${conf}" >&2; exit 1; }
+  # 只迁移独立、单行、静态赋值；同一行命令或跨行引号一律留给人工处理。
+  if ! CONF_TO_CHECK="$conf" python3 - <<'PYEOF'
+import os, re, sys
+lines = open(os.environ['CONF_TO_CHECK'], encoding='utf-8').read().splitlines()
+name = re.compile(r'QWB_WORKER_(?:LAUNCH|ARGS)')
+valid = re.compile(r'''\s*(?:export\s+)?QWB_WORKER_(?:LAUNCH|ARGS)=(?:"[^"$`\\]*"|'[^']*'|[A-Za-z0-9_./:=+-]*)\s*(?:#.*)?''')
+for number, line in enumerate(lines, 1):
+    if name.search(line) and not line.lstrip().startswith('#') and not valid.fullmatch(line):
+        print(f'错误：config.sh:{number} 的旧工人赋值不是可证明的独立静态单行；原文件未动', file=sys.stderr)
+        sys.exit(1)
+PYEOF
+  then exit 1; fi
+  if ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_(LAUNCH|ARGS)=' "$conf"; then
+    unset QWB_WORKER_LAUNCH QWB_WORKER_ARGS
+    # shellcheck source=/dev/null
+    . "$conf"
+    [[ ! ${QWB_WORKER_LAUNCH+x} && ! ${QWB_WORKER_ARGS+x} ]] \
+      || { echo "错误：config.sh 间接设置旧工人配置，无法可靠迁移；原文件未动" >&2; exit 1; }
+    [[ -f "$workers" ]] && { echo "跳过：工人启动配置已迁移（幂等）"; exit 0; }
+    echo "错误：旧启动配置不存在且 workers.sh 缺失；请检查安装副本" >&2; exit 1
+  fi
+  [[ ! -e "$workers" ]] || { echo "错误：旧配置与 workers.sh 同时存在；请先人工解决两处启动定义，原文件未动" >&2; exit 1; }
+  [[ "$(grep -Ec '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_LAUNCH=' "$conf")" -le 1 \
+     && "$(grep -Ec '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_ARGS=' "$conf")" -le 1 ]] \
+    || { echo "错误：旧配置有重复 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS 赋值；请先人工合并，原文件未动" >&2; exit 1; }
+  unset QWB_WORKER_LAUNCH QWB_WORKER_ARGS
+  # shellcheck source=/dev/null
+  . "$conf"
+  set -f  # 旧格式本来会 glob 展开；含通配符的值下方拒绝，避免迁移依赖目录内容。
+  for map in "${QWB_WORKER_LAUNCH:-}" "${QWB_WORKER_ARGS:-}"; do
+    case "$map" in *'*'*|*'?'*|*'['*) echo "错误：旧工人配置含 glob 通配符（* ? [），argv 依赖目录内容，原文件未动" >&2; exit 1 ;; esac
+  done
+  parse_old_map() { # $1=原长串，产出 MAP_NAMES / MAP_VALUES；拒绝旧解析会吞并的名字与重复项
+    local part prefix known seen cur=-1
+    MAP_NAMES=(); MAP_VALUES=()
+    for part in $1; do
+      if [[ "$part" == *=* && "$part" != -* ]]; then
+        prefix="${part%%=*}"; known=0
+        for seen in $QWB_WORKERS; do [[ "$seen" == "$prefix" ]] && known=1; done
+        [[ "$known" -eq 1 ]] || { echo "错误：旧配置含未知工人 '${prefix}'，无法可靠迁移；原文件未动" >&2; return 1; }
+        for seen in "${MAP_NAMES[@]+"${MAP_NAMES[@]}"}"; do
+          [[ "$seen" == "$prefix" ]] && { echo "错误：旧配置工人 '${prefix}' 重复定义，无法可靠迁移；原文件未动" >&2; return 1; }
+        done
+        MAP_NAMES+=("$prefix"); MAP_VALUES+=("${part#*=}"); cur=$((${#MAP_NAMES[@]}-1))
+      else
+        [[ "$cur" -ge 0 ]] || { echo "错误：旧配置首项 '${part}' 无工人名，无法可靠迁移；原文件未动" >&2; return 1; }
+        MAP_VALUES[cur]="${MAP_VALUES[cur]}${MAP_VALUES[cur]:+ }${part}"
+      fi
+    done
+  }
+  parse_old_map "${QWB_WORKER_LAUNCH:-}" || exit 1
+  launch_names=("${MAP_NAMES[@]+"${MAP_NAMES[@]}"}"); launch_values=("${MAP_VALUES[@]+"${MAP_VALUES[@]}"}")
+  parse_old_map "${QWB_WORKER_ARGS:-}" || exit 1
+  args_names=("${MAP_NAMES[@]+"${MAP_NAMES[@]}"}"); args_values=("${MAP_VALUES[@]+"${MAP_VALUES[@]}"}")
+  tmp_workers="$(mktemp "$ROOT/qwbuddy/.workers.XXXXXX")"
+  tmp_conf="$(mktemp "$ROOT/qwbuddy/.config.XXXXXX")"
+  trap 'rm -f "$tmp_workers" "$tmp_conf"' EXIT
+  quote_worker_arg() {
+    local rest="$1" quoted="'"
+    while [[ "$rest" == *"'"* ]]; do
+      quoted="${quoted}${rest%%\'*}'\\''"
+      rest="${rest#*\'}"
+    done
+    printf "%s%s'" "$quoted" "$rest"
+  }
+  printf '%s\n' '# 由 qwb-init.sh 显式迁移；每个参数是一个 Bash 实参。' > "$tmp_workers"
+  for worker in $QWB_WORKERS; do
+    mode=herdr; launch=""; launch_seen=0; args=""
+    for i in "${!launch_names[@]}"; do [[ "${launch_names[i]}" == "$worker" ]] && { launch="${launch_values[i]}"; launch_seen=1; }; done
+    for i in "${!args_names[@]}"; do [[ "${args_names[i]}" == "$worker" ]] && args="${args_values[i]}"; done
+    [[ "$launch_seen" -eq 0 || -n "$launch" ]] || { echo "错误：工人 '${worker}' 旧 launch 显式空值，原运行会拒绝；原文件未动" >&2; exit 1; }
+    if [[ -n "$launch" && "$launch" != herdr ]]; then
+      [[ "$launch" == pane-run:* ]] || { echo "错误：工人 '${worker}' 启动方式 '${launch}' 非法，原文件未动" >&2; exit 1; }
+      mode=pane-run; launch="${launch#pane-run:}"
+      [[ -n "$launch" && -z "$args" ]] || { echo "错误：工人 '${worker}' pane-run 命令为空或两处重复参数，原文件未动" >&2; exit 1; }
+      first_arg=1
+      for arg in $launch; do
+        [[ "$arg" =~ ^[A-Za-z0-9_./:@%+=-]+$ ]] \
+          || { echo "错误：工人 '${worker}' 的旧 pane-run 命令含 ~/{}/# 等 shell 语义或引用，参数边界无法可靠迁移；原文件未动" >&2; exit 1; }
+        if [[ "$first_arg" -eq 1 && "$arg" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+          echo "错误：工人 '${worker}' 的旧 pane-run 以环境赋值开头，无法可靠迁移；原文件未动" >&2; exit 1
+        fi
+        first_arg=0
+      done
+      args="$launch"
+    fi
+    printf 'qwb_worker %s %s' "$(quote_worker_arg "$worker")" "$(quote_worker_arg "$mode")" >> "$tmp_workers"
+    for arg in $args; do
+      case "$arg" in -p|--print|--exec|exec|-p=*|--print=*|--exec=*|exec=*) echo "错误：工人 '${worker}' 含 headless 参数 '${arg}'，原文件未动" >&2; exit 1 ;; esac
+      printf ' %s' "$(quote_worker_arg "$arg")" >> "$tmp_workers"
+    done
+    printf '\n' >> "$tmp_workers"
+  done
+  cp -p "$conf" "$tmp_conf"
+  sed -E '/^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_(LAUNCH|ARGS)=/d' "$conf" > "$tmp_conf"
+  { bash -n "$tmp_workers" && bash -n "$tmp_conf"; } || { echo "错误：生成配置语法无效，原文件未动" >&2; exit 1; }
+  backup="$conf.worker-config.bak"
+  [[ ! -e "$backup" ]] || { echo "错误：备份已存在 ${backup}，拒绝覆盖；原文件未动" >&2; exit 1; }
+  cp -p "$conf" "$backup"
+  mv "$tmp_workers" "$workers"
+  mv "$tmp_conf" "$conf"
+  echo "完成：已备份 ${backup}，写入 workers.sh 并移除旧长串赋值；再次迁移会跳过"
+  exit 0
+fi
+
 mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 
 cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
@@ -34,6 +146,7 @@ cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
 
 # config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
 OLD_CONF_NAME="config.json"
+NEW_CONF=0
 if [[ -f "$ROOT/qwbuddy/config.sh" ]]; then
   echo "保留：qwbuddy/config.sh 已存在，不覆盖"
 else
@@ -42,6 +155,18 @@ else
     echo "提示：检测到旧版 ${OLD_CONF}——新版配置为 bash 可直接 source 的 config.sh，旧文件不自动转换，请手动迁移后删除" >&2
   fi
   cp "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
+  NEW_CONF=1
+fi
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_(LAUNCH|ARGS)=' "$ROOT/qwbuddy/config.sh"; then
+  echo "提示：旧工人长串配置已保留；派发前须显式运行 bin/qwb-init.sh --migrate-worker-config '$ROOT'" >&2
+elif [[ -f "$ROOT/qwbuddy/workers.sh" ]]; then
+  echo "保留：qwbuddy/workers.sh 已存在，不覆盖"
+else
+  if [[ "$NEW_CONF" -eq 1 ]]; then
+    cp "$TPL/workers.sh" "$ROOT/qwbuddy/workers.sh"
+  else
+    echo "提示：已有 config.sh 但缺少 workers.sh；未读取/执行用户配置，也未写入可能不匹配的默认工人表，当前不可派发。请手动创建 qwbuddy/workers.sh，为 QWB_WORKERS 的每个工人写一条 qwb_worker 声明（见母本仓 templates/workers.sh）；原配置未改动。" >&2
+  fi
 fi
 
 # 常驻附页模板：目标已有则不覆盖（可能已被项目主人改成自己的常驻规则），幂等

@@ -80,9 +80,9 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ```
 
 工人选择看 `qwbuddy/config.sh` 的 `QWB_WORKERS` 工人表与其下方派工规则注释；派工前可查一次本机额度（`quota-axi`），额度只是参考不是保证。
-需要覆盖默认 Herdr kind 启动时，在 `QWB_WORKER_LAUNCH` 写 `工人名=pane-run:<交互命令>`；命令值可含空格、到下一个 `工人名=` 前缀才结束，未列出的工人仍走 `herdr agent start`。pane-run 检测并改名后用 `herdr pane run` 直打提示词，不走只支持官方 kind 的 `agent prompt`；若 300ms 内没有进入 working/done/blocked（Command Code 长文本可能只粘贴未提交），再补一次 Enter。
+需要覆盖默认 Herdr kind 启动时，在 `qwbuddy/workers.sh` 将该工人的唯一声明改为 `qwb_worker cmd pane-run cmd --yolo --trust`；第一项参数是可执行文件，后续逐项写参数。pane-run 检测并改名后用 `herdr pane run` 直打提示词，不走只支持官方 kind 的 `agent prompt`；若 300ms 内没有进入 working/done/blocked（Command Code 长文本可能只粘贴未提交），再补一次 Enter。
 
-**工人与审核者一律最高权限启动**（`QWB_WORKER_ARGS` / pane-run 命令行）：herdr 模式在 `QWB_WORKER_ARGS` 写 `工人名=参数串`（模板默认已按工人填好，参数按空格切词追加到 `herdr agent start` 的 `--` 之后），pane-run 模式把权限参数写进 `QWB_WORKER_LAUNCH` 的命令行（如 `cmd=pane-run:cmd --yolo --trust`）。一个工人的启动参数只能有一处——两处都配会被拒绝派发。理由见 `docs/DECISIONS.md` 的「为什么最高权限」。
+**工人与审核者一律最高权限启动**：在 `qwbuddy/workers.sh` 每工人保留一条声明。herdr 模式如 `qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox`，参数逐项追加在 `herdr agent start` 的 `--` 后；pane-run 模式将可执行文件及权限参数逐项写在同一条声明。两种模式均拒绝 headless 参数。理由见 `docs/DECISIONS.md` 的「为什么最高权限」。旧 `QWB_WORKER_LAUNCH` / `QWB_WORKER_ARGS` 配置须运行母本仓 `bash bin/qwb-init.sh --migrate-worker-config <项目根>` 显式迁移；迁移前派发会拒绝。
 
 ## 5. 验货门
 
@@ -138,7 +138,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | 脚本 | 干什么 |
 |---|---|
 | `qwb-init.sh <项目根>` | **母本仓专用**安装器（不装进 `qwbuddy/bin/`）：从母本仓用绝对路径运行 `bash <母本仓>/bin/qwb-init.sh <项目根>`，幂等 |
-| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；新 tab 的 workspace 按下一行解析） |
+| `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `workers.sh` 逐工人声明；新 tab 的 workspace 按下一行解析） |
 | `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 qwbuddy/dispatch-rules.json（模板在母本仓 templates/，qwb-init.sh 安装时拷入）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
 | `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
 | `qwb-wake.sh [--dry-run|--once|--ensure|--check|--block]` | 值守：查未结项 → 一轮只发**一条**投递（多票拼同一条文本，含各票 state 与最后状态行）→ 叫醒你的 pane；`QWB_REWAKE_MS` 时间兑底只对 `running` 票生效（blocked/needs-decision 等裁决，不重叫）；`--block` 每轮先复核主控锁，锁不在手（孤儿值守）不消费唤醒；`--ensure` 仅供历史 tab 手工排障，`--check` 只报值守健康；`--block [--max-ms <毫秒>]` 前台阻塞值守（无窗口，给 Claude Code Stop hook / Codex 前台 checkpoint 用）：有可动作变化退出码 2 + stdout 摘要、到期无变化 124、退出码 0 按 §1 核对输出/锁/账本后判定 |

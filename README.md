@@ -23,7 +23,7 @@ From this repository, install into an existing Git project:
 bash bin/qwb-init.sh /path/to/project
 ```
 
-The installer copies templates and runtime scripts into `<project>/qwbuddy/`, adds role and task files, and installs the Pi extension and Claude Code hook where possible. It preserves an existing `qwbuddy/config.sh`; check its output for partial installation.
+The installer copies templates and runtime scripts into `<project>/qwbuddy/`, adds role and task files, and installs the Pi extension and Claude Code hook where possible. It preserves existing `qwbuddy/config.sh` and `qwbuddy/workers.sh`; check its output for partial installation. Each worker has one `qwb_worker name herdr arg...` or `qwb_worker name pane-run executable arg...` declaration in `workers.sh`. Bash arguments retain spaces, empty strings, and literal special characters. Existing projects using `QWB_WORKER_LAUNCH` or `QWB_WORKER_ARGS` must explicitly run `bash bin/qwb-init.sh --migrate-worker-config /path/to/project` from this repository. Migration backs up `config.sh` and refuses old pane commands whose shell interpretation cannot be preserved. If an existing `config.sh` has no legacy launch keys but lacks `workers.sh`, ordinary init leaves it untouched and reports that workers must be declared manually before dispatch.
 
 Declare checks in the target project's `qwbuddy/config.sh`. For an existing pnpm project, for example:
 

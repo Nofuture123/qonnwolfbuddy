@@ -129,13 +129,13 @@ case "$1 $2" in
   "pane process-info")
     echo '{"result":{"process_info":{"foreground_process_group_id":42,"shell_pid":42}}}' ;;
   "pane run")
-    if [[ "$4" == mock-agent ]] && {
+    if [[ "$4" == "'mock-agent'" ]] && {
       ! grep -q '^state: running$' "$QWB_STUB_TASK" ||
       ! grep -q '^scenarios-fp:' "$QWB_STUB_TASK" ||
       ! grep -q '^dispatch:' "$QWB_STUB_TASK"; }; then
       echo '{"error":{"code":"prelaunch_contract_missing"}}' >&2; exit 7
     fi
-    if [[ "${QWB_STUB_FAIL:-}" == pane-prompt && "$4" != mock-agent ]]; then
+    if [[ "${QWB_STUB_FAIL:-}" == pane-prompt && "$4" != "'mock-agent'" ]]; then
       echo '{"error":{"code":"inject_failed"}}' >&2; exit 9
     fi
     echo '{"result":{"type":"ok"}}' ;;
@@ -161,14 +161,13 @@ EOF
 chmod +x "$TMP/bin/herdr"
 cat > "$PROJECT/qwbuddy/config.sh" <<'EOF'
 QWB_WORKERS="pi codex"
-QWB_WORKER_LAUNCH=""
-QWB_WORKER_ARGS=""
 QWB_AGENT_START_MS=1000
 QWB_WORKSPACE=""
 QWB_WORKTREE_SETUP=""
 QWB_GATE_FAST=':'
 QWB_GATE_FULL=':'
 EOF
+printf '%s\n' 'qwb_worker pi herdr' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
 TASK="$PROJECT/tasks/2099-01-01-case.md"
 write_ticket() {
   cat > "$TASK" <<'EOF'
@@ -292,7 +291,7 @@ fi
 
 # pane-run 使用 pane run 投递提示词；失败同样非零并关闭本次新 tab。
 write_ticket
-printf 'QWB_WORKER_LAUNCH="pi=pane-run:mock-agent"\n' >> "$PROJECT/qwbuddy/config.sh"
+printf '%s\n' 'qwb_worker pi pane-run mock-agent' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
 : > "$QWB_STUB_LOG"
 out="$(QWB_STUB_REUSE=1 QWB_STUB_FAIL=pane-prompt run_case 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \
