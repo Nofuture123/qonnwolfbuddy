@@ -13,6 +13,16 @@ FAILS=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; FAILS=$((FAILS+1)); fi; }
 
 P="$TMP/install"; mkdir -p "$P/.claude"; printf 'user-line\n# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）\n.worktrees/\n' > "$P/.gitignore"
+cp "$P/.gitignore" "$TMP/ignore.original"
+git -C "$P" init -q; git -C "$P" config user.email test@example.invalid; git -C "$P" config user.name Test
+git -C "$P" add .gitignore; git -C "$P" commit -qm initial
+runtime_paths=(.worktrees/item qwbuddy/.controller.lock/owner qwbuddy/.watch qwbuddy/.watch.lock/owner qwbuddy/.hook.lock/owner qwbuddy/.hook.err qwbuddy/.pi-watch.err)
+mkdir -p "$P/.worktrees" "$P/qwbuddy/.controller.lock" "$P/qwbuddy/.watch.lock" "$P/qwbuddy/.hook.lock"
+for path in "${runtime_paths[@]}"; do printf 'runtime\n' > "$P/$path"; done
+pre_status="$(git -C "$P" status --short --untracked-files=all -- "${runtime_paths[@]}")"
+git -C "$P" check-ignore -q qwbuddy/.controller.lock/owner; pre_controller=$?
+git -C "$P" check-ignore -q qwbuddy/.watch; pre_watch=$?
+check '不完整旧段会污染 Git 状态' '[[ $pre_controller -ne 0 && $pre_watch -ne 0 ]] && [[ "$pre_status" == *"qwbuddy/.controller.lock/owner"* && "$pre_status" == *"qwbuddy/.watch"* ]]'
 mkdir -p "$P/qwbuddy"; printf 'CUSTOM_SETTING=kept\n' > "$P/qwbuddy/config.sh"
 cat > "$P/.claude/settings.json" <<'JSON'
 {"custom": {"keep": true}, "hooks": {"Stop": [
@@ -24,8 +34,13 @@ cp "$P/.claude/settings.json" "$TMP/settings.before"
 printf 'custom config\n' > "$P/config.keep"
 bash "$INIT" "$P" > "$TMP/init1.log" 2>&1; i1=$?
 cp "$P/.gitignore" "$TMP/ignore.once"
+head -c "$(wc -c < "$TMP/ignore.original")" "$P/.gitignore" > "$TMP/ignore.prefix"
+ignored_all=0
+for path in "${runtime_paths[@]}"; do git -C "$P" check-ignore -q "$path" || ignored_all=1; done
+post_status="$(git -C "$P" status --short --untracked-files=all -- "${runtime_paths[@]}")"
 bash "$INIT" "$P" > "$TMP/init2.log" 2>&1; i2=$?
-check '旧忽略段升级且幂等' '[[ $i1 -eq 0 && $i2 -eq 0 ]] && [[ "$(grep -cxF "qwbuddy/.pi-watch.err" "$P/.gitignore")" -eq 1 ]] && cmp -s "$P/.gitignore" "$TMP/ignore.once" && [[ "$(head -1 "$P/.gitignore")" == user-line ]]'
+check '旧忽略段逐项补齐且运行态不污染 Git' '[[ $i1 -eq 0 && $ignored_all -eq 0 && -z "$post_status" ]] && cmp -s "$TMP/ignore.original" "$TMP/ignore.prefix"'
+check '重复安装 .gitignore 字节不变' '[[ $i2 -eq 0 ]] && cmp -s "$P/.gitignore" "$TMP/ignore.once"'
 check '既有配置未覆盖' '[[ "$(cat "$P/qwbuddy/config.sh")" == CUSTOM_SETTING=kept ]]'
 python3 - "$P/.claude/settings.json" "$TMP/settings.before" > "$TMP/hook-check.log" 2>&1 <<'PY'
 import json,sys

@@ -68,27 +68,36 @@ fi
 # 运行态不进 git：往 <项目根>/.gitignore 追加一段；旧段补缺项。
 # 只追加不重排——项目原有条目字节不变。
 GITIGN="$ROOT/.gitignore"
+ignore_rules=(
+  '.worktrees/'
+  'qwbuddy/.controller.lock/'
+  'qwbuddy/.watch'
+  'qwbuddy/.watch.lock/'
+  'qwbuddy/.hook.lock/'
+  'qwbuddy/.hook.err'
+  'qwbuddy/.pi-watch.err'
+)
 if [[ -f "$GITIGN" ]] && grep -qF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GITIGN"; then
-  if grep -qxF 'qwbuddy/.pi-watch.err' "$GITIGN"; then
-    echo "跳过：.gitignore 已有"
-  else
-    if [[ -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
-    printf 'qwbuddy/.pi-watch.err\n' >> "$GITIGN"
-    echo "写入：.gitignore 旧 QW buddy 段补齐 Pi 错误日志"
-  fi
+  had_marker=1
 else
+  had_marker=0
   if [[ -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
-  cat >> "$GITIGN" <<'EOF'
-# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）
-.worktrees/
-qwbuddy/.controller.lock/
-qwbuddy/.watch
-qwbuddy/.watch.lock/
-qwbuddy/.hook.lock/
-qwbuddy/.hook.err
-qwbuddy/.pi-watch.err
-EOF
+  printf '%s\n' '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' >> "$GITIGN"
+fi
+added=0
+for rule in "${ignore_rules[@]}"; do
+  if ! grep -qxF "$rule" "$GITIGN"; then
+    if [[ $added -eq 0 && $had_marker -eq 1 && -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
+    printf '%s\n' "$rule" >> "$GITIGN"
+    added=1
+  fi
+done
+if [[ $had_marker -eq 0 ]]; then
   echo "写入：.gitignore 追加 QW buddy 运行态"
+elif [[ $added -eq 1 ]]; then
+  echo "写入：.gitignore 旧 QW buddy 段补齐运行态"
+else
+  echo "跳过：.gitignore 已有"
 fi
 
 # 钩子：已含 qwbuddy/QWBUDDY.md 引用视为已装，跳过
