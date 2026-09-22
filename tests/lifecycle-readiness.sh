@@ -7,6 +7,7 @@ python3 - "$ROOT" "$REPO" <<'PY'
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -66,6 +67,74 @@ with tempfile.TemporaryDirectory(prefix="qwb-lifecycle-") as tmp:
             if stat and not stat.startswith("Z"):
                 os.kill(child, signal.SIGKILL)
 
+    # 真实 Node 扩展宿主：强退后孤儿按实例清登记；新宿主登记不得被旧孤儿删掉。
+    host_script = project / "pi-host.mjs"
+    host_script.write_text(f'''import watch from "{(source / "templates" / "pi-extensions" / "qwb-watch.ts").as_uri()}";
+process.chdir("{project}");
+const handlers = {{}};
+watch({{ on: (event, cb) => {{ handlers[event] = cb; }}, sendUserMessage: () => {{}} }});
+await handlers.session_start();
+setInterval(() => {{}}, 1000);
+''')
+    sleeper = project / "sleep-gate.sh"
+    sleeper.write_text('''#!/usr/bin/env bash
+touch "$SLEEP_MARKER"
+while [[ ! -e "$SLEEP_RELEASE" ]]; do sleep 0.01; done
+''')
+    sleeper.chmod(0o755)
+    for protect_new in (False, True):
+        task.write_text(f"# case\nstate: running\n{old}\nwake: 2026-01-01T00:00:00Z state=running fp={fp}\n")
+        marker = project / ("sleep-new" if protect_new else "sleep-old")
+        release = project / ("release-new" if protect_new else "release-old")
+        watchfile = qwb / ".watch"
+        if watchfile.exists(): watchfile.unlink()
+        (lock / "owner").write_text("x wT:p1\n")
+        env = {**os.environ, "HERDR_PANE_ID": "wT:p1", "QWB_WAKE_INTERVAL_MS": "100",
+               "QWB_SLEEP_CMD": str(sleeper), "SLEEP_MARKER": str(marker), "SLEEP_RELEASE": str(release)}
+        pi_host = subprocess.Popen(["node", str(host_script)], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pi_child = None
+        try:
+            for _ in range(200):
+                if watchfile.exists() and marker.exists(): break
+                time.sleep(.01)
+            assert watchfile.exists() and marker.exists(), "真实扩展未启动并登记值守"
+            registered = watchfile.read_text()
+            pi_child = int(re.search(r"pid=(\d+)", registered).group(1))
+            assert "kind=pi-ext" in registered
+            os.kill(pi_host.pid, signal.SIGKILL)
+            assert pi_host.wait(timeout=2) == -signal.SIGKILL
+            with task.open("a") as f: f.write("working: after-real-pi-death\n")
+            if protect_new:
+                (lock / "owner").write_text("x wT:p2\n")
+                newer = f"kind=pi-ext pid={os.getpid()} instance=successor started=new cmd=new\n"
+                subprocess.run(["perl", "-MFcntl=:flock", "-e", '''
+                    my ($dir, $line) = @ARGV;
+                    open my $guard, "<", $dir or die $!;
+                    flock($guard, LOCK_EX) or die $!;
+                    open my $out, ">", "$dir/.watch" or die $!;
+                    print {$out} $line;
+                ''', str(qwb), newer], check=True)
+            release.write_text("go")
+            for _ in range(200):
+                stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pi_child)], capture_output=True, text=True).stdout.strip()
+                if not stat or stat.startswith("Z"): break
+                time.sleep(.01)
+            assert not stat or stat.startswith("Z"), "真实扩展孤儿未退出"
+            if protect_new:
+                assert watchfile.read_text() == newer, "旧孤儿清掉了新宿主登记"
+            else:
+                assert not watchfile.exists(), "宿主 SIGKILL 后仍残留旧 Pi 登记"
+            assert task.read_text().count("wake:") == 1, "宿主死亡后写入新 wake"
+        finally:
+            release.write_text("go")
+            if pi_host.poll() is None: pi_host.kill(); pi_host.wait(timeout=2)
+            if pi_child:
+                stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pi_child)], capture_output=True, text=True).stdout.strip()
+                if stat and not stat.startswith("Z"): os.kill(pi_child, signal.SIGKILL)
+    print("PASS  真实 Pi 扩展宿主 SIGKILL：孤儿条件清旧登记且保护新实例")
+    (lock / "owner").write_text("x wT:p1\n")
+
     # 两个 hook 同时接管残留死锁；只有一个真实子进程进入值守。
     hooklock = qwb / ".hook.lock"
     hooklock.mkdir()
@@ -109,7 +178,7 @@ exec /bin/rm "$@"
 
     # 假 Herdr：主控在 A，项目值守在 B。三次 ensure 验证创建、复用、失活重启。
     import json
-    shutil.copy2(source / "bin" / "qwb-wake.sh", stub)
+    shutil.copy2(Path(os.environ.get("QWB_LIFECYCLE_CROSS_WAKE", source / "bin" / "qwb-wake.sh")), stub)
     (qwb / "config.sh").write_text('QWB_WORKSPACE="wB"\nQWB_WAKE_INTERVAL_MS=100\n')
     fakebin = project / "fakebin"
     fakebin.mkdir()
@@ -127,6 +196,8 @@ if a[:2] == ["workspace", "list"]:
     out = {"result": {"workspaces": [{"workspace_id": "wA"}, {"workspace_id": "wB"}]}}
 elif a[:2] == ["pane", "get"]:
     pane = a[2]
+    if pane == "wB:pWatch" and os.getenv("FAKE_FAIL_WATCH_GET"):
+        print("query failure", file=sys.stderr); sys.exit(1)
     if pane == "wA:pCtl": ws = "wA"
     elif pane == "wB:pWatch" and s["created"]: ws = "wB"
     else: print("pane_not_found", file=sys.stderr); sys.exit(1)
@@ -171,6 +242,13 @@ print(json.dumps(out))
     checked = subprocess.run(["bash", str(stub), "--project", str(project), "--check"], env=env, capture_output=True, text=True)
     assert checked.returncode == 0 and "wB:pWatch" in checked.stdout, "跨 workspace check 未找到本项目值守"
     s = json.loads(statefile.read_text()); assert s["creates"] == 1 and s["runs"] == 1
+    (qwb / ".watch").unlink()
+    unknown_identity = subprocess.run(cmd, env={**env, "FAKE_FAIL_WATCH_GET": "1"}, capture_output=True, text=True)
+    assert unknown_identity.returncode != 0, "缺登记时 pane get 失败仍误认领"
+    assert not (qwb / ".watch").exists(), "关键查询失败仍写了登记"
+    restored = ensure()
+    assert restored.returncode == 0 and "workspace=wB" in (qwb / ".watch").read_text(), \
+        "查询恢复后应登记真实目标 workspace"
     s["active"] = False; statefile.write_text(json.dumps(s))
     third = ensure()
     assert third.returncode == 0, f"失活恢复失败：{third.stdout} {third.stderr}"

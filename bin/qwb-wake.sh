@@ -352,8 +352,15 @@ _ensure_body() {
     v="$(pane_probe "$WATCH_FOUND")"
     ensure_target_ok "$WATCH_FOUND" "$v" || return 1
     if [[ "$WATCH_FOUND" != "$rp" || ! -f "$WATCHF" ]]; then
-      local iws; iws="$(pane_info "$WATCH_FOUND" 2>/dev/null | cut -f3 || true)"
-      watch_write "$WATCH_FOUND" "${iws:-$ws}" "" \
+      local iinfo iws
+      iinfo="$(pane_info "$WATCH_FOUND")" || {
+        echo "错误：候选值守 pane ${WATCH_FOUND} 身份查询失败——不补登记或误认领" >&2; return 1;
+      }
+      iws="$(printf '%s' "$iinfo" | cut -f3)"
+      [[ "$iws" == "$tabws" ]] || {
+        echo "错误：候选值守 pane ${WATCH_FOUND} 属于 workspace ${iws:-未知}（目标 ${tabws}）——不补登记" >&2; return 1;
+      }
+      watch_write "$WATCH_FOUND" "$tabws" "" \
         || { echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1; }
       echo "复用已在运行的值守（pane ${WATCH_FOUND}，此前未登记/登记不一致，已补记 .watch）"
     else
@@ -612,13 +619,33 @@ wait_round() {
 # 判定与循环模式完全共用（collect_due 的指纹去重 + 仅 running 的时间兑底 + 工人丢失指纹段），
 # 只有「叫醒」动作不同：不 pane run，而是把同一份拼装打到 stdout、往票追加 wake: 行后以退出码 2 交还调用方。
 # 返回码：2 = 有可动作变化（已写 wake 行）；0 = 账本无未结项（不写任何行）；1 = 有未结项但无变化（内部）
+pi_orphan_clear() {
+  # Pi 宿主被 SIGKILL 时只有子进程能清登记。与扩展写/清 .watch 共用目录 flock，
+  # 且必须同时匹配子进程 PID 与会话实例，绝不删除新宿主的登记。
+  [[ "${QWB_WATCH_INSTANCE:-}" =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  perl -MFcntl=:flock -e '
+    my ($dir, $pid, $instance) = @ARGV;
+    open my $guard, "<", $dir or die "orphan guard open: $!\n";
+    flock($guard, LOCK_EX) or die "orphan guard flock: $!\n";
+    my $path = "$dir/.watch";
+    open my $old, "<", $path or exit 0;
+    my $current = <$old> // "";
+    close $old;
+    unlink $path if index($current, "kind=pi-ext pid=$pid instance=$instance ") == 0;
+  ' "$PROJECT_ROOT/qwbuddy" "$$" "$QWB_WATCH_INSTANCE" \
+    || echo "警告：Pi 孤儿值守未能清理自己的 .watch 登记" >&2
+}
+
 block_owner_ok() {
   # Pi 以宿主 PID 绑定子进程；SIGKILL 后 PPID 改变，旧 pane 锁即使尚在也不能消费进展。
   if [[ -n "${QWB_WATCH_PARENT_PID:-}" ]]; then
     [[ "$QWB_WATCH_PARENT_PID" =~ ^[1-9][0-9]*$ ]] || return 1
     local actual_parent
     actual_parent="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
-    [[ "$actual_parent" == "$QWB_WATCH_PARENT_PID" ]] || return 1
+    if [[ "$actual_parent" != "$QWB_WATCH_PARENT_PID" ]]; then
+      pi_orphan_clear
+      return 1
+    fi
   fi
   # 孤儿值守复核：主控锁不在本进程手里（换会话后被新主控接管 / 锁已不存在）→ 不消费唤醒。
   # HERDR_PANE_ID 为空（非 herdr 环境，如 smoke）跳过复核。

@@ -497,3 +497,9 @@ Claude Stop hook 的 `.hook.lock` 接管和释放只在对项目 `qwbuddy/` 目�
 Pi 扩展在晚获主控锁后的 `turn_end` 启动一个值守；失锁、shutdown 和旧代际回调不得续命。子进程带宿主 PID，`--block` 写 `wake:` 前复核真实 PPID，宿主 SIGKILL 后不消费新进展。扩展等 stdout/stderr 排空后判退出码，按 PID 只清自己的 `.watch`。此机制只验证了本机 Bash/Node/`ps` 路径；真实 Pi reload 与跨平台宿主行为仍待设备验证。
 
 可见 tab 的 `--ensure` 在任何副作用前解析项目目标 workspace，创建、扫描、登记、复用和失活恢复都使用该范围；主控 pane 仍核对为调用者 workspace 的指定目标。错误目标及查询未知时拒绝行动。
+
+## 三十五、生产生命周期 r1 返修（2026-09-22）
+
+Pi 失锁时 `kill()` 只是请求，旧子进程在 Node `close`（退出且 stdio 关闭）前继续占住单飞位置；快速重获锁不会提前启动第二个值守。`close` 后才条件清自身登记，并按当前锁主决定是否重启；旧代际的输出和退出码不再交付。
+
+Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿主 SIGKILL 后，孤儿在退出前用同一项目目录 flock 临界区，仅当 `.watch` 同时匹配自身 PID 与实例 ID 时删除；新会话的登记保持不变。可见 tab 的 `--ensure` 在缺登记而扫描到候选时，`pane get` 失败或 workspace 不等于已解析目标均拒绝补记。

@@ -20,9 +20,11 @@ function makeFakeChild(pid, script = []) {
     stdout: makeStream(),
     stderr: makeStream(),
     exitCbs: [],
+    closeCbs: [],
     errorCbs: [],
     on(ev, cb) {
       if (ev === "exit") c.exitCbs.push(cb);
+      if (ev === "close") c.closeCbs.push(cb);
       if (ev === "error") c.errorCbs.push(cb);
     },
     kill() {
@@ -31,8 +33,9 @@ function makeFakeChild(pid, script = []) {
     exit(code, stdoutText = "", { drain = true } = {}) {
       c.stdout.push(stdoutText);
       for (const cb of c.exitCbs) cb(code, null);
-      if (drain) { c.stdout.end(); c.stderr.end(); }
+      if (drain) { c.stdout.end(); c.stderr.end(); c.close(code); }
     },
+    close(code) { for (const cb of c.closeCbs) cb(code, null); },
   };
   return c;
 }
@@ -295,8 +298,9 @@ function ok(name) {
   core.onTurnEnd();
   core.onSessionStart();
   assert.equal(state.spawns.length, 1, "shutdown 后旧回调不得重启");
-  assert.equal(state.watch, null, "shutdown 只清本实例登记");
+  assert.notEqual(state.watch, null, "close 前仍保留旧实例登记与单飞位置");
   c.exit(2, "迟到摘要");
+  assert.equal(state.watch, null, "close 后只清本实例登记");
   assert.equal(state.messages.length, 0);
   ok("shutdown 终态阻止重启并清本实例登记");
 }
@@ -309,6 +313,7 @@ function ok(name) {
   c.stdout.push("后半摘要");
   c.stdout.end();
   c.stderr.end();
+  c.close(2);
   assert.equal(state.messages.length, 1);
   assert.ok(state.messages[0].includes("后半摘要"), "退出后管道排空的尾部摘要须交付");
   ok("exit 先于 stdout 排空时仍交付完整摘要");
@@ -321,6 +326,31 @@ function ok(name) {
   core.shutdown();
   assert.equal(state.watch, "kind=pi-ext pid=999 started=new cmd=new", "旧会话不能删除新会话登记");
   ok("旧会话 shutdown 不清新会话登记");
+}
+
+{
+  const { core, state, setOwner } = makeHarness();
+  core.onSessionStart();
+  const old = state.spawns[0].child;
+  setOwner("wOther:p9");
+  core.onTurnEnd();
+  assert.ok(old.killed, "失锁要求终止旧子进程");
+  setOwner("wT:p1");
+  core.onTurnEnd();
+  core.onSessionStart();
+  assert.equal(state.spawns.length, 1, "旧子进程未 close 前不得双开");
+  old.exit(143, "尾部输出", { drain: false });
+  old.stdout.end();
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "仅 exit/stdout end 不足以证明管道全部排空");
+  old.stderr.end();
+  old.close(143);
+  assert.equal(state.spawns.length, 2, "旧子进程 close 后重获锁应启动一个新实例");
+  assert.ok(state.watch?.includes(`pid=${state.spawns[1].child.pid}`));
+  old.close(143);
+  assert.ok(state.watch?.includes(`pid=${state.spawns[1].child.pid}`), "旧回调不得清新登记");
+  assert.equal(state.spawns.length, 2, "旧回调不得再启动第三个实例");
+  ok("快速失锁重获：旧进程 close/管道排空前不双开，旧回调不清新登记");
 }
 
 console.log(`pi-ext tests: ${passed} passed`);

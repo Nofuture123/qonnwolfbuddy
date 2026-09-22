@@ -3451,8 +3451,8 @@ run_pi_ext() {
   "${runner[@]}" "$ROOT/tests/pi-ext.test.mjs" 2>&1
 }
 extout="$(run_pi_ext)"; extrc=$?
-{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 14 passed'; } \
-  && ok "pi 扩展单元测试 14 项通过（锁主/晚获锁/退出交付/退避/清理）" \
+{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 15 passed'; } \
+  && ok "pi 扩展单元测试 15 项通过（锁主/晚获锁/退出交付/退避/清理）" \
   || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
 if command -v node >/dev/null 2>&1; then

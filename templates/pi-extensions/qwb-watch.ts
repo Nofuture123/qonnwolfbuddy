@@ -11,9 +11,10 @@
 //     （0 = 账本无未结项 / 124 = 有未结项），有未结项即重新值守——判定复用 qwb-wake.sh，不另写账本解析。
 //   其他退出码 → 记 qwbuddy/.pi-watch.err，指数退避重启（上限 QWB_WAKE_INTERVAL_MS × 8），
 //     退避到顶注入一次 `[qwb-wake] 值守故障：…`——这是叫醒主控去修，不是通知使用者。
-//   单飞：扩展内只持一个子进程；session_start 重复触发（/new、/resume、reload）先杀旧再起新。
+//   单飞：session_start 重复触发复用现有子进程；失锁杀旧后须等 close/管道排空再重启。
 //   session_shutdown 与 pi 进程退出 → 杀子进程（spawn 不 detach）。
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -32,6 +33,7 @@ export interface WatchChildLike {
   stdout: WatchTextStream | null;
   stderr: WatchTextStream | null;
   on(ev: "exit", cb: (code: number | null, signal: string | null) => void): unknown;
+  on(ev: "close", cb: (code: number | null, signal: string | null) => void): unknown;
   on(ev: "error", cb: (err: Error) => void): unknown;
 }
 
@@ -53,6 +55,7 @@ export interface WatchCoreDeps {
   clearWatch: (root: string, pid: number | undefined) => void;
   appendErr: (root: string, line: string) => void;
   nowIso?: () => string;
+  instanceId?: string;
 }
 
 export const WAKE_PREFIX = "[qwb-wake]";
@@ -68,6 +71,8 @@ export function createWatchCore(d: WatchCoreDeps) {
   let idleAfterZero = false; // exit 0 后闲置，等 turn_end 探测
   let generation = 0; // 会话代际：被单飞替换的旧子进程的 exit 回调不作数
   let stopped = false;
+  let retiring = false; // kill 已请求，close/管道排空前仍占住单飞位置
+  const instanceId = d.instanceId ?? randomUUID();
 
   function ownsLock(): boolean {
     if (!d.paneId) return false;
@@ -75,16 +80,16 @@ export function createWatchCore(d: WatchCoreDeps) {
   }
 
   function killChild() {
-    if (!child) return;
+    if (!child || retiring) return;
     const old = child;
-    child = null;
+    retiring = true;
     generation += 1;
     try {
       old.kill();
     } catch {
       // 已死的子进程 kill 报错无所谓
     }
-    d.clearWatch(d.root, old.pid);
+    // 登记与单飞位置在 close 后释放；kill() 只发信号，不能证明进程已退出。
   }
 
   function startChild(args: string[], isProbe: boolean, onStdout?: (text: string) => void) {
@@ -94,7 +99,7 @@ export function createWatchCore(d: WatchCoreDeps) {
     idleAfterZero = false;
     let out = "";
     const c = d.spawnChild("bash", [wakeBin, ...args], {
-      cwd: d.root, env: { ...process.env, QWB_WATCH_PARENT_PID: String(process.pid) },
+      cwd: d.root, env: { ...process.env, QWB_WATCH_PARENT_PID: String(process.pid), QWB_WATCH_INSTANCE: instanceId },
     });
     child = c;
     childIsProbe = isProbe;
@@ -102,40 +107,40 @@ export function createWatchCore(d: WatchCoreDeps) {
       d.writeWatch(d.root, c.pid, `bash ${wakeBin} ${args.join(" ")}`.trim());
     }
     c.stdout?.setEncoding("utf8");
-    let stdoutDone = c.stdout === null;
-    let stderrDone = c.stderr === null;
     let exitCode: number | null = null;
-    let exited = false;
     let settled = false;
-    const finish = () => {
-      if (!exited || !stdoutDone || !stderrDone || settled) return;
+    const finish = (closeCode: number | null) => {
+      // Node close 在 exit 与 stdio 关闭之后触发，摘要到此才完整。
+      if (settled) return;
       settled = true;
-      if (gen !== generation || child !== c || stopped) return;
+      if (child !== c) return;
       child = null;
+      const wasRetiring = retiring;
+      retiring = false;
+      childIsProbe = false;
       if (!isProbe) d.clearWatch(d.root, c.pid);
-      if (!ownsLock()) return;
-      onExit(exitCode == null ? -1 : exitCode, isProbe, out);
+      if (stopped || !ownsLock()) return;
+      if (wasRetiring || gen !== generation) { startBlock(); return; }
+      onExit(closeCode ?? exitCode ?? -1, isProbe, out);
     };
     c.stdout?.on("data", (chunk: string) => {
       out += chunk;
     });
-    c.stdout?.on("end", () => { stdoutDone = true; finish(); });
     c.stderr?.setEncoding("utf8");
     c.stderr?.on("data", () => {
       // stderr 目前只进 .pi-watch.err 的场景不截取内容，保持丢弃
     });
-    c.stderr?.on("end", () => { stderrDone = true; finish(); });
     c.on("exit", (code) => {
-      exited = true;
       exitCode = code;
-      finish();
     });
+    c.on("close", (code) => finish(code));
     c.on("error", (err) => {
       if (gen !== generation || stopped || settled) return; // 旧子进程的迟来 error
       settled = true;
       // ENOENT 等同步类失败：exit 事件可能不来，这里按故障退避处理
       if (child === c) {
         child = null;
+        retiring = false;
         if (!isProbe) d.clearWatch(d.root, c.pid);
       }
       if (ownsLock()) fail(-1, `spawn 失败：${err?.message ?? err}`);
@@ -199,7 +204,6 @@ export function createWatchCore(d: WatchCoreDeps) {
     }
     if (code === 0) {
       // 账本无未结项：不注入不重启，清登记；turn_end 时再探测
-      d.clearWatch(d.root);
       idleAfterZero = true;
       return;
     }
@@ -277,9 +281,9 @@ function readIntervalMs(root: string): number {
 }
 
 // Pi 会话之间对 .watch 的写与条件删除须共用一个短内核临界区，避免旧实例读后删掉新登记。
-function editPiWatch(root: string, pid: number | undefined, line: string) {
+function editPiWatch(root: string, pid: number | undefined, instance: string, line: string) {
   execFileSync("perl", ["-MFcntl=:flock", "-e", String.raw`
-    my ($dir, $pid, $line) = @ARGV;
+    my ($dir, $pid, $instance, $line) = @ARGV;
     open my $guard, "<", $dir or die "watch guard open: $!\n";
     flock($guard, LOCK_EX) or die "watch guard flock: $!\n";
     my $path = "$dir/.watch";
@@ -287,20 +291,22 @@ function editPiWatch(root: string, pid: number | undefined, line: string) {
       open my $old, "<", $path or exit 0;
       my $current = <$old> // "";
       close $old;
-      unlink $path if index($current, "kind=pi-ext pid=$pid ") == 0;
+      unlink $path if index($current, "kind=pi-ext pid=$pid instance=$instance ") == 0;
     } else {
       open my $out, ">", $path or die "watch write: $!\n";
       print {$out} $line or die "watch write: $!\n";
       close $out or die "watch close: $!\n";
     }
-  `, resolve(root, "qwbuddy"), String(pid ?? 0), line], { stdio: "ignore" });
+  `, resolve(root, "qwbuddy"), String(pid ?? 0), instance, line], { stdio: "ignore" });
 }
 
 export default function (pi: ExtensionAPI) {
   const root = process.cwd();
+  const instance = randomUUID();
   const core = createWatchCore({
     root,
     paneId: process.env.HERDR_PANE_ID,
+    instanceId: instance,
     intervalMs: readIntervalMs(root),
     spawnChild: (cmd, args, opts) => spawn(cmd, args, { ...opts, stdio: ["ignore", "pipe", "pipe"] }),
     sendMessage: (text) => pi.sendUserMessage(text, { deliverAs: "followUp" }),
@@ -310,10 +316,10 @@ export default function (pi: ExtensionAPI) {
     },
     readLockOwner: readLockOwnerDefault,
     writeWatch: (r, pid, cmd) => {
-      editPiWatch(r, pid, `kind=pi-ext pid=${pid ?? 0} started=${new Date().toISOString()} cmd=${cmd}\n`);
+      editPiWatch(r, pid, instance, `kind=pi-ext pid=${pid ?? 0} instance=${instance} started=${new Date().toISOString()} cmd=${cmd}\n`);
     },
     clearWatch: (r, pid) => {
-      editPiWatch(r, pid, "");
+      editPiWatch(r, pid, instance, "");
     },
     appendErr: (r, line) => {
       appendFileSync(resolve(r, "qwbuddy", ".pi-watch.err"), `${line}\n`);
