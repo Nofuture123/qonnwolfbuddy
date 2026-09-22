@@ -1,6 +1,6 @@
 # 生产说明与开局值守指引校准
 
-state: running
+state: done
 scenarios-fp: fd17172ea0d846647a7d10f637e0d0a43bdd390a
 
 ## 0. 目标与范围
@@ -41,3 +41,8 @@ wake: 2026-09-22T06:42:21Z state=running fp=58ba8e5b6e385a6e2cf5c5c0d7df6247b0e2
 done: 2026-09-22T09:00:00Z executor=codex commit=59eb8ffe66d3afe146aa6d03d8d941370c63800c; only README.md, README.zh.md, templates/QWBUDDY.md changed: corrected dependency/evidence/production claims, pnpm setup, harness-specific single watch path, --ensure --pane "$HERDR_PANE_ID", and non-persistent workspace/pane guidance; verification on committed files: bash bin/qwb-test.sh fast rc=0; bash bin/qwb-lint.sh rc=0 (LINT PASS; historical placeholder warnings); git diff --check rc=0; full gate and current-source unattended device E2E not run; no push/merge/worktree cleanup.
 done: correction 2026-09-22T06:47:27Z: previous done line used an incorrect wall-clock timestamp; this line records the actual append time. Commit/evidence/limits in the previous line are unchanged.
 wake: 2026-09-22T06:48:22Z state=running fp=f419630d4ec66c1e79cf406235c776fe800d715d
+done: 2026-09-22T06:51:53Z docs correction commit=40250b7b5235e49cfbaa44c64cc99afc75e85b3b; only README.md, README.zh.md, templates/QWBUDDY.md changed: removed false per-command QWB_WORKSPACE environment override claim, documented config.sh assignment and automatic workspace resolution; bash bin/qwb-test.sh fast rc=0, bash bin/qwb-lint.sh rc=0 LINT PASS, git diff --check rc=0; no push/merge/cleanup.
+wake: 2026-09-22T06:52:24Z state=running fp=fbc6058281b78998c3e32854761016251dec72ba
+done: 2026-09-22T06:53:44Z docs review AMEND follow-up commit=556d6aac7769edccd3598513eff7615d11dce5df; only README.md, README.zh.md, templates/QWBUDDY.md changed: Pi each-startup lock then /reload plus live pi-ext check, and cross-workspace --ensure reuse limitation; prior workspace config precedence fix commit=40250b7b5235e49cfbaa44c64cc99afc75e85b3b; bash bin/qwb-test.sh fast rc=0, bash bin/qwb-lint.sh rc=0 LINT PASS, git diff --check rc=0; runtime fixes deferred to separate ticket; no push/merge/cleanup.
+wake: 2026-09-22T06:54:24Z state=running fp=7191084f28f49b558fce53419396b91ed22b42d1
+working: 2026-09-22T06:58:39.838726+00:00 主控已收回独立 Sol high 复核 PASS，范围 59eb8ff..556d6aa，仅三项文档返修。候选 556d6aac7769edccd3598513eff7615d11dce5df；主控 git diff --check rc=0，白名单仅三个文档。state=done 等合并候选的统一全门，暂不标 verified，不把文档 PASS 算作运行时生产就绪。

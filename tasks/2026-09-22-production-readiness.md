@@ -39,6 +39,15 @@ Then 保持任务未完成，补齐修复与证据，不宣布生产就绪。
 
 ## 当前证据
 
+### 待闭环的问题
+
+- 首轮 runtime 三项已隔离复现，见 `docs/reviews/2026-09-22-production-runtime.md`；返修票 `2026-09-22-production-runtime-fixes.md` 执行中。
+- 文档候选 59eb8ff 的复审 AMEND 见 `docs/reviews/2026-09-22-production-docs.md`：workspace 环境覆盖说明错误、Pi 晚获锁不启动、跨 workspace ensure 不幂等。文档先如实说明现状；后两个运行时缺陷必须后续修复，不能以限制文档替代生产目标。
+- `qwbuddy/.pi-watch.err` 安装后未被忽略，待修。
+- 后续核查需覆盖 Claude hook 单飞锁的死锁回收交错（当前仍是判死后 rm/mkdir），避免只修主控锁而留下同类竞争。
+- 第二轮审核仅 `qwb-init.sh` / `qwb-dispatch.sh` / `qwb-worktree.sh`，三个审点为安装更新安全、路由凭据与失败处理、worktree 收尾；冻结源码 1c500b3，复用已有 Sol high 会话，报告 `docs/reviews/2026-09-22-production-install-routing.md`。
+- 最终仍需对真实合入候选跑一次全门，并完成当前源码绑定的真实 Herdr 生命周期验收和资源清理；历史 PASS 不抵扣。
+
 working: 2026-09-22 开局核实 HERDR_ENV=1、当前 pane 和 codex PATH；Herdr 0.9.1；Node v26.8.1；ShellCheck 0.11.0。仓库没有根 AGENTS.md/CLAUDE.md，遵循用户提供全局规范与母本模板主控职责。
 working: 基线 fast rc=0，real 1.38s；full 正在执行，结果待回收。历史 E2E-RUNBOOK 绑定 e917008 且首次派发有人为介入，不构成当前候选无人干预证明。
 wake: 2026-09-22T06:38:20Z state=running fp=37a3e48bf00c9ea800808c1c0fd03053b64491c2
