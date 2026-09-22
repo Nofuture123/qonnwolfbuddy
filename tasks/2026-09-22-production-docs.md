@@ -1,6 +1,6 @@
 # 生产说明与开局值守指引校准
 
-state: done
+state: verified
 scenarios-fp: fd17172ea0d846647a7d10f637e0d0a43bdd390a
 
 ## 0. 目标与范围
@@ -46,3 +46,6 @@ wake: 2026-09-22T06:52:24Z state=running fp=fbc6058281b78998c3e32854761016251dec
 done: 2026-09-22T06:53:44Z docs review AMEND follow-up commit=556d6aac7769edccd3598513eff7615d11dce5df; only README.md, README.zh.md, templates/QWBUDDY.md changed: Pi each-startup lock then /reload plus live pi-ext check, and cross-workspace --ensure reuse limitation; prior workspace config precedence fix commit=40250b7b5235e49cfbaa44c64cc99afc75e85b3b; bash bin/qwb-test.sh fast rc=0, bash bin/qwb-lint.sh rc=0 LINT PASS, git diff --check rc=0; runtime fixes deferred to separate ticket; no push/merge/cleanup.
 wake: 2026-09-22T06:54:24Z state=running fp=7191084f28f49b558fce53419396b91ed22b42d1
 working: 2026-09-22T06:58:39.838726+00:00 主控已收回独立 Sol high 复核 PASS，范围 59eb8ff..556d6aa，仅三项文档返修。候选 556d6aac7769edccd3598513eff7615d11dce5df；主控 git diff --check rc=0，白名单仅三个文档。state=done 等合并候选的统一全门，暂不标 verified，不把文档 PASS 算作运行时生产就绪。
+
+working: 2026-09-22T10:41:24.995773+00:00 主控验收：最终源码整合 4dbc28a，独立复审全部 PASS；整合 full rc=0/110.168s；当前同源安装副本真实 Codex Herdr 显式复用 pane 闭环通过，正负门与前台 block 2/124/0、worktree 收尾均实测。主线已快进合入；详见 docs/reviews/2026-09-22-production-final.md 的证据及未覆盖边界。state=verified。
+worktree: merged branch=production-docs tag=-

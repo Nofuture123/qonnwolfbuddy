@@ -1,6 +1,6 @@
 # 生产级收敛：正确性、速度与 token 成本
 
-state: running
+state: verified
 
 主控：Codex；用户授权审核、优化本项目至生产级。
 基线：1c500b38c014be9e55aa33fede2735ebaaf17d16，main，开局工作区干净。
@@ -72,3 +72,9 @@ working: 2026-09-22T10:19:25.768248+00:00 用户明确授权先按原生产票�
 wake: 2026-09-22T10:19:29Z state=running fp=0a82c04f70c9d2569f0082e3092dbb69a03235a7
 
 working: 2026-09-22T10:28:58.817319+00:00 生命周期 fc0c29c 独立 r2 PASS。开始整合候选全门与当前源码安装副本真实 Herdr 派发验收；生产总票尚未完成，三张改进票未激活。
+wake: 2026-09-22T10:29:32Z state=running fp=bad29cc6bc7f954ab8a5d388d4a1399332527a80
+
+working: 2026-09-22T10:32:17.888481+00:00 整合候选 6e9b0f2 首次 full rc=1，103.011s，smoke 12项失败集中旧值守与 pane-run 场景；保留日志 /tmp/qwb-production-final-full.log。已交原执行 pane 新 Sol medium 会话定向诊断，初始只准修 tests/smoke.sh；不得放宽契约或删断言。真实 Codex 复用 pane 派发闭环单独通过，不抵扣 full。
+wake: 2026-09-22T10:33:33Z state=running fp=b3ec4a90eb9136b9113f3893a679315389002317
+
+working: 2026-09-22T10:41:24.995773+00:00 主控验收：最终源码整合 4dbc28a，独立复审全部 PASS；整合 full rc=0/110.168s；当前同源安装副本真实 Codex Herdr 显式复用 pane 闭环通过，正负门与前台 block 2/124/0、worktree 收尾均实测。主线已快进合入；详见 docs/reviews/2026-09-22-production-final.md 的证据及未覆盖边界。state=verified。

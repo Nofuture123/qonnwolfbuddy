@@ -1,6 +1,6 @@
 # 生产生命周期返修
 
-state: done
+state: verified
 
 ## 0. 范围
 
@@ -80,3 +80,11 @@ working: 2026-09-22T10:24:48Z 执行者完成原生产票 r1 三项 AMEND 返修
 wake: 2026-09-22T10:25:31Z state=running fp=99e25ae4d46c288c0af03f649543412c5a068e78
 
 working: 2026-09-22T10:28:58.817319+00:00 主控收到 fc0c29c 独立 r2 PASS，三项 AMEND 已闭环；state=done，待整合全门与真实 Herdr 闭环。
+
+working: 2026-09-22T10:32:17.888481+00:00 整合候选 6e9b0f2 首次 full rc=1，103.011s，smoke 12项失败集中旧值守与 pane-run 场景；保留日志 /tmp/qwb-production-final-full.log。已交原执行 pane 新 Sol medium 会话定向诊断，初始只准修 tests/smoke.sh；不得放宽契约或删断言。真实 Codex 复用 pane 派发闭环单独通过，不抵扣 full。
+wake: 2026-09-22T10:33:33Z state=running fp=b3ec4a90eb9136b9113f3893a679315389002317
+working: 2026-09-22T10:35:25Z 执行者对 6e9b0f2 full 旧日志 /tmp/qwb-production-final-full.log 的 §42/45/47/51 共 12 FAIL 定向收尾，提交 4dbc28a73b01966e520f6b5b213ae3e6e8bee691（父 6e9b0f2b0b307357445ecaf24b8c947d424dd257；仅 tests/smoke.sh）。归因：§42 status 缺 Herdr workspace 上下文，与已审目标 workspace 校验冲突；§45 正例假件把候选 pane 标成异 workspace；§47/51 stub heredoc 提前展开 ${3:-}，致 pane-run agent get 永远失败；§47 超时旧断言要求保留 dispatch，与已审 not-sent + blocked + 关新 tab 契约不符。未发现需改运行时的证据。定向脚本从 smoke 原段提取并置于 /tmp/qwb-production-targeted-smoke.sh：首次生成器路径错误 rc=1（未执行有效测试），修正路径后 bash -n rc=0、定向 rc=0 TARGETED FAILS=0（/tmp/qwb-production-targeted-smoke.log，覆盖 §42a-c、§45a、§47 全段、§51e）；bash bin/qwb-test.sh fast rc=0（/tmp/qwb-production-smoke-fix-fast.log）；bash -n tests/smoke.sh rc=0；shellcheck -S error tests/smoke.sh rc=0（/tmp/qwb-production-smoke-fix-shellcheck.log）；git diff --check rc=0。常规 shellcheck tests/smoke.sh rc=1 为全文件既有 info/warning，未作为绿门。未跑 full、§42d-j/§45b-f/§51其余项的本轮定向、真实 Herdr 跨 workspace/真实 Pi reload/跨平台宿主；full 交主控独立复审与重跑。未改运行时/state，未 push/merge/新窗口。
+wake: 2026-09-22T10:35:34Z state=running fp=875a285061c77043fd7163e1b48db012f0c2a487
+
+working: 2026-09-22T10:41:24.995773+00:00 主控验收：最终源码整合 4dbc28a，独立复审全部 PASS；整合 full rc=0/110.168s；当前同源安装副本真实 Codex Herdr 显式复用 pane 闭环通过，正负门与前台 block 2/124/0、worktree 收尾均实测。主线已快进合入；详见 docs/reviews/2026-09-22-production-final.md 的证据及未覆盖边界。state=verified。
+worktree: merged branch=production-lifecycle-fixes tag=-

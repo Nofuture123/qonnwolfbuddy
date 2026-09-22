@@ -1,6 +1,6 @@
 # 生产运行时三项返修
 
-state: done
+state: verified
 
 ## 0. 目标与范围
 
@@ -60,3 +60,6 @@ wake: 2026-09-22T07:28:35Z state=running fp=6b9022c62fb0c6972f003940af253bebb0ba
 done: 2026-09-22T07:36:41Z executor=codex second-amend commit=856f87049bab37eb9e42dcf3fe491373003ca864 base=d9ed8052ccbcfbc1e286ade07853026a3ae5d470; only bin/qwb-lock.sh, tests/runtime-readiness.sh, tests/smoke.sh, docs/DECISIONS.md. Directed red: bash tests/runtime-readiness.sh rc=1, B entered before A resumed (B rc=0), 2 FAIL; raw /tmp/qwb-production-runtime-r3-red.log. Fix: locked FD explicitly inherited by inner Bash for full recovery/release critical section. Final: bash bin/qwb-test.sh fast rc=0; bash tests/runtime-readiness.sh rc=0, 18 PASS; bash -n and git diff --check rc=0. Raw logs /tmp/qwb-production-runtime-r3-fast.log and /tmp/qwb-production-runtime-r3-runtime.log. Test temp directory removed by trap; ps found no matching residual process; worktree clean. No full gate, push, merge, worktree cleanup, or Pi/run/lint changes. state remains running for controller audit.
 wake: 2026-09-22T07:38:39Z state=running fp=6b1c1acd2b4ae50ea777882f0bcf4c32270fe19d
 working: 2026-09-22T07:49:05.448441+00:00 主控收回候选 856f87049bab37eb9e42dcf3fe491373003ca864 的最后一项独立复核 PASS（docs/reviews/2026-09-22-production-runtime-r3.md）；与前轮已通过部分共同覆盖本票。state=done，等待最终整合候选全门和真机验收，暂不标 verified。
+
+working: 2026-09-22T10:41:24.995773+00:00 主控验收：最终源码整合 4dbc28a，独立复审全部 PASS；整合 full rc=0/110.168s；当前同源安装副本真实 Codex Herdr 显式复用 pane 闭环通过，正负门与前台 block 2/124/0、worktree 收尾均实测。主线已快进合入；详见 docs/reviews/2026-09-22-production-final.md 的证据及未覆盖边界。state=verified。
+worktree: merged branch=production-runtime-fixes tag=-

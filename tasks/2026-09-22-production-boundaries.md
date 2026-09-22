@@ -1,6 +1,6 @@
 # 生产边界返修：安装、路由、收尾
 
-state: done
+state: verified
 
 ## 0. 范围
 
@@ -54,3 +54,6 @@ wake: 2026-09-22T07:38:39Z state=running fp=5d9485c9b77e51c983e461ae2186bc05413f
 done: 2026-09-22T07:41:07Z 返修提交 a8eec488a75d9cec8a006af4deeb310a3b7554b2（基线 3b8edbf）；仅 bin/qwb-init.sh、tests/boundary-readiness.sh。旧 marker 夹具先以 git status/check-ignore 反证 controller/watch 污染：bash tests/boundary-readiness.sh rc=1（14 PASS/1 FAIL，/tmp/qwb-boundary-r2-red.log）；补齐全部七条运行态规则后同命令 rc=0（15 PASS/0 FAIL，/tmp/qwb-boundary-r2-green.log），重复安装 .gitignore 字节不变、用户原有前缀字节不变；bash bin/qwb-test.sh fast --project "$PWD" rc=0（/tmp/qwb-boundary-r2-fast.log）；shellcheck bin/qwb-init.sh tests/boundary-readiness.sh rc=0（/tmp/qwb-boundary-r2-shellcheck.log）；bash -n 两文件 rc=0；git diff --check 与 git diff --cached --check 均 rc=0。定向脚本临时目录由 EXIT trap 清理；未跑 full、未 push/merge、未清理 worktree；提交后工作树干净。
 wake: 2026-09-22T07:42:40Z state=running fp=6be88cba72cfa712d330140242cd47841123c10f
 working: 2026-09-22T07:49:05.448975+00:00 主控收回候选 a8eec488a75d9cec8a006af4deeb310a3b7554b2 的最后一项独立复核 PASS（docs/reviews/2026-09-22-production-boundaries-r2.md）；与前轮已通过部分共同覆盖本票。state=done，等待最终整合候选全门和真机验收，暂不标 verified。
+
+working: 2026-09-22T10:41:24.995773+00:00 主控验收：最终源码整合 4dbc28a，独立复审全部 PASS；整合 full rc=0/110.168s；当前同源安装副本真实 Codex Herdr 显式复用 pane 闭环通过，正负门与前台 block 2/124/0、worktree 收尾均实测。主线已快进合入；详见 docs/reviews/2026-09-22-production-final.md 的证据及未覆盖边界。state=verified。
+worktree: merged branch=production-boundaries tag=-
