@@ -3427,12 +3427,28 @@ lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; lrc=$?
 
 echo "== 71. Pi 扩展单元测试（qwb-watch.ts 行为，不依赖 pi 进程）=="
 run_pi_ext() {
+  local probe_dir="$TMP/pi-ext-capability" probe_file runner=()
+  mkdir -p "$probe_dir" || return 1
+  probe_file="$probe_dir/probe.ts"
+  printf 'export const qwbProbe: number = 1;\n' > "$probe_file" || return 1
+  # 只探测 TS 加载能力，绝不以实际测试结果决定换运行器。
+  local node_probe='import { pathToFileURL } from "node:url"; import(pathToFileURL(process.argv[1]).href).then(m => process.exit(m.qwbProbe === 1 ? 0 : 1), () => process.exit(1))'
   if command -v node >/dev/null 2>&1; then
-    node "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0
-    node --experimental-strip-types "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0
+    if node --input-type=module -e "$node_probe" "$probe_file" >/dev/null 2>&1; then
+      runner=(node)
+    elif node --experimental-strip-types --input-type=module -e "$node_probe" "$probe_file" >/dev/null 2>&1; then
+      runner=(node --experimental-strip-types)
+    fi
   fi
-  if command -v bun >/dev/null 2>&1; then bun "$ROOT/tests/pi-ext.test.mjs" 2>&1 && return 0; fi
-  return 1
+  if [[ "${#runner[@]}" -eq 0 ]] && command -v bun >/dev/null 2>&1 &&
+    bun "$probe_file" >/dev/null 2>&1; then
+    runner=(bun)
+  fi
+  if [[ "${#runner[@]}" -eq 0 ]]; then
+    echo "pi-ext 测试缺少可加载 TypeScript 的 Node/Bun 执行器" >&2
+    return 1
+  fi
+  "${runner[@]}" "$ROOT/tests/pi-ext.test.mjs" 2>&1
 }
 extout="$(run_pi_ext)"; extrc=$?
 { [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 14 passed'; } \

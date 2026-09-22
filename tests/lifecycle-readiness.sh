@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 生产生命周期定向回归；临时项目与子进程由 Python finally 回收。
 set -euo pipefail
-ROOT="${QWB_LIFECYCLE_SOURCE:-$(cd "$(dirname "$0")/.." && pwd)}"
-python3 - "$ROOT" <<'PY'
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${QWB_LIFECYCLE_SOURCE:-$REPO}"
+python3 - "$ROOT" "$REPO" <<'PY'
 import hashlib
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import tempfile
 import time
 
 source = Path(sys.argv[1])
+repo = Path(sys.argv[2])
 with tempfile.TemporaryDirectory(prefix="qwb-lifecycle-") as tmp:
     project = Path(tmp)
     qwb = project / "qwbuddy"
@@ -179,5 +181,51 @@ print(json.dumps(out))
     unknown = subprocess.run(cmd, env={**env, "FAKE_FAIL_LIST": "1"}, capture_output=True, text=True)
     assert unknown.returncode != 0, "Herdr 查询失败却继续 ensure"
     print("PASS  跨 workspace 创建、复用、失活恢复、错误目标与未知查询")
+
+    # 直接抽取 smoke 的真实函数，用 stub 区分能力预检与实际测试，防止重试掩盖失败。
+    smoke = (repo / "tests" / "smoke.sh").read_text()
+    start = smoke.index("run_pi_ext() {")
+    end = smoke.index("\nextout=", start)
+    driver = project / "pi-driver.sh"
+    driver.write_text(f'ROOT="{repo}"\nTMP="{project}"\n' + smoke[start:end] + '\nrun_pi_ext\n')
+    runnerbin = project / "runnerbin"
+    runnerbin.mkdir()
+    node = runnerbin / "node"
+    node.write_text('''#!/usr/bin/env bash
+printf 'node %s\\n' "$*" >> "$PI_STUB_LOG"
+if [[ "$*" == *probe.ts* ]]; then
+  [[ "$PI_STUB_MODE" == bun ]] && exit 1
+  [[ "$PI_STUB_MODE" == flag && "$*" != *--experimental-strip-types* ]] && exit 1
+  exit 0
+fi
+if [[ "$*" == *pi-ext.test.mjs* ]]; then
+  [[ "$PI_STUB_MODE" == oldmask && "$*" == *--experimental-strip-types* ]] && exit 0
+  echo 'forced test failure'
+  exit 1
+fi
+exit 1
+''')
+    node.chmod(0o755)
+    bun = runnerbin / "bun"
+    bun.write_text('''#!/usr/bin/env bash
+printf 'bun %s\\n' "$*" >> "$PI_STUB_LOG"
+if [[ "$*" == *probe.ts* ]]; then exit 0; fi
+echo 'forced bun test failure'
+exit 1
+''')
+    bun.chmod(0o755)
+    stublog = project / "pi-runner.log"
+    for mode in ("oldmask", "flag", "bun"):
+        stublog.write_text("")
+        pi_env = {**os.environ, "PATH": str(runnerbin) + os.pathsep + os.environ["PATH"],
+                  "PI_STUB_LOG": str(stublog), "PI_STUB_MODE": mode}
+        result = subprocess.run(["bash", str(driver)], env=pi_env, capture_output=True, text=True)
+        calls = stublog.read_text().splitlines()
+        actual = [line for line in calls if "pi-ext.test.mjs" in line]
+        assert result.returncode != 0, f"实际测试失败被换运行器掩盖：mode={mode}, calls={calls}"
+        assert len(actual) == 1, \
+            f"实际测试执行超过一次：mode={mode}, calls={calls}"
+        assert actual[0].startswith("bun ") == (mode == "bun"), f"能力预检选错运行器：{calls}"
+    print("PASS  Pi 执行器能力预检后实际测试恰一次，失败不换运行器")
 print("LIFECYCLE READINESS PASS")
 PY
