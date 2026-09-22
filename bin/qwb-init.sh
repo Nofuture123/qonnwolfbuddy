@@ -65,23 +65,39 @@ else
   cp "$TPL/dispatch-rules.json" "$ROOT/qwbuddy/dispatch-rules.json"
 fi
 
-# 运行态不进 git：往 <项目根>/.gitignore 追加一段（幂等：已有标记行则跳过；文件不存在则新建）。
+# 运行态不进 git：往 <项目根>/.gitignore 追加一段；旧段补缺项。
 # 只追加不重排——项目原有条目字节不变。
 GITIGN="$ROOT/.gitignore"
+ignore_rules=(
+  '.worktrees/'
+  'qwbuddy/.controller.lock/'
+  'qwbuddy/.watch'
+  'qwbuddy/.watch.lock/'
+  'qwbuddy/.hook.lock/'
+  'qwbuddy/.hook.err'
+  'qwbuddy/.pi-watch.err'
+)
 if [[ -f "$GITIGN" ]] && grep -qF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GITIGN"; then
-  echo "跳过：.gitignore 已有"
+  had_marker=1
 else
+  had_marker=0
   if [[ -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
-  cat >> "$GITIGN" <<'EOF'
-# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）
-.worktrees/
-qwbuddy/.controller.lock/
-qwbuddy/.watch
-qwbuddy/.watch.lock/
-qwbuddy/.hook.lock/
-qwbuddy/.hook.err
-EOF
+  printf '%s\n' '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' >> "$GITIGN"
+fi
+added=0
+for rule in "${ignore_rules[@]}"; do
+  if ! grep -qxF "$rule" "$GITIGN"; then
+    if [[ $added -eq 0 && $had_marker -eq 1 && -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
+    printf '%s\n' "$rule" >> "$GITIGN"
+    added=1
+  fi
+done
+if [[ $had_marker -eq 0 ]]; then
   echo "写入：.gitignore 追加 QW buddy 运行态"
+elif [[ $added -eq 1 ]]; then
+  echo "写入：.gitignore 旧 QW buddy 段补齐运行态"
+else
+  echo "跳过：.gitignore 已有"
 fi
 
 # 钩子：已含 qwbuddy/QWBUDDY.md 引用视为已装，跳过
@@ -121,7 +137,7 @@ install_pi_ext() {
 install_pi_ext
 
 # Claude Code Stop hook（值守隐形化）：合并进 .claude/settings.json。
-# 幂等（按 command 含 qwb-hook-claude-stop.sh 判重）、不覆盖已有 hooks（其他键原样）；
+# 幂等（仅完整规范命令及执行配置判重）、不覆盖已有 hooks（其他键原样）；
 # 文件不存在则新建；非法 JSON 拒绝写入（qwbuddy/ 其余安装已照常完成，stderr 说明）。
 # 用 python3：dict 保插入序 + indent=2 重写后别人的内容字节级不变；不用 jq（不保证装了）。
 merge_claude_hook() {
@@ -133,7 +149,6 @@ merge_claude_hook() {
 import json, os, sys
 
 path = os.environ["CLAUDE_SETTINGS"]
-marker = "qwb-hook-claude-stop.sh"
 entry = {
     "type": "command",
     "command": 'bash "$CLAUDE_PROJECT_DIR"/qwbuddy/bin/qwb-hook-claude-stop.sh',
@@ -171,8 +186,11 @@ if not isinstance(stop, list):
 def has_qwb(groups):
     for g in groups:
         if isinstance(g, dict):
-            for h in g.get("hooks") or []:
-                if isinstance(h, dict) and marker in (h.get("command") or ""):
+            hooks = g.get("hooks")
+            if g.get("matcher") not in (None, "") or not isinstance(hooks, list):
+                continue
+            for h in hooks:
+                if isinstance(h, dict) and all(h.get(k) == v for k, v in entry.items()):
                     return True
     return False
 

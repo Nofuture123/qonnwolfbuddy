@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 LEDGER="$PROJECT_ROOT/tasks"
 WT_BASE="$PROJECT_ROOT/.worktrees"
 
@@ -71,22 +71,16 @@ open_task_for() {
   return 1
 }
 
-# 任务id → 账本中唯一任务书（记账落点；0 或多份都返回 1）。
-# 与 qwb-run.sh 同款：先找「文件名去日期前缀与 .md 后 == 给定 id」的精确命中，恰好一份就用它；
-# 没有精确命中才退回子串匹配（否则 --task foo 会撞上 foo-bar 两份）。
+# 收尾记账只接受文件名去日期前缀与 .md 后恰好等于任务 id 的唯一任务书。
+# 子串匹配可用于派发查找，但收尾不能借用相似名称的另一张任务书。
 unique_task_for() {
-  local f exact=() hits=()
+  local f exact=()
   for f in "$LEDGER"/*.md; do
     [[ -e "$f" ]] || continue
     [[ "$(basename "$f" .md | sed 's/^[0-9][0-9-]*-//')" == "$1" ]] && exact+=("$f")
   done
-  if [[ ${#exact[@]} -eq 1 ]]; then
-    printf '%s' "${exact[0]}"
-    return 0
-  fi
-  for f in "$LEDGER"/*"$1"*.md; do [[ -e "$f" ]] && hits+=("$f"); done
-  [[ ${#hits[@]} -eq 1 ]] || return 1
-  printf '%s' "${hits[0]}"
+  [[ ${#exact[@]} -eq 1 ]] || return 1
+  printf '%s' "${exact[0]}"
 }
 
 if [[ "$CMD" == "list" ]]; then
@@ -108,11 +102,33 @@ fi
 # finish
 [[ -n "$TASK_ID" ]] || { echo "错误：finish 需要 <任务id>" >&2; usage >&2; exit 2; }
 [[ -n "$ACTION" ]] || { echo "错误：finish 需要动作 --merged|--archive|--keep[=原因]" >&2; exit 2; }
+case "$TASK_ID" in
+  .|..|*/*|*\\*) echo "错误：任务 id 必须是单个目录名，不得含路径分隔符：${TASK_ID}" >&2; exit 2 ;;
+esac
+
+[[ -d "$LEDGER" && ! -L "$LEDGER" && -d "$WT_BASE" && ! -L "$WT_BASE" ]] \
+  || { echo "错误：tasks 或 .worktrees 不存在或为符号链接，拒绝收尾" >&2; exit 1; }
+LEDGER_PHYS="$(cd "$LEDGER" && pwd -P)"
+WT_BASE_PHYS="$(cd "$WT_BASE" && pwd -P)"
+[[ "$LEDGER_PHYS" == "$PROJECT_ROOT/tasks" && "$WT_BASE_PHYS" == "$PROJECT_ROOT/.worktrees" ]] \
+  || { echo "错误：tasks 或 .worktrees 物理位置不在项目根下，拒绝收尾" >&2; exit 1; }
 
 TASK_FILE="$(unique_task_for "$TASK_ID")" \
   || { echo "错误：任务 '${TASK_ID}' 在 ${LEDGER} 匹配不到唯一任务书，记账无处可写" >&2; exit 1; }
 WT_DIR="$WT_BASE/$TASK_ID"
 [[ -d "$WT_DIR" ]] || { echo "错误：worktree 不存在：${WT_DIR}" >&2; exit 1; }
+[[ ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
+  || { echo "错误：任务书或 worktree 是符号链接，拒绝收尾" >&2; exit 1; }
+TASK_PHYS="$(cd "$(dirname "$TASK_FILE")" && pwd -P)/$(basename "$TASK_FILE")"
+WT_PHYS="$(cd "$WT_DIR" && pwd -P)"
+[[ "$TASK_PHYS" == "$LEDGER_PHYS/"* && "$WT_PHYS" == "$WT_BASE_PHYS/$TASK_ID" ]] \
+  || { echo "错误：任务书或 worktree 物理位置越界，拒绝收尾" >&2; exit 1; }
+WT_GIT_ROOT="$(git -C "$WT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ "$WT_GIT_ROOT" != "$WT_PHYS" ]] \
+  || ! git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "worktree $WT_PHYS"; then
+  echo "错误：目标不是本项目登记的对应 worktree，拒绝收尾" >&2
+  exit 1
+fi
 
 # 一切判断与归档以 worktree 当前 HEAD 的实际提交 OID 为准，不得拿同名分支当本工作区的工作
 if ! BRANCH="$(git -C "$WT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"; then

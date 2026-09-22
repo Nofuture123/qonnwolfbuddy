@@ -146,7 +146,7 @@ HTTP=$(printf '%s' "$REQUEST" | curl -sS --max-time "$TS_TIMEOUT" -o "$RESP_FILE
   --data-binary @- 2>/dev/null) || HTTP=000
 T1=$(now_ms)
 LAT_MS=$(( T1 - T0 ))
-[ "$HTTP" = 200 ] || emit_error "http ${HTTP}（${LAT_MS} ms）: $(head -c 200 "$RESP_FILE" 2>/dev/null | tr '\n' ' ')"
+[ "$HTTP" = 200 ] || emit_error "http ${HTTP}（${LAT_MS} ms）：远端请求失败"
 
 # 响应校验（照抄上游）：choice 是字符串、confidence ∈ [0,1]、probabilities 恰好覆盖全部选项
 # 且各项 ∈ [0,1]、和 ≈ 1（±0.01）、usage 缺省或为数值对象。任一不符 → error（exit 0）。
