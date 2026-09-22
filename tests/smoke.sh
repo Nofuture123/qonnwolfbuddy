@@ -2350,6 +2350,14 @@ auto_run; a_rc=$?; DENV=''; AUTO_KEY=''
 { [[ "$a_rc" -eq 0 ]] && [[ "$(autoworker)" == "pi" ]] && grep -q '未命中' "$DT/run.err"; } \
   && ok "auto+error（http 500）→ 落默认工人 pi 不阻塞（验收 4）" \
   || { bad "auto+error 不对（rc=${a_rc}）"; cat "$DT/run.err"; }
+# 远端反射 Authorization 时，上层回退照常执行，任何输出不得含凭据 canary。
+dreset; printf 'Authorization: Bearer %s\n' "$DKEY" > "$DT/resp.json"
+DENV='FAKE_CURL_HTTP=500'; AUTO_KEY="$DKEY"
+auto_run; a_rc=$?; DENV=''; AUTO_KEY=''
+{ [[ "$a_rc" -eq 0 ]] && [[ "$(autoworker)" == "pi" ]] \
+  && ! grep -qF "$DKEY" "$DT/run.err"; } \
+  && ok "auto+反射 Authorization → 默认工人且 stderr 无 canary" \
+  || bad "auto+反射 Authorization 回退或凭据保护失败（rc=${a_rc}）"
 # (d) 坏规则文件 → 拒绝派发（exit 2）、零副作用（带 key 才会走到规则校验）
 nd_before="$(grep -c '^dispatch:' "$AUT")"
 printf '%s\n' '{"rules":[' > "$TMP/qwbuddy/dispatch-rules.json"
@@ -3138,7 +3146,7 @@ wake_err="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbud
 { [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]] && printf '%s' "$wake_err" | grep -q '无法确认工人状态'; } \
   && ok "查询失败 → 值守不当丢失（不新写 wake 行、stderr 一行说明）" || bad "查询失败被当丢失或没说明"
 
-echo "== 65. --task 精确 id 优先（run 与 worktree finish 共用判定）=="
+echo "== 65. --task 精确 id 优先；worktree finish 只记本票账本 =="
 mk_foo_task() { # $1=id
 cat > "$GP2/tasks/2099-01-02-$1.md" <<EOF
 # $1
@@ -3167,8 +3175,8 @@ mk_foo_task foo; mk_foo_task foo-bar
 out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task fo --worker pi --here 2>&1 )"; rc=$?
 { [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '匹配到 2 份'; } \
   && ok "--task fo 仍报「匹配到 2 份」拒绝" || bad "模糊 id 未拒绝（rc=${rc}）"
-# worktree finish 的 unique_task_for 同款精确匹配：--keep 只记账不删东西
-mkdir -p "$GP2/.worktrees/foo"
+# worktree finish 精确命中本票任务书；目标必须是本仓登记的 worktree
+git -C "$GP2" worktree add -q -b foo "$GP2/.worktrees/foo" HEAD
 ( cd "$GP2" && bash qwbuddy/bin/qwb-worktree.sh finish foo --keep=测试保留 ) >/dev/null 2>&1; rc=$?
 { [[ "$rc" -eq 0 ]] && grep -q '^worktree: keep' "$GP2/tasks/2099-01-02-foo.md" \
   && ! grep -q '^worktree:' "$GP2/tasks/2099-01-02-foo-bar.md"; } \
@@ -3230,8 +3238,9 @@ gi1="$(gi_run)"; gi_rc=$?
   && grep -qxF 'qwbuddy/.watch' "$GIP/.gitignore" \
   && grep -qxF 'qwbuddy/.watch.lock/' "$GIP/.gitignore" \
   && grep -qxF 'qwbuddy/.hook.lock/' "$GIP/.gitignore" \
-  && grep -qxF 'qwbuddy/.hook.err' "$GIP/.gitignore"; } \
-  && ok "QW buddy 段恰好一次，含 .worktrees/ 与 qwbuddy/.controller.lock/ 等六条" \
+  && grep -qxF 'qwbuddy/.hook.err' "$GIP/.gitignore" \
+  && grep -qxF 'qwbuddy/.pi-watch.err' "$GIP/.gitignore"; } \
+  && ok "QW buddy 段恰好一次，含 .worktrees/ 与 Pi 错误日志等七条" \
   || bad "QW buddy 段缺失或重复：$(cat "$GIP/.gitignore")"
 gi_sha1="$(shasum "$GIP/.gitignore" | cut -d' ' -f1)"
 gi2="$(gi_run)"
@@ -3252,7 +3261,7 @@ gs="$(git -C "$GIP" status --porcelain)"
 { [[ -z "$gs" ]]; } \
   && ok "装完+提交+抢锁+建 .worktrees/x → git status --porcelain 干净" \
   || bad "status 竟然脏：$gs"
-perl -i -ne 'print unless /^# QW buddy 运行态/ || /^\.worktrees\/$/ || /^qwbuddy\/\.(controller\.lock\/|watch|watch\.lock\/|hook\.lock\/|hook\.err)$/' "$GIP/.gitignore"
+perl -i -ne 'print unless /^# QW buddy 运行态/ || /^\.worktrees\/$/ || /^qwbuddy\/\.(controller\.lock\/|watch|watch\.lock\/|hook\.lock\/|hook\.err|pi-watch\.err)$/' "$GIP/.gitignore"
 gs="$(git -C "$GIP" status --porcelain)"
 { printf '%s' "$gs" | grep -q 'worktrees' && printf '%s' "$gs" | grep -q '.controller.lock'; } \
   && ok "删掉 QW buddy 段后 .worktrees 与 .controller.lock 在 status 现身（反证段落有效）" \
@@ -3462,6 +3471,14 @@ out="$(stat69)"
   && ok "status：pi-ext pid 死 → 值守：未运行" \
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
+
+echo "== 74. 生产边界定向回归 =="
+if bash "$ROOT/tests/boundary-readiness.sh" > "$TMP/boundary-readiness.log" 2>&1; then
+  ok "生产边界定向回归通过"
+else
+  bad "生产边界定向回归失败"
+  grep -E '^(FAIL|BOUNDARY)' "$TMP/boundary-readiness.log" >&2 || true
+fi
 
 
 # 新节必须加在本行之前
