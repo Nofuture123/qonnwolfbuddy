@@ -8,16 +8,15 @@
 
 ## 1. 开局点名（每次启动先做）
 
-1. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。**已被占用且锁主仍活 = 另一个主控在活动**：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。锁主已消失（pid 已退出 / pane 不存在）时 acquire 会自动回收残留锁并获锁；锁主死活查不出来（herdr 不在 PATH / 查询报错）则照旧拒绝（不猜、不回收）。
-2. **点名**：跑 `bash qwbuddy/bin/qwb-status.sh`——它列出未结项（`[未结]`）、每张的最近状态行与未处理的规格疑点；**只读未结项那几份任务书**的末尾状态行，搞清活到哪了；向使用者报告：几个未结项、分别在什么阶段、下一步打算干什么。status 标「工人丢失」的票（pane 已不存在、账本无结论）重派**同一票**幂等续接，不另开副本。
-3. **确认 pane 与 workspace**：当前主控 pane 从 `HERDR_PANE_ID` 取得；不要把本次动态 pane ID 写入 `qwbuddy/config.sh`。工人或可见值守 tab 的目标 workspace 由运行时解析：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE` → `herdr workspace list` 中 `worktree.repo_root` 与项目根匹配 → 调用者 workspace（带警告）。配置的 ID 在本机不存在则拒绝。跨项目且不能按项目根匹配时，应在目标项目的配置文件中有意指定稳定的 workspace ID；不要盲目持久化当前 `HERDR_WORKSPACE_ID`。脚本会 source `config.sh`，仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
-4. 派发前 `qwb-run.sh` 会尝试预置信任；文件缺失、格式不符或首次启动对话框仍可能要求人工处理。旧基线的首次派发曾需手工确认并补发提示（见 `docs/E2E-RUNBOOK.md`），不能据此宣布当前无人介入路径已验证。
-5. **按主控 harness 只选择一种值守入口**，不要先跑 `--ensure` 再启动隐形值守：
-   - **Claude Code**：安装器把 Stop hook 合并进 `.claude/settings.json`；确认安装输出无 hook 错误。回合结束时 hook 调用 `qwb-wake.sh --block`，以 Stop hook feedback 处理可动作变化；开局不另起可见 tab。
-   - **Pi**：安装器复制 `.pi/extensions/qwb-watch.ts`。取得主控锁后，扩展在 `session_start` 或下次 `turn_end` 自动启动值守；用 `bash qwbuddy/bin/qwb-status.sh` 核实 `值守：pi-ext（pid …）`。若未运行，排查扩展加载与锁主。扩展持有 `--block` 子进程，并用 `[qwb-wake]` follow-up 消息接续；开局不另起可见 tab。
-   - **Codex**：把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为**前台 tool call** 循环运行：退出码 2 → 读 stdout 摘要并处理账本；124 → 到期无变化，继续下一轮；0 → 无未结项，收工。不要用 `&` 或后台任务代替前台 checkpoint。
-   - **其他/未知 harness**：在主控 Herdr pane 内运行 `bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"`；主控与项目值守 tab 可在不同 workspace，创建、扫描和复用均按项目目标 workspace。这里的 `--pane` 是必需的显式唤醒目标：`--ensure` 不会自动从 `HERDR_PANE_ID` 读取目标，也可在目标稳定时有意设置 `QWB_CONTROLLER_PANE`。`--block` 通过主控锁与 `HERDR_PANE_ID` 复核归属，不需要目标 pane 参数。
-   用 `bash qwbuddy/bin/qwb-status.sh` 看「值守：」；`hook` / `pi-ext` / `tab（pane …）` 是不同机制。报「未运行」时修复本 harness 的入口；可见 tab 形态可重跑 `--ensure --pane "$HERDR_PANE_ID"`。报「未知」先修查询，勿据此多开。
+1. **先识别当前宿主**：主控仅支持 Claude Code、Pi、Codex。无法可靠识别或属于其他宿主时，报告不支持或无法识别并停止；确认属于三者之一后才继续，期间不取得主控锁或启动值守 tab。
+2. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。**已被占用且锁主仍活 = 另一个主控在活动**：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。锁主已消失（pid 已退出 / pane 不存在）时 acquire 会自动回收残留锁并获锁；锁主死活查不出来（herdr 不在 PATH / 查询报错）则照旧拒绝（不猜、不回收）。
+3. **点名**：跑 `bash qwbuddy/bin/qwb-status.sh`——它列出未结项（`[未结]`）、每张的最近状态行与未处理的规格疑点；**只读未结项那几份任务书**的末尾状态行，搞清活到哪了；向使用者报告：几个未结项、分别在什么阶段、下一步打算干什么。status 标「工人丢失」的票（pane 已不存在、账本无结论）重派**同一票**幂等续接，不另开副本。
+4. **确认 pane 与 workspace**：当前主控 pane 从 `HERDR_PANE_ID` 取得；不要把本次动态 pane ID 写入 `qwbuddy/config.sh`。工人 tab 的目标 workspace 由运行时解析：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE` → `herdr workspace list` 中 `worktree.repo_root` 与项目根匹配 → 调用者 workspace（带警告）。配置的 ID 在本机不存在则拒绝。跨项目且不能按项目根匹配时，应在目标项目的配置文件中有意指定稳定的 workspace ID；不要盲目持久化当前 `HERDR_WORKSPACE_ID`。脚本会 source `config.sh`，仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。历史值守 tab 的手工排障仍沿用同一解析。
+5. 派发前 `qwb-run.sh` 会尝试预置信任；文件缺失、格式不符或首次启动对话框仍可能要求人工处理。旧基线的首次派发曾需手工确认并补发提示（见 `docs/E2E-RUNBOOK.md`），不能据此宣布当前无人介入路径已验证。
+6. **按已识别宿主只选一种值守入口**。先检查所选入口的安装、锁主与健康；查询报「未知」时说明失败的查询并修复它，不猜成「未运行」，不启动第二种值守。`bash qwbuddy/bin/qwb-status.sh` 的「值守：」可辅助排查，但它不证明 Codex 前台调用仍在等待，也不能用 Claude hook 回合间的「未运行」断言 hook 未安装。
+   - **Claude Code**：核对安装器在 `.claude/settings.json` 合并的 Stop hook 与 `qwbuddy/bin/qwb-hook-claude-stop.sh`，安装输出有错误就修复后重装；回合结束由 hook 前台调用 `qwb-wake.sh --block` 并反馈可动作变化。已有健康 hook 调用时沿用，回合间以 hook 配置和下次 Stop 的实际结果确认接续；未知时查设置、hook 错误及主控锁。
+   - **Pi**：源模板 `templates/pi-extensions/qwb-watch.ts` 由 `bin/qwb-init.sh` 安装到目标项目 `.pi/extensions/qwb-watch.ts`；安装或更新后重启 Pi 或 `/reload`。确认当前 `HERDR_PANE_ID` 持有主控锁、扩展已加载；启动时已持锁会在 `session_start` 值守，启动后才获锁则在下一次 `turn_end` 接入。扩展持有 `qwb-wake.sh --block` 子进程，exit 2 的摘要用 `[qwb-wake]` 和 `followUp` 接续。用 `qwb-status.sh` 核对 `值守：pi-ext（pid …）`；未加载、非锁主或健康未知时查安装文件、reload、锁主及 `qwbuddy/.pi-watch.err`，确认后再接续。
+   - **Codex**：在当前主控回合把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为**真正前台 tool call** 循环运行。返回 2 就处理 stdout 摘要及账本并再次前台等待；124 是到期无变化，立即再次前台等待；0 只表示本轮值守结束：核对输出、`qwb-lock.sh status` 的锁主归属和账本确无未结项后才收工。出现孤儿值守提示或归属不明时停止按空账本结案，按第 2 步查锁主并恢复归属，再从账本接续。已有前台等待就继续该循环；调用报错先查主控锁、`HERDR_PANE_ID` 和错误输出，再恢复前台调用。中断或主控退出后需重新开局，普通主动检查不能代替阻塞等待。
 如果账本为空：报「账本无任务」，等使用者提需求。
 
 ## 2. 三层责任——谁的保证归谁
@@ -142,7 +141,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | `qwb-run.sh --task <id> --worker <名>` | 派发 + 记账（先过验收场景门；默认开 `.worktrees/<任务id>` 隔离副本，`--here` 才落项目根；启动方式由 `QWB_WORKER_LAUNCH` 按工人覆盖；新 tab 的 workspace 按下一行解析） |
 | `qwb-dispatch.sh <brief> [--project <根>]` | JEV 自动派工（opt-in：TYPESAFE_API_KEY 取环境变量或 <项目>/.env）：用 typesafe.ai jev-latest 从 qwbuddy/dispatch-rules.json（模板在母本仓 templates/，qwb-init.sh 安装时拷入）选规则出工人；confidence < 0.6 → ambiguous、坏规则文件 exit 2、其余一律 exit 0；qwb-run.sh `--worker auto` 自动调用，off/error/ambiguous 落默认工人不阻塞派发 |
 | `qwb-lib.sh` | **库文件，不直接运行**：被 `qwb-run.sh` / `qwb-wake.sh` source。`resolve_workspace` 解析工人/值守 tab 该落哪个 herdr workspace（`QWB_WORKSPACE` → `worktree.repo_root` 匹配项目根 → 调用者 workspace + 警告 三级） |
-| `qwb-wake.sh [--dry-run|--once|--ensure|--check|--block]` | 值守：查未结项 → 一轮只发**一条**投递（多票拼同一条文本，含各票 state 与最后状态行）→ 叫醒你的 pane；`QWB_REWAKE_MS` 时间兑底只对 `running` 票生效（blocked/needs-decision 等裁决，不重叫）；`--block` 每轮先复核主控锁，锁不在手（孤儿值守）不消费唤醒；`--ensure` 幂等确保值守 tab 在跑（fallback），`--check` 只报值守健康；`--block [--max-ms <毫秒>]` 前台阻塞值守（无窗口，给 Claude Code Stop hook / Codex 前台 checkpoint 用）：有可动作变化退出码 2 + stdout 摘要、无未结项 0、到期无变化 124 |
+| `qwb-wake.sh [--dry-run|--once|--ensure|--check|--block]` | 值守：查未结项 → 一轮只发**一条**投递（多票拼同一条文本，含各票 state 与最后状态行）→ 叫醒你的 pane；`QWB_REWAKE_MS` 时间兑底只对 `running` 票生效（blocked/needs-decision 等裁决，不重叫）；`--block` 每轮先复核主控锁，锁不在手（孤儿值守）不消费唤醒；`--ensure` 仅供历史 tab 手工排障，`--check` 只报值守健康；`--block [--max-ms <毫秒>]` 前台阻塞值守（无窗口，给 Claude Code Stop hook / Codex 前台 checkpoint 用）：有可动作变化退出码 2 + stdout 摘要、到期无变化 124、退出码 0 按 §1 核对输出/锁/账本后判定 |
 | `qwb-hook-claude-stop.sh` | Claude Code Stop hook 入口（由 `qwb-init.sh` 合并进 `.claude/settings.json`，主控不手动跑）：守卫（仅主控锁 pane）→ `.hook.lock` 单飞 → 前台跑 `qwb-wake.sh --block`；exit 2 时摘要双写 stdout/stderr 唤醒主控，出错写 `.hook.err` 后 exit 0 不卡主控 |
 | `qwb-status.sh` | 点名 + 汇报：账本 × herdr 窗口状态 |
 | `qwb-lock.sh acquire|release|status` | 主控锁：开局抢锁、查锁主、确认残留后手动放锁 |
@@ -150,7 +149,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 | `qwb-test.sh fast|full` | 快门/全门执行器：跑 config 声明的 QWB_GATE_*（见 §6） |
 | `qwb-lint.sh [--project <根>]` | 自身规范 lint：文档承诺脚本、state 值域、config 死键、变量写法、质量门已声明、已派发任务书场景冻结 |
 
-可运行入口脚本支持 `--help`（`qwb-lib.sh` 是 source 用的库）。值守按 §1 的 harness 入口启动：Claude Code 经 Stop hook，Pi 经扩展，Codex 经前台 checkpoint，其他主控经 `--ensure --pane "$HERDR_PANE_ID"`。主控进程退出后不会由值守自动恢复。
+可运行入口脚本支持 `--help`（`qwb-lib.sh` 是 source 用的库）。主控值守只按 §1 的 Claude Code Stop hook、Pi 扩展或 Codex 前台 checkpoint 接入；`--ensure` 保留给历史 tab 的手工排障，不作为主控默认入口。主控进程退出后不会由值守自动恢复。
 
 ## 10. 硬规矩（不可违反）
 
@@ -163,7 +162,7 @@ CI 是交付门禁，不是性能实验场：让每次 push 在最短的可信�
 
 ## 11. MVP 边界
 
-- 目标：存活且已正确接入值守的主控能接到未结项进展；Claude Code 用 Stop hook，Pi 用扩展，Codex 用前台 checkpoint，其他 harness 用可见 tab。具体目标环境仍需验证。
-- 运行时约束：每个主控只选一种值守机制；hook 有 `.hook.lock` 单飞，Pi 扩展只持一个子进程，tab 由 `--ensure` 检查或复用。状态不明或多实例时排查，不把进程存在当成闭环成功。
+- 目标：存活且已正确接入值守的 Claude Code、Pi、Codex 主控能接到未结项进展；分别使用 Stop hook、扩展、前台 checkpoint。具体目标环境仍需验证。
+- 运行时约束：每个主控只选一种值守机制；hook 有 `.hook.lock` 单飞，Pi 扩展只持一个子进程。状态不明或多实例时排查，不把进程存在当成闭环成功。
 - ❌ 不保证：你进程退出 / 整机重启后自动恢复（hook / checkpoint / 值守 tab 都随主控进程死）。这种情况使用者重启你，你按 §1 开局点名、从账本续接；若重启把工人也带没了，status 的「工人丢失」行会标出——重派同一票幂等复用 worktree 续接。
 - ❌ 不保证：值守进程离开你的存活期后仍被看护——没有守护进程（边界见 §10.2）。

@@ -8,7 +8,7 @@ Q-Wolf Buddy coordinates coding agents within a repository. Markdown task ledger
 
 - `qwb-run.sh` checks Given/When/Then acceptance scenarios, records their fingerprint, and dispatches a worker into a task worktree by default.
 - Workers append progress and evidence to the **main project's** ledger. The controller runs the project's declared checks before accepting work.
-- `qwb-wake.sh` monitors unfinished tasks. Claude Code uses a Stop hook, Pi an extension, Codex a foreground checkpoint, and other harnesses may use a visible Herdr tab.
+- `qwb-wake.sh` monitors unfinished tasks. Supported controllers are Claude Code with a Stop hook, Pi with the bundled extension, and Codex with a foreground checkpoint.
 - `qwb-status.sh` reports ledger and watch status; `qwb-lock.sh` maintains controller ownership.
 
 A controller process that exits is not automatically restored. Individual tasks may need human input. Passing tests alone does not establish production readiness.
@@ -32,7 +32,7 @@ QWB_GATE_FAST='pnpm lint'
 QWB_GATE_FULL='pnpm lint && pnpm test'
 ```
 
-Start the controller in the project root and have it read `qwbuddy/QWBUDDY.md`. It acquires the controller lock, checks unfinished tasks, and selects one watch path for its harness. Create `tasks/YYYY-MM-DD-topic.md` from `qwbuddy/TASK.md`, with normal and failure-path acceptance scenarios. The controller can dispatch it with:
+Start the controller in the project root and have it read all of `qwbuddy/QWBUDDY.md`. It identifies Claude Code, Codex, or Pi before acquiring the controller lock; an unknown harness stops without taking the lock. A supported controller then acquires the lock, checks unfinished tasks, and selects its watch path. Create `tasks/YYYY-MM-DD-topic.md` from `qwbuddy/TASK.md`, with normal and failure-path acceptance scenarios. The controller can dispatch it with:
 
 ```bash
 bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
@@ -42,15 +42,11 @@ The controller runs the relevant project gate and records the result; a worker's
 
 ## One watch path per controller
 
-Claude Code uses its installed Stop hook. Pi uses `.pi/extensions/qwb-watch.ts`; if it acquires the controller lock after startup, the next `turn_end` starts its watch automatically. Use `bash qwbuddy/bin/qwb-status.sh` to inspect it. Codex loops a bounded `qwb-wake.sh --block --max-ms 180000` foreground tool call. Other harnesses use the visible-tab fallback:
+Claude Code checks the installed `.claude/settings.json` Stop hook and resumes through its next Stop event. Pi's bundled source `templates/pi-extensions/qwb-watch.ts` installs to the target project's `.pi/extensions/qwb-watch.ts`; restart Pi or run `/reload` after installation. Its `session_start` or a later `turn_end` after acquiring the controller lock starts the watch; progress arrives as a `[qwb-wake]` follow-up. Codex keeps `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` in a foreground tool-call loop: exit 2 handles progress, 124 starts another wait, and 0 ends this watch round. On 0, check the output, controller-lock owner, and ledger before concluding no task is open; an orphan-watch message or unclear ownership requires the lock recovery steps in the controller guide. An interrupted loop requires a new startup. An unknown controller harness is unsupported; identify it before taking the lock or starting a watch.
 
-```bash
-bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
-```
+Use `bash qwbuddy/bin/qwb-status.sh` to inspect the ledger and watch diagnostics. A health result of “unknown” requires investigation of the failed query, installation, and controller lock; it does not authorize another watch path. The status output alone cannot prove that a Codex foreground call is still waiting or that a Claude hook is missing between Stop events. A controller that exits must be started again. The runtime retains visible-tab commands for manual diagnosis; they are outside the controller startup path.
 
-The fallback needs a Herdr pane context. `--ensure` does not infer the target pane from `HERDR_PANE_ID`; pass `--pane` at invocation or deliberately configure a stable `QWB_CONTROLLER_PANE`. Do not persist a transient pane ID at every startup. `--block` checks controller-lock ownership against `HERDR_PANE_ID` and needs no target `--pane`.
-
-New worker and watch tabs use `QWB_WORKSPACE` from the target project's `qwbuddy/config.sh`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown configured workspace is rejected. Across projects with no root match, deliberately configure the target project's workspace ID in that file; do not copy the controller's current ID blindly. The scripts source `config.sh`, so setting `QWB_WORKSPACE` only in the command environment does not override its assignment there. Visible-tab `--ensure` uses that same target workspace for creation, scanning, reuse, and recovery, including when the controller is in another workspace.
+New worker tabs use `QWB_WORKSPACE` from the target project's `qwbuddy/config.sh`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown configured workspace is rejected. Across projects with no root match, deliberately configure the target project's workspace ID in that file; do not copy the controller's current ID blindly. The scripts source `config.sh`, so setting `QWB_WORKSPACE` only in the command environment does not override its assignment there.
 
 ## Evidence and roadmap
 

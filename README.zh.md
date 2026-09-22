@@ -8,7 +8,7 @@ Q-Wolf Buddy 是仓库内的 AI 编程协作流程：Markdown 主账本记录需
 
 - `qwb-run.sh` 检查 Given/When/Then 验收场景并记录指纹，默认把工人派到任务 worktree。
 - 工人向**项目主账本**追加进度和证据；主控独立运行项目声明的检查后才决定是否验收。
-- `qwb-wake.sh` 观察未结项。Claude Code 用 Stop hook，Pi 用扩展，Codex 用前台 checkpoint，其他 harness 可用可见 Herdr tab。
+- `qwb-wake.sh` 观察未结项。支持的主控为使用 Stop hook 的 Claude Code、使用自带扩展的 Pi 和使用前台 checkpoint 的 Codex。
 - `qwb-status.sh` 报告账本和值守状态，`qwb-lock.sh` 维护主控锁。
 
 主控进程退出后不会自动恢复。具体任务可能需要人工介入。测试通过不等于已具备生产条件。
@@ -32,7 +32,7 @@ QWB_GATE_FAST='pnpm lint'
 QWB_GATE_FULL='pnpm lint && pnpm test'
 ```
 
-在项目根目录启动主控，让它阅读 `qwbuddy/QWBUDDY.md`。它先取得主控锁、点名未结项，再按当前 harness 选一种值守入口。按 `qwbuddy/TASK.md` 建立 `tasks/YYYY-MM-DD-topic.md`，写正常与失败路径验收场景，再由主控派工：
+在项目根目录启动主控，让它读完整份 `qwbuddy/QWBUDDY.md`。先确认宿主属于 Claude Code、Codex、Pi；未知宿主报告并停止，不取得主控锁。已确认的主控再取锁、点名未结项，按宿主选一种值守入口。按 `qwbuddy/TASK.md` 建立 `tasks/YYYY-MM-DD-topic.md`，写正常与失败路径验收场景，再由主控派工：
 
 ```bash
 bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
@@ -42,15 +42,11 @@ bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
 
 ## 每个主控只选一种值守入口
 
-Claude Code 使用已安装的 Stop hook。Pi 使用 `.pi/extensions/qwb-watch.ts`：若开局后才取得主控锁，下次 `turn_end` 会自动启动值守；可用 `bash qwbuddy/bin/qwb-status.sh` 查看。Codex 在前台 tool call 中循环运行有界的 `qwb-wake.sh --block --max-ms 180000`。其他 harness 使用可见 tab 兜底：
+Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在后续 `turn_end` 启动；进展以 `[qwb-wake]` follow-up 接续。Codex 把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为真正前台 tool call 循环：退出 2 处理进展、124 再等待、0 只表示本轮值守结束；须核对输出、主控锁归属和账本，确认无未结项后才收工，孤儿提示或归属不明则按主控说明的锁恢复步骤处理。循环中断后须重新开局。未知宿主不支持，取锁或接入值守前须先确认宿主。
 
-```bash
-bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
-```
+用 `bash qwbuddy/bin/qwb-status.sh` 排查账本和值守。健康结果为「未知」时检查失败的查询、安装和主控锁，不启动另一种值守。单凭 status 不能证明 Codex 前台调用仍在等待，也不能用 Claude hook 回合间的结果断言 hook 未安装。主控退出后须重新启动。运行时保留可见 tab 命令供手工排障，不作为主控开局入口。
 
-兜底入口需要 Herdr pane 上下文。`--ensure` 不会从 `HERDR_PANE_ID` 自动读取唤醒目标；调用时传 `--pane`，或在目标稳定时有意配置 `QWB_CONTROLLER_PANE`。不要每次开局把临时 pane ID 持久化进配置。`--block` 通过主控锁和 `HERDR_PANE_ID` 复核归属，不需要目标 `--pane`。
-
-新工人和值守 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。配置的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目的该配置文件中有意指定 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。可见 tab 的 `--ensure` 在创建、扫描、复用和失活恢复时统一使用项目目标 workspace，主控可位于另一 workspace。
+新工人 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。配置的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目的该配置文件中有意指定 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
 
 ## 证据与路线图
 
