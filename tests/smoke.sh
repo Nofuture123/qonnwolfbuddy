@@ -648,6 +648,162 @@ MT="$TMP/empty-proj"; mkdir -p "$MT"
 bash "$ROOT/bin/qwb-test.sh" fast --project "$MT" >/dev/null 2>&1 \
   && bad "无配置项目 fast 竟成功" || ok "无配置项目报错非 0"
 
+# 报告接口：通过真实 CLI 观察输出、退出码、次数及最终落盘内容。
+RP="$TMP/report-project"; RD="$TMP/report-files"; mkdir -p "$RP" "$RD"
+cat > "$RP/qwb.config.sh" <<'EOF'
+QWB_GATE_FAST='printf "gate-stdout\n"; printf "gate-stderr\n" >&2; printf x >> count'
+QWB_GATE_FULL='printf "gate-seven\n" >&2; printf x >> count; exit 7'
+EOF
+git -C "$RP" init -q
+git -C "$RP" add qwb.config.sh
+git -C "$RP" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm seed
+RHEAD="$(git -C "$RP" rev-parse HEAD)"
+export QWB_REPORT_SECRET_CANARY='env-secret-canary'
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" > "$RD/legacy.out" 2> "$RD/legacy.err"; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$RD/legacy.out")" == 'gate-stdout' && "$(cat "$RD/legacy.err")" == 'gate-stderr' && "$(wc -c < "$RP/count" | tr -d ' ')" == 1 ]] \
+  && ok "旧 fast 调用 stdout/stderr 与单次执行不变" || bad "旧 fast 调用兼容失败"
+rm "$RP/count"
+bash "$ROOT/bin/qwb-test.sh" full --project "$RP" > "$RD/legacy-seven.out" 2> "$RD/legacy-seven.err"; rc=$?
+[[ "$rc" -eq 7 && ! -s "$RD/legacy-seven.out" && "$(wc -c < "$RP/count" | tr -d ' ')" == 1 ]] \
+  && grep -qF 'gate-seven' "$RD/legacy-seven.err" && grep -qF '门失败（full）' "$RD/legacy-seven.err" \
+  && ok "旧 full 调用 stderr、7 与单次执行不变" || bad "旧 full 调用兼容失败"
+[[ "$(find "$RD" -name '*.md' | wc -l | tr -d ' ')" == 0 ]] && ok "旧调用不生成报告" || bad "旧调用生成报告"
+rm "$RP/count"
+git -C "$RP" status --porcelain | grep -q . && bad "报告前项目非 clean" || ok "报告前项目 clean"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$RD/zero.md" > "$RD/zero.out" 2> "$RD/zero.err"; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$RD/zero.out")" == 'gate-stdout' && "$(wc -c < "$RP/count" | tr -d ' ')" == 1 ]] \
+  && grep -qF 'gate-stderr' "$RD/zero.err" && ok "报告 fast 输出透传且单次执行" || bad "报告 fast 输出或次数错误"
+grep -qF "运行前提交：$RHEAD" "$RD/zero.md" && grep -qF '运行前工作区：clean' "$RD/zero.md" \
+  && grep -qF '运行后工作区：dirty' "$RD/zero.md" && grep -qF '门退出码：0' "$RD/zero.md" \
+  && grep -qF "项目目录：$(cd "$RP" && pwd -P)" "$RD/zero.md" && grep -qF 'QWB_GATE_FAST' "$RD/zero.md" \
+  && grep -qF 'qwb-test-report-v1' "$RD/zero.md" && grep -qF '证明范围：仅证明' "$RD/zero.md" \
+  && ok "成功报告绑定 HEAD、配置、前后状态与范围" || bad "成功报告内容错误"
+before="$(wc -c < "$RP/count" | tr -d ' ')"
+bash "$ROOT/bin/qwb-test.sh" full --project "$RP" --report "$RD/seven.md" > "$RD/seven.out" 2> "$RD/seven.err"; rc=$?
+after="$(wc -c < "$RP/count" | tr -d ' ')"
+[[ "$rc" -eq 7 && "$after" -eq $((before+1)) && ! -s "$RD/seven.out" ]] \
+  && grep -qF 'gate-seven' "$RD/seven.err" && grep -qF '门退出码：7' "$RD/seven.md" \
+  && ok "失败门 7 保留 stderr、单次执行及报告" || bad "失败门 7 被报告掩盖或重跑"
+[[ -f "$RD/zero.md" && -f "$RD/seven.md" ]] && ok "失败和成功报告分别保留" || bad "报告覆盖了历史结果"
+for mode in existing symlink directory missing-parent missing-value duplicate; do
+  target="$RD/rejected.md"
+  case "$mode" in
+    existing) printf preserved > "$target" ;;
+    symlink) printf link-target > "$RD/link-target"; ln -s "$RD/link-target" "$target" ;;
+    directory) mkdir "$target" ;;
+    missing-parent) target="$RD/absent/rejected.md" ;;
+    missing-value) target='' ;;
+    duplicate) target="$RD/duplicate.md" ;;
+  esac
+  rm -f "$RP/count"
+  if [[ "$mode" == duplicate ]]; then
+    bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$target" --report "$RD/other.md" > "$RD/reject.out" 2> "$RD/reject.err"; rc=$?
+  else
+    bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$target" > "$RD/reject.out" 2> "$RD/reject.err"; rc=$?
+  fi
+  [[ "$rc" -eq 2 && ! -e "$RP/count" ]] && ok "报告 $mode 预检拒绝且门未执行" || bad "报告 $mode 预检错误（rc=$rc）"
+  case "$mode" in
+    existing) [[ "$(cat "$target")" == preserved ]] || bad "已有报告被改"; rm "$target" ;;
+    symlink) [[ "$(cat "$RD/link-target")" == link-target ]] || bad "符号链接目标被改"; rm "$target" ;;
+    directory) rmdir "$target" ;;
+  esac
+done
+for token in --project --help -h --report; do
+  rm -f "$RP/count"
+  bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$token" > "$RD/option.out" 2> "$RD/option.err"; rc=$?
+  [[ "$rc" -eq 2 && ! -e "$RP/count" ]] && grep -qF -- '--report' "$RD/option.err" \
+    && ok "--report 后跟 $token 返回 2 且门未执行" || bad "--report 后跟 $token 错误语义（rc=${rc}）"
+done
+mkdir "$RD/-relative-sub"
+rm -f "$RP/count"
+( cd "$RD" && bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report -relative-sub/report.md ) > "$RD/dash-relative.out" 2> "$RD/dash-relative.err"; rc=$?
+[[ "$rc" -eq 0 && -f "$RD/-relative-sub/report.md" && "$(cat "$RP/count")" == x ]] \
+  && ok "合法前导横线相对路径可生成报告" || bad "合法前导横线相对路径失败（rc=${rc}）"
+cat > "$RP/qwb.config.sh" <<'EOF'
+QWB_GATE_FAST='printf x >> count; rmdir ../report-files/write-fail'
+QWB_GATE_FULL='printf x >> count; rmdir ../report-files/write-fail; exit 7'
+EOF
+for gate in fast full; do
+  mkdir "$RD/write-fail"; rm -f "$RP/count"
+  bash "$ROOT/bin/qwb-test.sh" "$gate" --project "$RP" --report "$RD/write-fail/result.md" > "$RD/write-fail-$gate.out" 2> "$RD/write-fail-$gate.err"; rc=$?
+  if [[ "$gate" == fast ]]; then expected=3; else expected=7; fi
+  [[ "$rc" -eq "$expected" && "$(cat "$RP/count")" == x && ! -e "$RD/write-fail/result.md" ]] \
+    && grep -qF '报告写入失败' "$RD/write-fail-$gate.err" \
+    && ok "报告落盘失败时 $gate 保留单次门结果（rc=${rc}）" || bad "报告落盘失败语义错误（$gate rc=${rc}）"
+done
+mkdir "$RD/write-fail"
+cat > "$RP/qwb.config.sh" <<'EOF'
+QWB_GATE_FAST='printf x >> count; printf existing > ../report-files/write-fail/race.md'
+EOF
+rm -f "$RP/count"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$RD/write-fail/race.md" > "$RD/race.out" 2> "$RD/race.err"; rc=$?
+[[ "$rc" -eq 3 && "$(cat "$RD/write-fail/race.md")" == existing && "$(cat "$RP/count")" == x ]] \
+  && ok "门期间新出现报告目标不被覆盖" || bad "门期间新目标被覆盖或返回码错误"
+cat > "$RP/qwb.config.sh" <<'EOF'
+QWB_GATE_FAST='printf "cmd-secret-canary\n"; printf x >> count; git -c user.name=Smoke -c user.email=smoke@example.invalid add qwb.config.sh && git -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm gate-commit'
+EOF
+rm -f "$RP/count"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$RD/change.md" > "$RD/change.out" 2> "$RD/change.err"; rc=$?
+NEWHEAD="$(git -C "$RP" rev-parse HEAD)"
+[[ "$rc" -eq 0 && "$NEWHEAD" != "$RHEAD" ]] && grep -qF "运行前提交：$RHEAD" "$RD/change.md" \
+  && grep -qF "运行后提交：$NEWHEAD" "$RD/change.md" \
+  && ! grep -Eq 'cmd-secret-canary|env-secret-canary|QWB_GATE_FAST=' "$RD/change.md" \
+  && ok "版本变化如实记录且报告不复制 CMD/env/输出 canary" || bad "版本变化或秘密 canary 报告错误"
+NG="$TMP/report-nongit"; mkdir "$NG"; printf 'QWB_GATE_FAST=":"\n' > "$NG/qwb.config.sh"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$NG" --report "$RD/nongit.md" > /dev/null 2> "$RD/nongit.err"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -qF '运行前提交：unknown' "$RD/nongit.md" \
+  && grep -qF '运行后工作区：unknown' "$RD/nongit.md" \
+  && ok "非 Git 项目仍执行门且版本 unknown" || bad "非 Git 报告错误"
+printf 'QWB_GATE_FAST=":"\n' > "$RP/qwb.config.sh"
+GSTUB="$TMP/report-git-fail"; mkdir "$GSTUB"; printf '#!/usr/bin/env bash\nexit 1\n' > "$GSTUB/git"; chmod +x "$GSTUB/git"
+PATH="$GSTUB:$PATH" bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$RD/git-fail.md" > /dev/null 2> "$RD/git-fail.err"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -qF '运行前提交：unknown' "$RD/git-fail.md" \
+  && grep -qF '运行后工作区：unknown' "$RD/git-fail.md" \
+  && ok "Git 查询失败不阻断门且如实 unknown" || bad "Git 查询失败报告错误"
+ln -s "$RP" "$TMP/report-project-link"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$TMP/report-project-link" --report "$RD/symlink-project.md" > /dev/null 2> "$RD/symlink-project.err"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -qF "项目目录：$(cd "$RP" && pwd -P)" "$RD/symlink-project.md" \
+  && ok "项目 symlink 入口报告物理规范目录" || bad "项目 symlink 报告目录不规范"
+LP="$TMP/legacy-physical"; LA="$TMP/legacy-alias"; mkdir "$LP"; ln -s "$LP" "$LA"
+printf "QWB_GATE_FAST='pwd'\n" > "$LP/qwb.config.sh"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$LA" > "$RD/legacy-alias.out" 2> "$RD/legacy-alias.err"; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$RD/legacy-alias.out")" == "$LA" && ! -s "$RD/legacy-alias.err" ]] \
+  && ok "旧 symlink 项目入口保留逻辑 PWD/stdout" || bad "旧 symlink 项目入口改变 PWD/stdout"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$LA" --report "$RD/alias-report.md" > "$RD/alias-report.out" 2> "$RD/alias-report.err"; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$RD/alias-report.out")" == "$LA" ]] \
+  && grep -qF "项目目录：$(cd "$LA" && pwd -P)" "$RD/alias-report.md" \
+  && ok "带报告仍保留门逻辑 PWD 且字段记录物理目录" || bad "带报告 symlink PWD/报告字段错误"
+( cd "$TMP" && bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report report-files/relative.md ) > "$RD/relative.out" 2> "$RD/relative.err"; rc=$?
+[[ "$rc" -eq 0 && -f "$RD/relative.md" ]] && ok "相对报告路径按调用 cwd 解析" || bad "相对报告路径解析错误"
+ND="$RD/no-write"; mkdir "$ND"; chmod 500 "$ND"
+rm -f "$RP/count"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$ND/result.md" > /dev/null 2> "$RD/no-write.err"; rc=$?
+[[ "$rc" -eq 2 && ! -e "$RP/count" && ! -e "$ND/result.md" ]] \
+  && ok "父目录不可写预检返回 2 且门未执行" || bad "父目录不可写预检错误（rc=${rc}）"
+chmod 700 "$ND"
+# date 第二次调用失败：门已经返回 7，报告元信息失败不得改成其他退出码。
+DSTUB="$TMP/report-date-fail"; mkdir "$DSTUB"
+cat > "$DSTUB/date" <<'EOF'
+#!/usr/bin/env bash
+count="$(cat "$QWB_DATE_COUNT" 2>/dev/null || echo 0)"
+count=$((count+1)); printf '%s' "$count" > "$QWB_DATE_COUNT"
+if [[ "$count" -eq 2 ]]; then exit 1; fi
+exec /bin/date "$@"
+EOF
+chmod +x "$DSTUB/date"
+printf 'QWB_GATE_FULL="exit 7"\n' >> "$RP/qwb.config.sh"
+QWB_DATE_COUNT="$TMP/report-date.count" PATH="$DSTUB:$PATH" bash "$ROOT/bin/qwb-test.sh" full --project "$RP" --report "$RD/date-fail.md" > /dev/null 2> "$RD/date-fail.err"; rc=$?
+[[ "$rc" -eq 7 && ! -e "$RD/date-fail.md" ]] && grep -qF '报告写入失败' "$RD/date-fail.err" \
+  && ok "门 7 后元信息失败仍返回 7 且无完整报告" || bad "门 7 后元信息失败覆盖了退出码"
+CP="$TMP/report-clean-project"; mkdir "$CP"
+printf 'QWB_GATE_FAST=":"\n' > "$CP/qwb.config.sh"
+git -C "$CP" init -q; git -C "$CP" add qwb.config.sh
+git -C "$CP" -c user.name=Smoke -c user.email=smoke@example.invalid commit -qm seed
+bash "$ROOT/bin/qwb-test.sh" fast --project "$CP" --report "$CP/report.md" > /dev/null 2> "$RD/in-project.err"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -qF '运行前工作区：clean' "$CP/report.md" \
+  && grep -qF '运行后工作区：clean' "$CP/report.md" \
+  && ok "项目内报告与临时文件不污染前后工作区采样" || bad "项目内报告污染采样"
+
 echo "== 24. B：先场景后代码（模板 + 规范）=="
 assert_file "$ROOT/templates/TASK.md"
 assert_file "$TMP/qwbuddy/TASK.md"
