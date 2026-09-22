@@ -138,9 +138,29 @@ PYEOF
   exit 0
 fi
 
+# 专项文档只安装固定清单；写入前拒绝缺源和符号链接目标。
+guide_docs=(ci-guide.md host-watch-guide.md worker-launch-guide.md)
+[[ ! -L "$ROOT/qwbuddy" ]] || { echo "错误：qwbuddy 目录是符号链接，拒绝安装专项文档" >&2; exit 1; }
+for doc in "${guide_docs[@]}"; do
+  [[ -f "$TPL/$doc" ]] || { echo "错误：缺少专项文档源文件：$TPL/$doc" >&2; exit 1; }
+  dst="$ROOT/qwbuddy/$doc"
+  if [[ -L "$dst" || ( -e "$dst" && ! -f "$dst" ) ]]; then
+    echo "错误：专项文档目标不是普通文件：$dst" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 
 cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
+for doc in "${guide_docs[@]}"; do
+  tmp_doc="$(mktemp "$ROOT/qwbuddy/.${doc}.XXXXXX")"
+  if ! cp "$TPL/$doc" "$tmp_doc" || ! mv -f "$tmp_doc" "$ROOT/qwbuddy/$doc"; then
+    rm -f "$tmp_doc"
+    echo "错误：安装专项文档失败：$doc" >&2
+    exit 1
+  fi
+done
 cp "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
 cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
 

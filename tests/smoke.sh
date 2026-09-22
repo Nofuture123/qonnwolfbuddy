@@ -3738,6 +3738,13 @@ else
 fi
 
 
+echo "== 78. 按需文档安装与失效路径 =="
+if python3 "$ROOT/tests/on-demand-guide.py"; then
+  ok "按需文档安装、链接及负例通过"
+else
+  bad "按需文档安装、链接及负例失败"
+fi
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
