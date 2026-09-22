@@ -58,14 +58,17 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 LEDGER="$PROJECT_ROOT/tasks"
 WT_BASE="$PROJECT_ROOT/.worktrees"
 
-task_state() { sed -n 's/^state:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'; }
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
+[[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$LIB"
 
 # 任务id → 账本中有未结项 state 的任务书（无则返回 1）
 open_task_for() {
   local f st
   for f in "$LEDGER"/*"$1"*.md; do
     [[ -e "$f" ]] || continue
-    st="$(task_state "$f")"
+    st="$(qwb_task_state "$f")"
     case "$st" in running|blocked|needs-decision) printf '%s' "$f"; return 0 ;; esac
   done
   return 1
@@ -90,7 +93,7 @@ if [[ "$CMD" == "list" ]]; then
     found=1
     id="$(basename "$d")"
     if tf="$(open_task_for "$id")"; then
-      printf '未结项  %s  ← %s state=%s\n' "$d" "$(basename "$tf")" "$(task_state "$tf")"
+      printf '未结项  %s  ← %s state=%s\n' "$d" "$(basename "$tf")" "$(qwb_task_state "$tf")"
     else
       printf '残留    %s（账本中无对应未结项任务书；建议 qwb-worktree.sh finish %s --merged|--archive|--keep）\n' "$d" "$id"
     fi

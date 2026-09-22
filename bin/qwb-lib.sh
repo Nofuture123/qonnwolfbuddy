@@ -4,6 +4,25 @@
 # 本文件只定义函数：不执行动作、不设置 shell 选项（set -euo pipefail 归调用方）。
 # 因此它自己不是可运行脚本——QWBUDDY.md §9 表里按「库文件，不直接运行」列出。
 
+# 只提取首个 state 值；是否有 state 字段、值是否合法由调用方决定。
+qwb_task_state() {
+  sed -n 's/^state:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'
+}
+
+# 最后一条规格疑点相关事件；普通进展行不解除疑点。
+qwb_last_spec_event() {
+  grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$1" | tail -1 || true
+}
+
+# 与派发和 lint 共用的场景块边界；保留原始行字节供现有指纹算法使用。
+qwb_scenario_block() {
+  awk '
+    inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
+    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
+    inblk==1 { print }
+  ' "$1"
+}
+
 # —— herdr workspace list 响应 → TSV 行「workspace_id<TAB>focused<TAB>worktree.repo_root 物理路径」——
 # 形状防御（R2-M2）：result.workspaces 必须是数组；每项 workspace_id 必须是非空 JSON 字符串
 # （对象/数组/数字/布尔/null/空串一律判整体失败）。任一项不符 → 非 0 退出，调用方据此拒绝派发，

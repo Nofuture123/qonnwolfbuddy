@@ -446,7 +446,7 @@ open_items() {
   for f in "$LEDGER"/*.md; do
     [[ -e "$f" ]] || continue
     grep -q '^state:' "$f" || continue
-    st="$(sed -n 's/^state:[[:space:]]*//p' "$f" | head -1 | tr -d '[:space:]')"
+    st="$(qwb_task_state "$f")"
     case "$st" in
       running|blocked|needs-decision) printf '%s\t%s\n' "$f" "$st" ;;
       done|verified) ;;

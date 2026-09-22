@@ -245,7 +245,7 @@ fi
 # 是 spec-defect: → 未决。普通 working:/done:/dispatch: 行不参与判定、不能解除疑点；
 # spec-resolved: 只认主控写的处置结论，覆盖其之前全部未决疑点，之后新提的疑点重新拦截。
 # 本检查在任何派发副作用（worktree/窗口/tab/state:/dispatch:）之前完成。
-last_spec_ev="$(grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$TASK_FILE" | tail -1 || true)"
+last_spec_ev="$(qwb_last_spec_event "$TASK_FILE")"
 if printf '%s' "$last_spec_ev" | grep -qE '^blocked:[[:space:]]*spec-defect:'; then
   {
     echo "错误：任务书上有未决规格疑点，拒绝派发——疑点原文："
@@ -261,15 +261,8 @@ fi
 # —— M1 派发门：任务书必须有「验收场景」块（先场景后代码），且至少一条失败路径场景 ——
 # 验收场景块 = 首个含「验收场景」的标题行起，到下一个一/二级标题、或首条账本状态/运行时行为止
 # （working:/done:/dispatch:/wake: 等行永远追加在文件尾，不得计入场景指纹）
-scenario_block() {
-  awk '
-    inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
-    inblk==1 { print }
-  ' "$1"
-}
 scen_refuse() { echo "错误：$1——请按 qwbuddy/TASK.md 补验收场景（至少一条失败路径）" >&2; exit 1; }
-SCEN_BLK="$(scenario_block "$TASK_FILE")"
+SCEN_BLK="$(qwb_scenario_block "$TASK_FILE")"
 [[ -n "$SCEN_BLK" ]] || scen_refuse "任务书没有「验收场景」块"
 if ! { printf '%s\n' "$SCEN_BLK" | grep -q 'Given' \
     && printf '%s\n' "$SCEN_BLK" | grep -q 'When' \
@@ -493,7 +486,7 @@ if [[ "$REVISE_GIVEN" -eq 1 ]]; then
   recheck_fp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$TASK_FILE" | head -1 | tr -d '[:space:]')"
   [[ "$recheck_fp" == "$DECLARED_FP" ]] \
     || { echo "错误：取得锁后票内旧指纹已变（${DECLARED_FP} → ${recheck_fp}），放弃本次修订，请重新核对后再派" >&2; exit 1; }
-  recheck_scen_fp="$(printf '%s' "$(scenario_block "$TASK_FILE")" | shasum | cut -d' ' -f1)"
+  recheck_scen_fp="$(printf '%s' "$(qwb_scenario_block "$TASK_FILE")" | shasum | cut -d' ' -f1)"
   [[ "$recheck_scen_fp" == "$SCEN_FP" ]] \
     || { echo "错误：取得锁后场景块已变，放弃本次修订，请重新核对后再派" >&2; exit 1; }
   REV_OLD="$DECLARED_FP"; REV_NEW="$SCEN_FP"

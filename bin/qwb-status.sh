@@ -44,7 +44,7 @@ else
   for f in "${files[@]}"; do
     grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
     name="$(basename "$f")"
-    st="$(sed -n 's/^state:[[:space:]]*//p' "$f" | head -1 | tr -d '[:space:]')"
+    st="$(qwb_task_state "$f")"
     case "$st" in
       running|blocked|needs-decision) mark="未结" ;;
       done|verified) mark="已结" ;;
@@ -69,7 +69,7 @@ else
     fi
     # 规格疑点未处理：与 qwb-run.sh 疑点门同判定——最后一个相关事件（spec-defect:/spec-resolved:）
     # 是 spec-defect: 即未决；普通状态行不参与判定，疑点不会被后续 working:/done:/dispatch: 行遮住
-    spev="$(grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$f" 2>/dev/null | tail -1 || true)"
+    spev="$(qwb_last_spec_event "$f" 2>/dev/null)"
     if printf '%s' "$spev" | grep -qE '^blocked:[[:space:]]*spec-defect:'; then
       printf '       规格疑点未处理: %s\n' "$spev"
     fi

@@ -43,6 +43,10 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -d "$PROJECT_ROOT" ]] || { echo "错误：项目根不存在：${PROJECT_ROOT}" >&2; exit 1; }
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
+[[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$LIB"
 
 FAILS=0
 pass() { echo "PASS  $1"; }
@@ -79,7 +83,7 @@ echo "== 2. 账本 state 合法 =="
 bad_states=""
 for f in "$PROJECT_ROOT"/tasks/*.md; do
   grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
-  st="$(sed -n 's/^state:[[:space:]]*//p' "$f" | head -1 | tr -d '[:space:]')"
+  st="$(qwb_task_state "$f")"
   if [[ -z "$st" ]]; then
     bad_states="${bad_states} $(basename "$f")=<空值>"   # 有 state: 字段但值为空 → FAIL
     continue
@@ -172,13 +176,6 @@ echo "== 7. 已派发任务书的验收场景与冻结 =="
 # 重算当前块指纹比对，不一致即 FAIL；有 dispatch: 但无 scenarios-fp: 的是旧制派发，警告不 FAIL。
 # 带 scenarios-revised: 修订记录的票（经 --revise-scenarios 显式改过场景）：最新一条记录的
 # new= 指纹必须等于当前基线——没有修订参数的场景差异仍然 FAIL（区分显式改票与无痕偷改）。
-scenario_block() {
-  awk '
-    inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
-    inblk==1 { print }
-  ' "$1"
-}
 scen_bad=""
 for f in "$PROJECT_ROOT"/tasks/*.md; do
   grep -q '^state:' "$f" || continue
@@ -188,7 +185,7 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
       && echo "警告：$(basename "$f") 有 dispatch: 但无 scenarios-fp（旧制派发，无冻结基线）" >&2
     continue
   fi
-  blk="$(scenario_block "$f")"
+  blk="$(qwb_scenario_block "$f")"
   if [[ -z "$blk" ]]; then
     scen_bad="${scen_bad} $(basename "$f")(验收场景块缺失)"
     continue
