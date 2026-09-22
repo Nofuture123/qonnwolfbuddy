@@ -50,7 +50,7 @@ bash qwbuddy/bin/qwb-wake.sh --ensure --pane "$HERDR_PANE_ID"
 
 The fallback needs a Herdr pane context. `--ensure` does not infer the target pane from `HERDR_PANE_ID`; pass `--pane` at invocation or deliberately configure a stable `QWB_CONTROLLER_PANE`. Do not persist a transient pane ID at every startup. `--block` checks controller-lock ownership against `HERDR_PANE_ID` and needs no target `--pane`.
 
-New worker and watch tabs use a declared `QWB_WORKSPACE`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown declared workspace is rejected. Across projects with no root match, set `QWB_WORKSPACE` to the target project's workspace ID for that invocation or configure it deliberately; do not copy the controller's current ID blindly.
+New worker and watch tabs use `QWB_WORKSPACE` from the target project's `qwbuddy/config.sh`, then a `herdr workspace list` entry whose `worktree.repo_root` matches the project root, then the caller's workspace with a warning. An unknown configured workspace is rejected. Across projects with no root match, deliberately configure the target project's workspace ID in that file; do not copy the controller's current ID blindly. The scripts source `config.sh`, so setting `QWB_WORKSPACE` only in the command environment does not override its assignment there.
 
 ## Evidence and roadmap
 

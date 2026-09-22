@@ -10,7 +10,7 @@
 
 1. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。**已被占用且锁主仍活 = 另一个主控在活动**：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。锁主已消失（pid 已退出 / pane 不存在）时 acquire 会自动回收残留锁并获锁；锁主死活查不出来（herdr 不在 PATH / 查询报错）则照旧拒绝（不猜、不回收）。
 2. **点名**：跑 `bash qwbuddy/bin/qwb-status.sh`——它列出未结项（`[未结]`）、每张的最近状态行与未处理的规格疑点；**只读未结项那几份任务书**的末尾状态行，搞清活到哪了；向使用者报告：几个未结项、分别在什么阶段、下一步打算干什么。status 标「工人丢失」的票（pane 已不存在、账本无结论）重派**同一票**幂等续接，不另开副本。
-3. **确认 pane 与 workspace**：当前主控 pane 从 `HERDR_PANE_ID` 取得；不要把本次动态 pane ID 写入 `qwbuddy/config.sh`。工人或可见值守 tab 的目标 workspace 由运行时解析：已声明的 `QWB_WORKSPACE` → `herdr workspace list` 中 `worktree.repo_root` 与项目根匹配 → 调用者 workspace（带警告）。声明的 ID 在本机不存在则拒绝。跨项目且不能按项目根匹配时，可在本次命令环境设置目标项目的 `QWB_WORKSPACE`，或有意配置稳定的目标 workspace；不要盲目持久化当前 `HERDR_WORKSPACE_ID`。
+3. **确认 pane 与 workspace**：当前主控 pane 从 `HERDR_PANE_ID` 取得；不要把本次动态 pane ID 写入 `qwbuddy/config.sh`。工人或可见值守 tab 的目标 workspace 由运行时解析：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE` → `herdr workspace list` 中 `worktree.repo_root` 与项目根匹配 → 调用者 workspace（带警告）。配置的 ID 在本机不存在则拒绝。跨项目且不能按项目根匹配时，应在目标项目的配置文件中有意指定稳定的 workspace ID；不要盲目持久化当前 `HERDR_WORKSPACE_ID`。脚本会 source `config.sh`，仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
 4. 派发前 `qwb-run.sh` 会尝试预置信任；文件缺失、格式不符或首次启动对话框仍可能要求人工处理。旧基线的首次派发曾需手工确认并补发提示（见 `docs/E2E-RUNBOOK.md`），不能据此宣布当前无人介入路径已验证。
 5. **按主控 harness 只选择一种值守入口**，不要先跑 `--ensure` 再启动隐形值守：
    - **Claude Code**：安装器把 Stop hook 合并进 `.claude/settings.json`；确认安装输出无 hook 错误。回合结束时 hook 调用 `qwb-wake.sh --block`，以 Stop hook feedback 处理可动作变化；开局不另起可见 tab。
