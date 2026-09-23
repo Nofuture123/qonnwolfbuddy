@@ -39,18 +39,18 @@
 ### 3.2 规矩
 - **施工单**：主控把需求写成任务书文件（`tasks/YYYY-MM-DD-<主题>.md`），工人读文件干活。
   **所有任务都经文件派发，无隐性依赖**——换会话、换 AI、重启都不丢。
-- **隔离干活**：`herdr worktree create` 开一次性副本，代码改动只在副本里。
+- **隔离干活**：`qwb-run.sh` 建 Git worktree 并在 Herdr Spaces 登记独立 worktree workspace，代码改动只在副本里。
   **worktree 规范（四步 + 两条补充）**：
   - **开**：`<项目>/.worktrees/<任务id>/`，一任务一个；开之前**先清点**——有已完成任务的残留就先收掉。**默认就开**：`qwb-run.sh` 不给 worktree 参数时**自动创建隔离副本**（与「工人代码一律留在副本」直接对齐）；确实要往项目根派发时必须显式 `--here`，且提示词会写明这是**非隔离**目录。
-  - **收·成功**：验收通过 → 合并 / 推送 → `git worktree remove` + `git branch -d` → 记账。
-  - **收·废弃**：先提交到该分支 → `git tag archive/<任务id>` → `git worktree remove` + `git branch -D` → 记账（写明已归档及标签名）。
+  - **收·成功**：验收通过 → 合并 / 推送 → 核对并关闭本票空闲 Herdr Space → `git worktree remove` + 按已核实 OID 原子删分支 → 记账。
+  - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Herdr Space → `git tag archive/<任务id>` → `git worktree remove` + 按已归档 OID 原子删分支 → 记账。
     **为什么**：这样废弃的工作不会丢（一个标签就能找回），也不再占目录和分支——比「一律不许删」更实用。
   - **留·例外**：只允许两种——① 等使用者裁决的；② 有冲突待解的。且必须**点名**（账本一行），不得默默留下。
   - **归属**：谁派生谁收尾——主控收尾它派给工人的 worktree。
   - **补**：`git worktree prune` 清「目录已删但 git 还记着」的元数据残留。
   - **实现**：四步已由 `bin/qwb-worktree.sh` 落地（`list` 列残留 / `finish <任务id> --merged|--archive|--keep`），收尾动作与记账由脚本做，**成功/废弃/例外三选一的判断仍归主控**；`qwb-run.sh --create-worktree` 在开副本前会清点残留并**警告**（不阻塞）。
   - **detached HEAD**：判断与归档一律以 **worktree 当前 HEAD 的实际提交**为准（不是同名分支）。detached 时 `--archive` 的标签指向实际工作、且**不删**指向别处的同名分支；`--merged` 按实际提交是否已合并决定；`git status` 失败视为「状态未知」→ **拒绝**，不得当作干净放行。
-  - **收尾期间不得被推进（TOCTOU，已知边界）**：收尾开始时读到的 HEAD 只在「那一刻」有效。**每个删除/破坏性动作（`worktree remove`、`branch -d/-D`）之前紧邻地复核实际 HEAD 未变**；变了就**拒绝**并保留已打的标签，不删任何东西。分支身份读取失败同样拒绝——不猜、不回退成任务 id。
+  - **收尾期间不得被推进（TOCTOU，已知边界）**：收尾开始时读到的 HEAD 只在「那一刻」有效。`worktree remove` 前复核实际 HEAD；删分支使用带旧 OID 条件的 `update-ref -d`。变了就拒绝删除并保留已打的标签。分支身份读取失败同样拒绝——不猜、不回退成任务 id。
     **边界（明示，不要当成已封死）**：复核与删除是**两次独立 Git 调用**，两者之间仍有窗口；且 detached HEAD 上的新提交**不更新任何 ref**，无法被任何前置检查捕获。因此——**收尾的前提是该副本的写入者已停止**（工人已收工）。若违反此前提，窗口内产生的提交会变成未引用对象，可 `git fsck --lost-found` 找回（不是静默清除）。脚本的成功输出会带上删除依据的完整 OID 与这条限制。
   - **`--keep` 不做脏检查**（它本来就不动 git）：规范明确允许保留「有冲突待解」的 worktree，不能被「工作区不干净」挡住；脏检查只作用于会删东西的 `--merged` / `--archive`。
 - **验货门**：**不采信工人自述**。验收由主控独立跑项目自己的检查命令（typecheck / test 等），并把「跑了什么、结果、结论」写进账本留痕——**权力下放 + 可审计**。
@@ -229,7 +229,7 @@ qwbuddy/roles/
 【使用者】提需求（说一句）
    ↓
 【主控】写任务书 tasks/<日期>-<主题>.md
-        herdr worktree create（隔离副本）
+        git worktree add + herdr worktree open（隔离副本在 Spaces 可见）
         herdr tab create + rename（中文标签）
         herdr agent start（工人）
         herdr agent prompt（送任务书 + 主账本绝对路径）

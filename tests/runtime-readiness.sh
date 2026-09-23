@@ -40,7 +40,7 @@ if [[ ! -e "$TMP/ready" ]]; then
   cat "$TMP/A.out"
 else
   (
-    bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$"
+    bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:1"
     echo $? > "$TMP/B.rc"
   ) > "$TMP/B.out" 2>&1 &
   bp=$!
@@ -58,6 +58,9 @@ fi
 bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
 [[ "$rc" -eq 0 && -f "$LOCK/owner" ]] && ok "无锁可获" || bad "无锁获取失败：$out"
+out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$LOCK/owner")" == *"pid:$$" ]] \
+  && ok "同一锁主在 flock 内重入成功" || bad "同一锁主重入失败：$out"
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:999999" 2>&1)"; rc=$?
 [[ "$rc" -ne 0 && "$(cat "$LOCK/owner")" == *"pid:$$" ]] \
   && ok "活锁拒绝且 owner 不变" || bad "活锁被夺：$out"
@@ -191,6 +194,21 @@ run_case() {
   (cd "$PROJECT" && PATH="$TMP/bin:$PATH" HERDR_PANE_ID=wT:ctl \
     bash "$ROOT/bin/qwb-run.sh" --task case --worker pi --here --accept-new-scenarios "$@")
 }
+mkdir -p "$LOCK"
+printf '2020-01-01T00:00:00Z wT:ctl\n' > "$LOCK/owner"
+cp "$PROJECT/qwbuddy/bin/qwb-lock.sh" "$TMP/qwb-lock.original"
+printf '#!/usr/bin/env bash\nexit 7\n' > "$PROJECT/qwbuddy/bin/qwb-lock.sh"
+: > "$QWB_STUB_LOG"
+out="$(cd "$PROJECT" && PATH="$TMP/bin:$PATH" HERDR_PANE_ID=wT:ctl \
+  bash "$PROJECT/qwbuddy/bin/qwb-run.sh" --task case --worker pi --here --accept-new-scenarios 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \
+  && grep -q '^state: blocked$' "$TASK" && ! grep -q 'tab create' "$QWB_STUB_LOG"; then
+  ok "锁命令失败即拒绝，即使 owner 文本等于当前 pane"
+else
+  bad "锁失败仍派发：rc=$rc"; printf '%s\n' "$out"
+fi
+cp "$TMP/qwb-lock.original" "$PROJECT/qwbuddy/bin/qwb-lock.sh"
+bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
 : > "$QWB_STUB_LOG"
 out="$(QWB_STUB_FAIL=prompt QWB_STUB_APPEND="$TASK" run_case 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \

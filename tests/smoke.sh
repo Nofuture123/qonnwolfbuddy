@@ -106,7 +106,29 @@ case "\${1:-} \${2:-}" in
                 if [[ "\${HERDR_FAIL:-}" == *list* ]]; then failjson io_error "mocked pane list failure"; fi
                 if [[ -f "\$DYNH/pane-list.json" ]]; then sed '/^#/d' "\$DYNH/pane-list.json"; else fix pane-list.json; fi ;;
   "workspace list") if [[ "\${HERDR_FAIL:-}" == *wslist* ]]; then failjson io_error "mocked workspace list failure"; fi
-                if [[ -f "\$DYNH/workspace-list.json" ]]; then sed '/^#/d' "\$DYNH/workspace-list.json"; else fix workspace-list.json; fi ;;
+                if [[ -f "\$DYNH/workspace-list.json" ]]; then base="\$(sed '/^#/d' "\$DYNH/workspace-list.json")"; else base="\$(fix workspace-list.json)"; fi
+                if [[ -f "\$DYNH/spaces.tsv" ]]; then
+                  printf '%s' "\$base" | perl -MJSON::PP=decode_json,encode_json -e '
+                    my \$raw=do { local \$/; <STDIN> }; my \$j=decode_json(\$raw);
+                    open my \$fh,"<",\$ARGV[0] or die \$!;
+                    while (<\$fh>) { chomp; my (\$id,\$root,\$path)=split /\\t/,\$_,3;
+                      push @{ \$j->{result}{workspaces} }, {workspace_id=>\$id,focused=>JSON::PP::false,
+                        worktree=>{repo_root=>\$root,checkout_path=>\$path,is_linked_worktree=>JSON::PP::true}} }
+                    print encode_json(\$j),"\n";' "\$DYNH/spaces.tsv"
+                else printf '%s\n' "\$base"; fi ;;
+  "worktree open") shift 2; root=""; path=""
+                while [[ \$# -gt 0 ]]; do
+                  case "\$1" in --cwd) root="\$2"; shift 2;; --path) path="\$2"; shift 2;; *) shift;; esac
+                done
+                [[ -n "\$root" && -n "\$path" ]] || failjson invalid_args "missing worktree path"
+                mkdir -p "\$DYNH"
+                id="wQ\$(printf '%s' "\$path" | shasum | cut -c1-8)"; already=false
+                if [[ -f "\$DYNH/spaces.tsv" ]] && cut -f3 "\$DYNH/spaces.tsv" | grep -Fxq "\$path"; then
+                  already=true
+                else printf '%s\t%s\t%s\n' "\$id" "\$root" "\$path" >> "\$DYNH/spaces.tsv"; fi
+                perl -MJSON::PP=encode_json -e 'my (\$id,\$already)=@ARGV;
+                  print encode_json({result=>{already_open=>(\$already eq "true" ? JSON::PP::true : JSON::PP::false),
+                    workspace=>{workspace_id=>\$id},root_pane=>{tab_id=>"\$id:t1"}}}),"\n";' "\$id" "\$already" ;;
   "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json";
                 elif [[ -f "\$DYNH/get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/get-\$(san "\${3:-}").err" >&2; exit 1;
                 else failjson pane_not_found "pane \${3:-} not found"; fi ;;
@@ -385,6 +407,7 @@ cp "$ROOT/templates/workers.sh" "$GP/qwbuddy/workers.sh"
 git -C "$GP" init -q
 git -C "$GP" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
 WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
+qwb_finish() { PATH="$STUB:$PATH" bash "$WTB" finish "$@"; }
 
 WTID="wtdemo"; WTF="$GP/tasks/2099-01-07-${WTID}.md"
 printf '# demo\nstate: running\n' > "$WTF"
@@ -397,7 +420,7 @@ printf '%s' "$out" | grep -q '残留.*orphan' && ok "list 标出残留目录" ||
 
 # --merged 对未合并分支拒绝（先在分支上做个 commit 让它领先 HEAD）
 git -C "$GP/.worktrees/$WTID" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
-if bash "$WTB" finish "$WTID" --merged --project "$GP" >/dev/null 2>&1; then
+if qwb_finish "$WTID" --merged --project "$GP" >/dev/null 2>&1; then
   bad "--merged 对未合并分支竟放行"
 else
   ok "--merged 对未合并分支拒绝"
@@ -405,13 +428,13 @@ fi
 [[ -d "$GP/.worktrees/$WTID" ]] && ok "拒绝后 worktree 未动" || bad "拒绝后 worktree 被删"
 
 # --keep：不动 git，只记账
-bash "$WTB" finish "$WTID" --keep=等使用者裁决 --project "$GP" >/dev/null \
+qwb_finish "$WTID" --keep=等使用者裁决 --project "$GP" >/dev/null \
   && ok "finish --keep 退出 0" || bad "finish --keep 失败"
 grep -q '^worktree: keep' "$WTF" && ok "任务书追加了 worktree: keep 行" || bad "任务书无 worktree: 行"
 [[ -d "$GP/.worktrees/$WTID" ]] && ok "--keep 未删 worktree" || bad "--keep 删了 worktree"
 
 # --archive：打 tag → 删 worktree → branch -D → 记账
-bash "$WTB" finish "$WTID" --archive --project "$GP" >/dev/null \
+qwb_finish "$WTID" --archive --project "$GP" >/dev/null \
   && ok "finish --archive 退出 0" || bad "finish --archive 失败"
 git -C "$GP" rev-parse --verify --quiet "refs/tags/archive/$WTID" >/dev/null \
   && ok "产生 archive/$WTID 标签" || bad "无 archive 标签"
@@ -424,7 +447,7 @@ WTD="wtdirty"; WTDF="$GP/tasks/2099-01-08-${WTD}.md"
 printf '# dirty\nstate: running\n' > "$WTDF"
 git -C "$GP" worktree add -q -b "$WTD" "$GP/.worktrees/$WTD"
 echo x > "$GP/.worktrees/$WTD/dirty.txt"
-if bash "$WTB" finish "$WTD" --archive --project "$GP" >/dev/null 2>&1; then
+if qwb_finish "$WTD" --archive --project "$GP" >/dev/null 2>&1; then
   bad "脏 worktree --archive 竟放行"
 else
   ok "脏 worktree --archive 拒绝"
@@ -432,7 +455,7 @@ fi
 [[ -d "$GP/.worktrees/$WTD" ]] && ok "拒绝后脏 worktree 未动" || bad "脏 worktree 被删"
 
 # G4：--keep 不做脏检查——同一脏 worktree 上 --keep 退出 0 且记账
-bash "$WTB" finish "$WTD" --keep=有冲突待解 --project "$GP" >/dev/null \
+qwb_finish "$WTD" --keep=有冲突待解 --project "$GP" >/dev/null \
   && ok "脏 worktree --keep 退出 0（G4）" || bad "脏 worktree --keep 被拒（G4 未修）"
 grep -q '^worktree: keep' "$WTDF" && ok "--keep 记账成功" || bad "--keep 未记账"
 [[ -d "$GP/.worktrees/$WTD" ]] && ok "--keep 后脏 worktree 未动" || bad "--keep 动了 worktree"
@@ -443,7 +466,7 @@ printf '# merged\nstate: running\n' > "$WTMF"
 git -C "$GP" worktree add -q -b "$WTM" "$GP/.worktrees/$WTM"
 git -C "$GP/.worktrees/$WTM" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
 git -C "$GP" -c user.email=t@t.t -c user.name=t merge -qm m "$WTM"
-bash "$WTB" finish "$WTM" --merged --project "$GP" >/dev/null \
+qwb_finish "$WTM" --merged --project "$GP" >/dev/null \
   && ok "已合并分支 --merged 放行" || bad "已合并分支 --merged 被拒"
 [[ -d "$GP/.worktrees/$WTM" ]] && bad "merged 后 worktree 仍在" || ok "merged 后 worktree 已删"
 git -C "$GP" show-ref --verify --quiet "refs/heads/$WTM" && bad "merged 后分支仍在" || ok "merged 后分支已删"
@@ -480,7 +503,7 @@ BOID="$(git -C "$GP/.worktrees/$WTG" rev-parse HEAD)"
 [[ "$AOID" != "$BOID" ]] && ok "G1 场景就绪（A=${AOID:0:7} B=${BOID:0:7}）" || bad "G1 场景构造失败（A==B）"
 
 # --merged 对未合并的 detached B 拒绝（旧实现会拿同名分支 A 放行）
-if bash "$WTB" finish "$WTG" --merged --project "$GP" >/dev/null 2>&1; then
+if qwb_finish "$WTG" --merged --project "$GP" >/dev/null 2>&1; then
   bad "detached 未合并 --merged 竟放行（G1 未修）"
 else
   ok "detached 未合并 --merged 拒绝"
@@ -488,7 +511,7 @@ fi
 [[ -d "$GP/.worktrees/$WTG" ]] && ok "拒绝后 detached worktree 未动" || bad "拒绝后 detached worktree 被删"
 
 # --archive：tag 必须指向 B（实际 HEAD OID），且同名分支保留
-bash "$WTB" finish "$WTG" --archive --project "$GP" >/dev/null \
+qwb_finish "$WTG" --archive --project "$GP" >/dev/null \
   && ok "detached --archive 退出 0" || bad "detached --archive 失败"
 tagoid="$(git -C "$GP" rev-parse "archive/$WTG" 2>/dev/null || true)"
 [[ "$tagoid" == "$BOID" ]] && ok "archive/${WTG} 指向 detached 提交 B" || bad "archive tag 指向 ${tagoid} 而非 B（${BOID}）"
@@ -509,7 +532,7 @@ chmod +x "$GSTUB/git"
 WTS="wtstf"; WTSF="$GP/tasks/2099-01-13-${WTS}.md"
 printf '# stf\nstate: running\n' > "$WTSF"
 git -C "$GP" worktree add -q -b "$WTS" "$GP/.worktrees/$WTS"
-if PATH="$GSTUB:$PATH" bash "$WTB" finish "$WTS" --archive --project "$GP" >/dev/null 2>&1; then
+if PATH="$GSTUB:$PATH" qwb_finish "$WTS" --archive --project "$GP" >/dev/null 2>&1; then
   bad "git status 失败时 --archive 竟放行（G1b 未修）"
 else
   ok "git status 失败 → --archive 拒绝"
@@ -574,7 +597,7 @@ WTI="wtinj"; WTIF="$GP/tasks/2099-01-14-${WTI}.md"
 printf '# inj\nstate: running\n' > "$WTIF"
 git -C "$GP" worktree add -q -b "$WTI" "$GP/.worktrees/$WTI"
 : > "$GITLOG"
-if PATH="$GSTUB2:$PATH" INJ_MODE=posttag INJ_WT="$GP/.worktrees/$WTI" bash "$WTB" finish "$WTI" --archive --project "$GP" >/dev/null 2>&1; then
+if PATH="$GSTUB2:$PATH" INJ_MODE=posttag INJ_WT="$GP/.worktrees/$WTI" qwb_finish "$WTI" --archive --project "$GP" >/dev/null 2>&1; then
   bad "打标签后 HEAD 被推进 --archive 竟放行（H1 未修）"
 else
   ok "打标签后 HEAD 被推进 → --archive 拒绝删除"
@@ -591,7 +614,7 @@ WTJ="wtinjm"; WTJF="$GP/tasks/2099-01-15-${WTJ}.md"
 printf '# injm\nstate: running\n' > "$WTJF"
 git -C "$GP" worktree add -q -b "$WTJ" "$GP/.worktrees/$WTJ"
 : > "$GITLOG"
-if PATH="$GSTUB2:$PATH" INJ_MODE=postmerge INJ_WT="$GP/.worktrees/$WTJ" bash "$WTB" finish "$WTJ" --merged --project "$GP" >/dev/null 2>&1; then
+if PATH="$GSTUB2:$PATH" INJ_MODE=postmerge INJ_WT="$GP/.worktrees/$WTJ" qwb_finish "$WTJ" --merged --project "$GP" >/dev/null 2>&1; then
   bad "--merged 核实通过后 HEAD 被推进竟放行（H1 未修）"
 else
   ok "--merged 核实通过后 HEAD 被推进 → 拒绝删除"
@@ -604,7 +627,7 @@ WTK="wtinjb"; WTKF="$GP/tasks/2099-01-16-${WTK}.md"
 printf '# injb\nstate: running\n' > "$WTKF"
 git -C "$GP" worktree add -q -b "$WTK" "$GP/.worktrees/$WTK"
 : > "$GITLOG"
-if PATH="$GSTUB2:$PATH" INJ_MODE=branchread bash "$WTB" finish "$WTK" --archive --project "$GP" >/dev/null 2>&1; then
+if PATH="$GSTUB2:$PATH" INJ_MODE=branchread qwb_finish "$WTK" --archive --project "$GP" >/dev/null 2>&1; then
   bad "分支名读取失败 --archive 竟放行（H1 未修）"
 else
   ok "分支名读取失败 → 拒绝（不回退成任务 id）"
@@ -679,6 +702,17 @@ grep -qF "运行前提交：$RHEAD" "$RD/zero.md" && grep -qF '运行前工作�
   && grep -qF "项目目录：$(cd "$RP" && pwd -P)" "$RD/zero.md" && grep -qF 'QWB_GATE_FAST' "$RD/zero.md" \
   && grep -qF 'qwb-test-report-v1' "$RD/zero.md" && grep -qF '证明范围：仅证明' "$RD/zero.md" \
   && ok "成功报告绑定 HEAD、配置、前后状态与范围" || bad "成功报告内容错误"
+cp "$RP/qwb.config.sh" "$RD/config.original"
+printf 'QWB_GATE_FAST="printf other"\n' > "$RP/qwb.config.sh"
+bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$RD/other-command.md" > /dev/null 2> "$RD/other-command.err"; rc=$?
+first_cmd_sha="$(sed -n 's/^- 命令 SHA-256：//p' "$RD/zero.md")"
+other_cmd_sha="$(sed -n 's/^- 命令 SHA-256：//p' "$RD/other-command.md" 2>/dev/null)"
+first_conf_sha="$(sed -n 's/^- 配置运行前 SHA-256：//p' "$RD/zero.md")"
+other_conf_sha="$(sed -n 's/^- 配置运行前 SHA-256：//p' "$RD/other-command.md" 2>/dev/null)"
+[[ "$rc" -eq 0 && -n "$first_cmd_sha" && -n "$other_cmd_sha" && "$first_cmd_sha" != "$other_cmd_sha" \
+   && -n "$first_conf_sha" && -n "$other_conf_sha" && "$first_conf_sha" != "$other_conf_sha" ]] \
+  && ok "同一 HEAD 的不同门命令有不同摘要且不泄露正文" || bad "报告未绑定实际命令和配置字节"
+cp "$RD/config.original" "$RP/qwb.config.sh"
 before="$(wc -c < "$RP/count" | tr -d ' ')"
 bash "$ROOT/bin/qwb-test.sh" full --project "$RP" --report "$RD/seven.md" > "$RD/seven.out" 2> "$RD/seven.err"; rc=$?
 after="$(wc -c < "$RP/count" | tr -d ' ')"
@@ -843,6 +877,7 @@ printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写�
 
 echo "== 26. D：herdr fixture 契约基线（真实 JSON 路径检查）=="
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error \
+          worktree-open worktree-open-already worktree-open-error \
           pane-get-shell pane-get-error proc-shell proc-wake proc-busy pane-list workspace-list; do
   assert_file "$FIXDIR/$fx.json"
 done
@@ -891,6 +926,9 @@ fx_paths() {
     pane-get-error.json)     printf 'error.code:string' ;;
     pane-list.json)          printf 'result.panes:array' ;;
     workspace-list.json)     printf 'result.type:string result.workspaces:array' ;;
+    worktree-open.json|worktree-open-already.json)
+                             printf 'result.workspace.workspace_id:string result.workspace.worktree.checkout_path:string result.root_pane.tab_id:string' ;;
+    worktree-open-error.json) printf 'error.code:string' ;;
     proc-shell.json)         printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     proc-wake.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     proc-busy.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
@@ -898,6 +936,7 @@ fx_paths() {
   esac
 }
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run-error \
+          worktree-open worktree-open-already worktree-open-error \
           pane-get-shell pane-get-error pane-list proc-shell proc-wake proc-busy workspace-list; do
   for pt in $(fx_paths "$fx.json"); do
     p="${pt%%:*}"; t="${pt##*:}"
@@ -2245,7 +2284,7 @@ WS_CALLER=wY wsrun wsDfall >/dev/null 2>"$WSERR"; rc=$?
   && ok "无匹配 → 落调用者 workspace wY 且恰一行「未声明 QWB_WORKSPACE」警告（rc=${rc}）" \
   || { bad "回退路径不对（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
 
-# 48e 多匹配取 focused（无警告）；都不 focused → 取第一个 + 警告
+# 48e linked 任务 Space 不参与主 workspace 匹配，即使用户聚焦它或没有任何焦点。
 mk_ws_task wsEmulti; mk_wslist multi "$WSJ"
 : > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
 wsrun wsEmulti >/dev/null 2>"$WSERR"; rc=$?
@@ -2256,8 +2295,8 @@ mk_ws_task wsFnofocus; mk_wslist multi-nofocus "$WSJ"
 : > "$STUBLOG"; : > "$WSERR"; rm -rf "$WSJ/qwbuddy/.controller.lock"
 wsrun wsFnofocus >/dev/null 2>"$WSERR"; rc=$?
 { [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace w8Z' "$STUBLOG" \
-   && grep -q '多个 workspace 匹配' "$WSERR"; } \
-  && ok "多匹配都不 focused → 取第一项 w8Z 且警告「多个 workspace 匹配」" \
+   && ! grep -q '多个 workspace 匹配' "$WSERR"; } \
+  && ok "任务 linked Space 不影响主 workspace 解析" \
   || { bad "都不 focused 时的兜底不对（rc=${rc}）"; printf 'stderr: '; cat "$WSERR"; }
 
 # 48f workspace list 查询失败 → 拒绝并带出原始错误（失败路径，零副作用）
@@ -3706,8 +3745,8 @@ rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
 echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(bash "$ROOT/tests/runtime-readiness.sh" 2>&1)"; runtime_rc=$?
 if [[ "$runtime_rc" -eq 0 ]] && printf '%s' "$runtime_out" | grep -q 'RUNTIME READINESS PASS' &&
-  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 18 ]]; then
-  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 18 项通过"
+  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 20 ]]; then
+  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 20 项通过"
 else
   bad "运行时定向测试失败（rc=$runtime_rc)"
   printf '%s\n' "$runtime_out"
@@ -3743,6 +3782,14 @@ if python3 "$ROOT/tests/on-demand-guide.py"; then
   ok "按需文档安装、链接及负例通过"
 else
   bad "按需文档安装、链接及负例失败"
+fi
+
+echo "== 79. worktree Space 拒绝与部分收尾隔离回归 =="
+if python3 "$ROOT/tests/worktree-space.py" > "$TMP/worktree-space.log" 2>&1; then
+  ok "Space 登记、身份与收尾失败路径通过"
+else
+  bad "Space 失败路径回归失败"
+  cat "$TMP/worktree-space.log"
 fi
 
 # 新节必须加在本行之前

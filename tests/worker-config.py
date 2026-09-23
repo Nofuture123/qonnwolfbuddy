@@ -54,8 +54,18 @@ import json, os, subprocess, sys
 from pathlib import Path
 args=sys.argv[1:]
 with open(os.environ["QWB_STUB_LOG"],"a") as f: f.write(json.dumps(args)+"\\n")
+space_file=Path(os.environ["QWB_STUB_LOG"]+".space")
 if args[:2]==["workspace","list"]:
-    print(json.dumps({"result":{"workspaces":[]}}))
+    spaces=[]
+    if space_file.exists():
+        spaces.append({"workspace_id":"wTask","worktree":{"repo_root":os.environ["QWB_STUB_REPO"],
+            "checkout_path":space_file.read_text(),"is_linked_worktree":True}})
+    print(json.dumps({"result":{"workspaces":spaces}}))
+elif args[:2]==["worktree","open"]:
+    path=args[args.index("--path")+1]
+    space_file.write_text(path)
+    print(json.dumps({"result":{"already_open":False,"workspace":{"workspace_id":"wTask"},
+        "root_pane":{"tab_id":"wTask:t1"}}}))
 elif args[:2]==["agent","get"] and args[2].startswith("qwb-"):
     print(json.dumps({"error":{"code":"agent_not_found"}}),file=sys.stderr); sys.exit(1)
 elif args[:2]==["tab","create"]:
@@ -145,8 +155,14 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
           and not (project / ".worktrees").exists()
           and not (project / "qwbuddy/.controller.lock").exists(),
           "old config dispatched before migration")
-    p = call(["bash", str(ROOT / "bin/qwb-init.sh"), "--migrate-worker-config", str(project)], env)
     backup = Path(str(config) + ".worker-config.bak")
+    outside_backup = base / "migration-outside-backup"
+    backup.symlink_to(outside_backup)
+    p = call(["bash", str(ROOT / "bin/qwb-init.sh"), "--migrate-worker-config", str(project)], env)
+    check(p.returncode != 0 and not outside_backup.exists() and config.read_text() == old
+          and not workers.exists(), "migration followed dangling backup link")
+    backup.unlink()
+    p = call(["bash", str(ROOT / "bin/qwb-init.sh"), "--migrate-worker-config", str(project)], env)
     check(p.returncode == 0 and backup.read_text() == old and config.stat().st_mode & 0o777 == 0o600,
           f"migration failed or mode widened: {p.stderr}")
     check("qwb_worker 'pi' 'herdr'" in workers.read_text()
@@ -251,6 +267,7 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
 
     git_project = base / "git-project"
     git_project.mkdir()
+    env["QWB_STUB_REPO"] = str(git_project)
     p = call(["bash", str(ROOT / "bin/qwb-init.sh"), str(git_project)], env)
     check(p.returncode == 0, f"git fixture init failed: {p.stderr}")
     first = git_project / "tasks/2099-01-01-gitwork.md"
@@ -266,8 +283,11 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
               "--task", str(first), "--worker", "pi", "--create-worktree"], env)
     worktree = git_project / ".worktrees/gitwork"
     check(p.returncode == 0 and "残留" in p.stderr and worktree.is_dir()
-          and f"dir={worktree}" in first.read_text(),
+          and f"dir={worktree}" in first.read_text() and "worktree-space: id=wTask" in first.read_text(),
           f"git fixture create-worktree failed: {p.stdout} {p.stderr}")
+    calls = [json.loads(x) for x in log.read_text().splitlines()]
+    check(any(x[:2] == ["tab", "create"] and "wTask" in x for x in calls),
+          "linked worktree worker tab did not enter its Space")
     second = git_project / "tasks/2099-01-02-gitreuse.md"
     second.write_text(TASK)
     p = call(["bash", str(git_project / "qwbuddy/bin/qwb-run.sh"), "--project", str(git_project),

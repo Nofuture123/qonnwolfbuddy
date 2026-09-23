@@ -15,14 +15,15 @@ usage() {
                             worktree: <动作> branch=<分支> tag=<标签> 记账行：
     --merged        先核实真落地（worktree 当前 HEAD OID 并入当前 HEAD，或顶端已含于某个
                     remote-tracking refs/remotes/*/<实际分支>）；核实不通过则拒绝，不盲删。
-                    通过 → git worktree remove + git branch -d（detached HEAD 时无分支可删）。
+                    通过 → 安全关闭本票 Herdr Space、git worktree remove、按旧 OID 原子删分支。
     --archive       打 git tag archive/<任务id>（指向 worktree 当前 HEAD OID）
-                    → git worktree remove + git branch -D；detached HEAD 时只打 tag、
+                    → 安全关闭本票 Space、git worktree remove、按旧 OID 原子删分支；detached HEAD 时只打 tag、
                     删 worktree，不删同名分支（它指向别的东西，不指向本工作区）。
     --keep[=原因]   不动 git，只在任务书点名保留及原因（不做脏检查——规范允许留冲突待解的）。
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
   先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
   worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
+  有本票登记的 Herdr Space 时，须确认无活动工人或外来 tab 才关闭；查询未知或关闭失败不删 Git。
 
 前提：收尾前确认该 worktree 的写入者已停止——删前复核与删除是两次 Git 调用，之间
   仍有窗口（Git 层面无法封死）；窗口内的新提交会成为未引用对象（dangling），可用
@@ -171,13 +172,13 @@ recheck_head() {   # 打印 worktree 当前实际 HEAD OID；读不到返回非 
 }
 check_unchanged() {
   local cur
-  cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
+  cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; return 1; }
   [[ "$cur" == "$HEAD_OID" ]] || {
     echo "拒绝：收尾期间 ${WT_DIR} 的实际 HEAD 已变化，工作已被推进。" >&2
     echo "  原 OID：  ${HEAD_OID}" >&2
     echo "  当前 OID：${cur}" >&2
     echo "${1:-未执行任何删除，}请重新收尾。" >&2
-    exit 1
+    return 1
   }
 }
 # worktree 删掉之后复核分支：refs/heads/<分支> 仍指着已核实/已归档的 OID 才准删
@@ -189,12 +190,107 @@ branch_tip_unchanged() {
     return 1
   }
 }
+branch_only_here() {
+  [[ "$DETACHED" -eq 1 ]] && return 0
+  local listing count
+  listing="$(git -C "$PROJECT_ROOT" worktree list --porcelain)" \
+    || { echo "拒绝：无法核对其他 worktree 是否检出分支 ${BRANCH}" >&2; return 1; }
+  count="$(printf '%s\n' "$listing" | grep -Fxc "branch refs/heads/$BRANCH" || true)"
+  [[ "$count" -eq 1 ]] \
+    || { echo "拒绝：分支 ${BRANCH} 的 worktree 归属不唯一，删除前停止" >&2; return 1; }
+}
 # 删前复核与删除仍是两次独立 Git 调用，之间窗口在 Git 层面无法封死（detached HEAD 上的
 # 新提交不更新任何 ref，任何检查都读不到）；但窗口内对象不消失，可 fsck 找回。
 race_note() {
   echo "注意：删前复核与删除是两次 Git 调用，之间仍有窗口（Git 层面无法封死）；"
   echo "      若收尾时该副本仍在被写入，窗口内的新提交会成为未引用对象（dangling），"
   echo "      可用 git fsck --lost-found 找回。收尾前提是工人已停止写入。"
+}
+
+SPACE_ID=""
+partial_fail() {
+  local stage="$1"
+  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s\n' \
+    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" >> "$TASK_FILE" \
+    || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
+  echo "错误：收尾停在 ${stage}；核对 Git worktree/分支与 Herdr Space 后再恢复，已保留现有引用" >&2
+  exit 1
+}
+
+# Git 前置检查先于任何 Space 关闭；只关闭本票登记且没有活动写入者的 Space。
+prepare_space_close() {
+  local record root_tab record_path last_dispatch dispatch_path task_pane pane_out pane_meta worker_tab
+  local tabs_out tab_ids tab_id panes_out pane_rows pane_id state proc
+  SPACE_ID="$(qwb_worktree_space "$PROJECT_ROOT" "$WT_DIR")" || return 1
+  [[ -n "$SPACE_ID" ]] || return 0
+  record="$(grep '^worktree-space:' "$TASK_FILE" | tail -1 || true)"
+  [[ -n "$record" ]] || { echo "拒绝：worktree Space ${SPACE_ID} 没有本票所有权记录；请手工关闭后重试" >&2; return 1; }
+  [[ "$record" == "worktree-space: id=${SPACE_ID} root-tab="*" path="* ]] \
+    || { echo "拒绝：worktree Space 所有权记录与当前 Space 不符" >&2; return 1; }
+  root_tab="$(printf '%s\n' "$record" | sed -n 's/^worktree-space: id=[^ ]* root-tab=\([^ ]*\) path=.*/\1/p')"
+  record_path="${record#* path=}"
+  record_path="$(cd "$record_path" 2>/dev/null && pwd -P)" || record_path=""
+  [[ -n "$root_tab" && "$record_path" == "$WT_PHYS" ]] \
+    || { echo "拒绝：worktree Space 根 tab 或路径身份不符" >&2; return 1; }
+  last_dispatch="$(grep '^dispatch:' "$TASK_FILE" | tail -1 || true)"
+  worker_tab=""
+  if [[ -n "$last_dispatch" ]]; then
+    task_pane="$(printf '%s\n' "$last_dispatch" | sed -n 's/.* pane=\([^ ]*\) dir=.*/\1/p')"
+    dispatch_path="$(cd "${last_dispatch##* dir=}" 2>/dev/null && pwd -P)" || dispatch_path=""
+    [[ -n "$task_pane" && "$dispatch_path" == "$WT_PHYS" ]] \
+      || { echo "拒绝：任务派发 pane/目录身份不符" >&2; return 1; }
+    pane_out="$(herdr pane get "$task_pane" 2>&1)" \
+      || { echo "拒绝：工人 pane 无法查询：$pane_out" >&2; return 1; }
+    pane_meta="$(printf '%s' "$pane_out" | perl -MJSON::PP=decode_json -0777 -e '
+      my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{pane};
+      exit 1 unless ref $p eq "HASH";
+      printf "%s\t%s",$p->{workspace_id},$p->{tab_id} if $p->{workspace_id} && $p->{tab_id};' || true)"
+    [[ "${pane_meta%%$'\t'*}" == "$SPACE_ID" && "$pane_meta" == *$'\t'* ]] \
+      || { echo "拒绝：工人 pane 不在本票 Space" >&2; return 1; }
+    worker_tab="${pane_meta#*$'\t'}"
+  fi
+  tabs_out="$(herdr tab list --workspace "$SPACE_ID" 2>&1)" \
+    || { echo "拒绝：Space tab 查询失败：$tabs_out" >&2; return 1; }
+  tab_ids="$(printf '%s' "$tabs_out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j=eval{decode_json(<STDIN>)}; my $a=$j->{result}{tabs};
+    exit 1 unless ref $a eq "ARRAY";
+    for my $t (@$a) { exit 1 unless ref $t eq "HASH" && $t->{tab_id}; print "$t->{tab_id}\n" }' || true)"
+  [[ -n "$tab_ids" ]] || { echo "拒绝：Space tab 列表无法解析" >&2; return 1; }
+  while IFS= read -r tab_id; do
+    [[ "$tab_id" == "$root_tab" || ( -n "$worker_tab" && "$tab_id" == "$worker_tab" ) ]] \
+      || { echo "拒绝：Space 中有非本票 tab ${tab_id}" >&2; return 1; }
+  done <<< "$tab_ids"
+  printf '%s\n' "$tab_ids" | grep -Fxq "$root_tab" \
+    || { echo "拒绝：本票根 tab 已不存在" >&2; return 1; }
+  panes_out="$(herdr pane list --workspace "$SPACE_ID" 2>&1)" \
+    || { echo "拒绝：Space pane 查询失败：$panes_out" >&2; return 1; }
+  pane_rows="$(printf '%s' "$panes_out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j=eval{decode_json(<STDIN>)}; my $a=$j->{result}{panes};
+    exit 1 unless ref $a eq "ARRAY";
+    for my $p (@$a) { exit 1 unless ref $p eq "HASH" && $p->{pane_id}; printf "%s\t%s\n",$p->{pane_id},($p->{agent_status}//"unknown") }' || true)"
+  [[ -n "$pane_rows" ]] || { echo "拒绝：Space pane 列表无法解析" >&2; return 1; }
+  while IFS=$'\t' read -r pane_id state; do
+    case "$state" in
+      working|blocked) echo "拒绝：Space pane ${pane_id} 的 agent 仍在 ${state}" >&2; return 1 ;;
+      idle|done) ;;
+      *)
+        proc="$(herdr pane process-info --pane "$pane_id" 2>&1)" \
+          || { echo "拒绝：pane ${pane_id} 前台状态未知：$proc" >&2; return 1; }
+        printf '%s' "$proc" | perl -MJSON::PP=decode_json -0777 -e '
+          my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{process_info};
+          exit 1 unless ref $p eq "HASH" && defined $p->{foreground_process_group_id}
+            && defined $p->{shell_pid} && $p->{foreground_process_group_id} == $p->{shell_pid};' \
+          || { echo "拒绝：pane ${pane_id} 前台仍有工作或无法确认" >&2; return 1; }
+        ;;
+    esac
+  done <<< "$pane_rows"
+}
+
+close_task_space() {
+  [[ -n "$SPACE_ID" ]] || return 0
+  local out
+  out="$(herdr workspace close "$SPACE_ID" 2>&1)" \
+    || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭失败，Git 未动：$out" >&2; return 1; }
 }
 
 BL="$BRANCH"
@@ -218,11 +314,19 @@ case "$ACTION" in
       exit 1
     fi
     check_unchanged    # 核实通过≠此刻仍是同一提交：删 worktree 前复核
-    git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
+    branch_only_here || exit 1
+    prepare_space_close || exit 1
+    close_task_space || exit 1
+    check_unchanged || partial_fail head-changed-after-space-close
+    git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
     if [[ "$DETACHED" -eq 1 ]]; then
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD ${HEAD_OID}，无分支可删）"
     elif branch_tip_unchanged; then
-      git -C "$PROJECT_ROOT" branch -d "$BRANCH"
+      if git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$BRANCH"; then
+        partial_fail branch-checked-out-elsewhere
+      fi
+      git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
+        || partial_fail branch-delete
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}），分支 ${BRANCH} 已删"
     else
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}）；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
@@ -231,15 +335,25 @@ case "$ACTION" in
     ;;
   archive)
     TAG="archive/$TASK_ID"
+    tag_rc=0
+    git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/tags/$TAG" || tag_rc=$?
+    if [[ "$tag_rc" -eq 0 ]]; then
+      echo "拒绝：归档标签 ${TAG} 已存在，未关闭 Space 或删除 Git worktree" >&2
+      exit 1
+    fi
+    [[ "$tag_rc" -eq 1 ]] || { echo "拒绝：无法核对归档标签 ${TAG}" >&2; exit 1; }
     # 标签打向「即将打的那一刻」的实际 HEAD：收尾期间若已被推进，以当前真实提交为准
     cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
     if [[ "$cur" != "$HEAD_OID" ]]; then
       echo "提示：收尾期间 ${WT_DIR} 的 HEAD 已推进（${HEAD_OID} → ${cur}），标签将指向当前提交" >&2
       HEAD_OID="$cur"
     fi
-    git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID"
-    check_unchanged "标签 ${TAG}（→ ${HEAD_OID}）已打且保留；"   # tag 后到删之前再被推进 → 只留标签不删
-    git -C "$PROJECT_ROOT" worktree remove "$WT_DIR"
+    branch_only_here || exit 1
+    prepare_space_close || exit 1
+    close_task_space || exit 1
+    git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID" || partial_fail tag-create
+    check_unchanged "标签 ${TAG}（→ ${HEAD_OID}）已打且保留；" || partial_fail head-changed-after-tag
+    git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
     if [[ "$DETACHED" -eq 1 ]]; then
       kept=""
       if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$TASK_ID"; then
@@ -247,8 +361,12 @@ case "$ACTION" in
       fi
       echo "已归档：tag ${TAG} → detached HEAD ${HEAD_OID}；worktree 已删${kept}"
     elif branch_tip_unchanged; then
-      git -C "$PROJECT_ROOT" branch -D "$BRANCH"
-      echo "已归档：tag ${TAG} → ${HEAD_OID}（分支 ${BRANCH} 顶端）；worktree 已删，分支已删（-D）"
+      if git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$BRANCH"; then
+        partial_fail branch-checked-out-elsewhere
+      fi
+      git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
+        || partial_fail branch-delete
+      echo "已归档：tag ${TAG} → ${HEAD_OID}（分支 ${BRANCH} 顶端）；worktree 已删，分支已删"
     else
       echo "已归档：tag ${TAG} → ${HEAD_OID}；worktree 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
     fi

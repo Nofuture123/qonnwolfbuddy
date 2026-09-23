@@ -104,6 +104,11 @@ case "$CMD" in
     else
       holder="$(lock_holder)"
       holder_id="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+      if [[ "$holder" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[[:space:]]([^[:space:]]+)$ ]] \
+        && [[ "${BASH_REMATCH[1]}" == "$OWNER" ]]; then
+        echo "已持锁：${OWNER}（${LOCK_DIR}）"
+        exit 0
+      fi
       lhd=2
       lock_holder_dead "$holder_id" && lhd=0 || lhd=$?
       if [[ "$lhd" -eq 0 ]]; then

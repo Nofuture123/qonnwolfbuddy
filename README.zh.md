@@ -46,7 +46,7 @@ Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Sto
 
 用 `bash qwbuddy/bin/qwb-status.sh` 排查账本和值守。健康结果为「未知」时检查失败的查询、安装和主控锁，不启动另一种值守。单凭 status 不能证明 Codex 前台调用仍在等待，也不能用 Claude hook 回合间的结果断言 hook 未安装。主控退出后须重新启动。运行时保留可见 tab 命令供手工排障，不作为主控开局入口。
 
-新工人 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中 `worktree.repo_root` 与项目根匹配的 workspace；最后带警告回退到调用者 workspace。配置的 workspace 在本机不存在会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目的该配置文件中有意指定 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
+项目根和历史值守 tab 的 workspace 选择顺序是：目标项目 `qwbuddy/config.sh` 中的 `QWB_WORKSPACE`；`herdr workspace list` 中与项目根匹配的非 linked workspace；最后带警告回退到调用者 workspace。任务 Git worktree 的工人 tab 进入该 worktree 自己的 Herdr Space，派发前须在 Spaces 中可见。配置的 workspace 在本机不存在或指向任务 Space 会拒绝派发。跨项目且无法按项目根匹配时，应在目标项目配置主 workspace ID；不要盲目写入主控当前 ID。脚本会 source `config.sh`，因此仅在命令环境设置 `QWB_WORKSPACE` 不能覆盖文件中的赋值。
 
 ## 证据与路线图
 

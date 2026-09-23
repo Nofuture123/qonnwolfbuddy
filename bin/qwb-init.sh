@@ -32,6 +32,8 @@ TPL="$SRC/../templates"
 
 if [[ "$MIGRATE" -eq 1 ]]; then
   conf="$ROOT/qwbuddy/config.sh"; workers="$ROOT/qwbuddy/workers.sh"
+  [[ ! -L "$ROOT/qwbuddy" && -d "$ROOT/qwbuddy" && ! -L "$conf" && ! -L "$workers" ]] \
+    || { echo "错误：迁移目标目录或配置是符号链接，拒绝修改" >&2; exit 1; }
   [[ -f "$conf" ]] || { echo "错误：迁移所需 config.sh 不存在：${conf}" >&2; exit 1; }
   # 只迁移独立、单行、静态赋值；同一行命令或跨行引号一律留给人工处理。
   if ! CONF_TO_CHECK="$conf" python3 - <<'PYEOF'
@@ -54,7 +56,10 @@ PYEOF
     [[ -f "$workers" ]] && { echo "跳过：工人启动配置已迁移（幂等）"; exit 0; }
     echo "错误：旧启动配置不存在且 workers.sh 缺失；请检查安装副本" >&2; exit 1
   fi
-  [[ ! -e "$workers" ]] || { echo "错误：旧配置与 workers.sh 同时存在；请先人工解决两处启动定义，原文件未动" >&2; exit 1; }
+  [[ ! -e "$workers" && ! -L "$workers" ]] || { echo "错误：旧配置与 workers.sh 同时存在；请先人工解决两处启动定义，原文件未动" >&2; exit 1; }
+  backup="$conf.worker-config.bak"
+  [[ ! -e "$backup" && ! -L "$backup" ]] \
+    || { echo "错误：备份已存在 ${backup}，拒绝覆盖；原文件未动" >&2; exit 1; }
   [[ "$(grep -Ec '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_LAUNCH=' "$conf")" -le 1 \
      && "$(grep -Ec '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_ARGS=' "$conf")" -le 1 ]] \
     || { echo "错误：旧配置有重复 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS 赋值；请先人工合并，原文件未动" >&2; exit 1; }
@@ -129,8 +134,6 @@ PYEOF
   cp -p "$conf" "$tmp_conf"
   sed -E '/^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_(LAUNCH|ARGS)=/d' "$conf" > "$tmp_conf"
   { bash -n "$tmp_workers" && bash -n "$tmp_conf"; } || { echo "错误：生成配置语法无效，原文件未动" >&2; exit 1; }
-  backup="$conf.worker-config.bak"
-  [[ ! -e "$backup" ]] || { echo "错误：备份已存在 ${backup}，拒绝覆盖；原文件未动" >&2; exit 1; }
   cp -p "$conf" "$backup"
   mv "$tmp_workers" "$workers"
   mv "$tmp_conf" "$conf"
@@ -140,29 +143,67 @@ fi
 
 # 专项文档只安装固定清单；写入前拒绝缺源和符号链接目标。
 guide_docs=(ci-guide.md host-watch-guide.md worker-launch-guide.md)
-[[ ! -L "$ROOT/qwbuddy" ]] || { echo "错误：qwbuddy 目录是符号链接，拒绝安装专项文档" >&2; exit 1; }
 for doc in "${guide_docs[@]}"; do
   [[ -f "$TPL/$doc" ]] || { echo "错误：缺少专项文档源文件：$TPL/$doc" >&2; exit 1; }
-  dst="$ROOT/qwbuddy/$doc"
-  if [[ -L "$dst" || ( -e "$dst" && ! -f "$dst" ) ]]; then
-    echo "错误：专项文档目标不是普通文件：$dst" >&2
-    exit 1
+done
+
+check_install_dir() {
+  local path="$1"
+  [[ ! -L "$path" && ( ! -e "$path" || -d "$path" ) ]] \
+    || { echo "错误：安装目录不是普通目录：$path" >&2; return 1; }
+}
+check_install_file() {
+  local path="$1"
+  [[ ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] \
+    || { echo "错误：安装目标不是普通文件：$path" >&2; return 1; }
+}
+check_preserved_file() {
+  local path="$1"
+  [[ ! -L "$path" || -f "$path" ]] \
+    || { echo "错误：保留目标是断开或非文件的符号链接：$path" >&2; return 1; }
+  [[ ! -e "$path" || -f "$path" ]] \
+    || { echo "错误：保留目标不是普通文件：$path" >&2; return 1; }
+}
+atomic_copy() {
+  local src="$1" dst="$2" tmp
+  tmp="$(mktemp "$(dirname "$dst")/.qwb-install.XXXXXXXX")" || return 1
+  if ! cp -p "$src" "$tmp" || ! mv -f "$tmp" "$dst"; then
+    rm -f "$tmp"
+    return 1
   fi
+}
+
+# 先核对本次可能写入的全部路径，避免晚发现链接时留下半套安装。
+for dir in "$ROOT/qwbuddy" "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" \
+           "$ROOT/tasks" "$ROOT/tasks/lessons" "$ROOT/.pi" "$ROOT/.pi/extensions" \
+           "$ROOT/.claude"; do
+  check_install_dir "$dir" || exit 1
+done
+for dst in "$ROOT/qwbuddy/QWBUDDY.md" "$ROOT/qwbuddy/TASK.md" \
+           "$ROOT/.gitignore" "$ROOT/AGENTS.md" "$ROOT/CLAUDE.md" \
+           "$ROOT/.pi/extensions/qwb-watch.ts" "$ROOT/.pi/extensions/qwb-watch.ts.bak" \
+           "$ROOT/.claude/settings.json"; do
+  check_install_file "$dst" || exit 1
+done
+for doc in "${guide_docs[@]}"; do check_install_file "$ROOT/qwbuddy/$doc" || exit 1; done
+for src in "$TPL"/roles/*.md; do check_install_file "$ROOT/qwbuddy/roles/$(basename "$src")" || exit 1; done
+for src in "$SRC"/qwb-*.sh; do
+  [[ "$(basename "$src")" == "qwb-init.sh" ]] && continue
+  check_install_file "$ROOT/qwbuddy/bin/$(basename "$src")" || exit 1
+done
+for dst in "$ROOT/qwbuddy/config.sh" "$ROOT/qwbuddy/workers.sh" \
+           "$ROOT/qwbuddy/brief-include.md" "$ROOT/qwbuddy/dispatch-rules.json"; do
+  check_preserved_file "$dst" || exit 1
 done
 
 mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
 
-cp "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
+atomic_copy "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
 for doc in "${guide_docs[@]}"; do
-  tmp_doc="$(mktemp "$ROOT/qwbuddy/.${doc}.XXXXXX")"
-  if ! cp "$TPL/$doc" "$tmp_doc" || ! mv -f "$tmp_doc" "$ROOT/qwbuddy/$doc"; then
-    rm -f "$tmp_doc"
-    echo "错误：安装专项文档失败：$doc" >&2
-    exit 1
-  fi
+  atomic_copy "$TPL/$doc" "$ROOT/qwbuddy/$doc" || { echo "错误：安装专项文档失败：$doc" >&2; exit 1; }
 done
-cp "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
-cp "$TPL"/roles/*.md "$ROOT/qwbuddy/roles/"
+atomic_copy "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
+for src in "$TPL"/roles/*.md; do atomic_copy "$src" "$ROOT/qwbuddy/roles/$(basename "$src")"; done
 
 # config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
 OLD_CONF_NAME="config.json"
@@ -174,7 +215,7 @@ else
   if [[ -f "$OLD_CONF" ]]; then
     echo "提示：检测到旧版 ${OLD_CONF}——新版配置为 bash 可直接 source 的 config.sh，旧文件不自动转换，请手动迁移后删除" >&2
   fi
-  cp "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
+  atomic_copy "$TPL/config.sh" "$ROOT/qwbuddy/config.sh"
   NEW_CONF=1
 fi
 if grep -Eq '^[[:space:]]*(export[[:space:]]+)?QWB_WORKER_(LAUNCH|ARGS)=' "$ROOT/qwbuddy/config.sh"; then
@@ -183,7 +224,7 @@ elif [[ -f "$ROOT/qwbuddy/workers.sh" ]]; then
   echo "保留：qwbuddy/workers.sh 已存在，不覆盖"
 else
   if [[ "$NEW_CONF" -eq 1 ]]; then
-    cp "$TPL/workers.sh" "$ROOT/qwbuddy/workers.sh"
+    atomic_copy "$TPL/workers.sh" "$ROOT/qwbuddy/workers.sh"
   else
     echo "提示：已有 config.sh 但缺少 workers.sh；未读取/执行用户配置，也未写入可能不匹配的默认工人表，当前不可派发。请手动创建 qwbuddy/workers.sh，为 QWB_WORKERS 的每个工人写一条 qwb_worker 声明（见母本仓 templates/workers.sh）；原配置未改动。" >&2
   fi
@@ -193,21 +234,20 @@ fi
 if [[ -f "$ROOT/qwbuddy/brief-include.md" ]]; then
   echo "保留：qwbuddy/brief-include.md 已存在，不覆盖"
 else
-  cp "$TPL/brief-include.md" "$ROOT/qwbuddy/brief-include.md"
+  atomic_copy "$TPL/brief-include.md" "$ROOT/qwbuddy/brief-include.md"
 fi
 
 # 运行时脚本装进目标项目；qwb-init.sh 是母本仓专用安装器，不复制进目标
 for s in "$SRC"/qwb-*.sh; do
   [[ "$(basename "$s")" == "qwb-init.sh" ]] && continue
-  cp "$s" "$ROOT/qwbuddy/bin/"
+  atomic_copy "$s" "$ROOT/qwbuddy/bin/$(basename "$s")"
 done
-chmod +x "$ROOT/qwbuddy/bin"/qwb-*.sh
 
 # 派工规则模板：目标已有不覆盖（可能已被项目主人改成自己的派工规则），幂等（同 brief-include 做法）
 if [[ -f "$ROOT/qwbuddy/dispatch-rules.json" ]]; then
   echo "保留：qwbuddy/dispatch-rules.json 已存在，不覆盖"
 else
-  cp "$TPL/dispatch-rules.json" "$ROOT/qwbuddy/dispatch-rules.json"
+  atomic_copy "$TPL/dispatch-rules.json" "$ROOT/qwbuddy/dispatch-rules.json"
 fi
 
 # 运行态不进 git：往 <项目根>/.gitignore 追加一段；旧段补缺项。
@@ -222,21 +262,28 @@ ignore_rules=(
   'qwbuddy/.hook.err'
   'qwbuddy/.pi-watch.err'
 )
+gitign_tmp="$(mktemp "$ROOT/.qwb-gitignore.XXXXXXXX")"
+if [[ -f "$GITIGN" ]]; then cp -p "$GITIGN" "$gitign_tmp"; fi
 if [[ -f "$GITIGN" ]] && grep -qF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GITIGN"; then
   had_marker=1
 else
   had_marker=0
-  if [[ -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
-  printf '%s\n' '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' >> "$GITIGN"
+  if [[ -s "$gitign_tmp" && -n "$(tail -c1 "$gitign_tmp")" ]]; then printf '\n' >> "$gitign_tmp"; fi
+  printf '%s\n' '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' >> "$gitign_tmp"
 fi
 added=0
 for rule in "${ignore_rules[@]}"; do
-  if ! grep -qxF "$rule" "$GITIGN"; then
-    if [[ $added -eq 0 && $had_marker -eq 1 && -s "$GITIGN" && -n "$(tail -c1 "$GITIGN")" ]]; then printf '\n' >> "$GITIGN"; fi
-    printf '%s\n' "$rule" >> "$GITIGN"
+  if ! grep -qxF "$rule" "$gitign_tmp"; then
+    if [[ $added -eq 0 && $had_marker -eq 1 && -s "$gitign_tmp" && -n "$(tail -c1 "$gitign_tmp")" ]]; then printf '\n' >> "$gitign_tmp"; fi
+    printf '%s\n' "$rule" >> "$gitign_tmp"
     added=1
   fi
 done
+if [[ $had_marker -eq 0 || $added -eq 1 ]]; then
+  mv -f "$gitign_tmp" "$GITIGN"
+else
+  rm -f "$gitign_tmp"
+fi
 if [[ $had_marker -eq 0 ]]; then
   echo "写入：.gitignore 追加 QW buddy 运行态"
 elif [[ $added -eq 1 ]]; then
@@ -247,11 +294,14 @@ fi
 
 # 钩子：已含 qwbuddy/QWBUDDY.md 引用视为已装，跳过
 append_hook() {
-  local target="$1" hook="$2"
+  local target="$1" hook="$2" tmp
   if [[ -f "$target" ]] && grep -qF 'qwbuddy/QWBUDDY.md' "$target"; then
     echo "跳过：$(basename "$target") 已有 QW buddy 钩子"
   else
-    { echo; cat "$TPL/$hook"; } >> "$target"
+    tmp="$(mktemp "$ROOT/.qwb-hook.XXXXXXXX")" || return 1
+    if [[ -f "$target" ]]; then cp -p "$target" "$tmp" || return 1; fi
+    { echo; cat "$TPL/$hook"; } >> "$tmp" || return 1
+    mv -f "$tmp" "$target" || return 1
     echo "写入：$(basename "$target") 追加 QW buddy 钩子"
   fi
 }
@@ -271,11 +321,11 @@ install_pi_ext() {
   fi
   mkdir -p "$(dirname "$dst")"
   if [[ -f "$dst" ]]; then
-    cp "$dst" "$dst.bak"
-    cp "$src" "$dst"
+    atomic_copy "$dst" "$dst.bak"
+    atomic_copy "$src" "$dst"
     echo "写入：.pi/extensions/qwb-watch.ts 已更新（旧内容备份为 qwb-watch.ts.bak；重启 pi 或 /reload 生效）"
   else
-    cp "$src" "$dst"
+    atomic_copy "$src" "$dst"
     echo "写入：.pi/extensions/qwb-watch.ts（重启 pi 或 /reload 后扩展生效）"
   fi
 }
@@ -291,7 +341,7 @@ merge_claude_hook() {
     return 1
   fi
   CLAUDE_SETTINGS="$ROOT/.claude/settings.json" python3 - <<'PYEOF'
-import json, os, sys
+import json, os, sys, tempfile
 
 path = os.environ["CLAUDE_SETTINGS"]
 entry = {
@@ -344,11 +394,15 @@ if has_qwb(stop):
 else:
     stop.append({"hooks": [entry]})
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".qwbtmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".qwb-settings.", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     print("写入：.claude/settings.json 合并 Claude Code Stop hook（值守，asyncRewake）")
 PYEOF
 }

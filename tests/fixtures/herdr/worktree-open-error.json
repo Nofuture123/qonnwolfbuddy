@@ -1,0 +1,2 @@
+# 本机 Herdr 0.9.1 真实 CLI 输出；隔离临时 Git 项目，录后已关闭 Space 并清理 checkout
+{"error":{"code":"worktree_not_found","message":"worktree path not found"},"id":"cli:worktree:open"}

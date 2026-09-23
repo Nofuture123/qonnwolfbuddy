@@ -4,7 +4,7 @@
 
 ## Workspace 与首次派发
 
-当前主控 pane 从 `HERDR_PANE_ID` 取得，不把动态 pane ID 写入 `qwbuddy/config.sh`。工人 tab 的 workspace 依次由目标项目 `qwbuddy/config.sh` 的 `QWB_WORKSPACE`、`herdr workspace list` 中匹配项目根的 `worktree.repo_root`、调用者 workspace（带警告）确定。配置 ID 在本机不存在则拒绝。跨项目不能按根匹配时，在目标项目配置稳定 workspace ID；只在命令环境设置 `QWB_WORKSPACE` 不能覆盖脚本 source 的 `config.sh` 赋值。历史值守 tab 排障沿用同一解析。
+当前主控 pane 从 `HERDR_PANE_ID` 取得，不把动态 pane ID 写入 `qwbuddy/config.sh`。项目根与值守 tab 的 workspace 依次由 `QWB_WORKSPACE`、`herdr workspace list` 中匹配项目根的非 linked workspace、调用者 workspace（带警告）确定；任务 worktree 的工人 tab 则进入该 worktree 在 Spaces 中的独立 workspace。配置 ID 在本机不存在或指向任务 linked Space 则拒绝。跨项目不能按根匹配时，在目标项目配置稳定的主 workspace ID；只在命令环境设置 `QWB_WORKSPACE` 不能覆盖脚本 source 的 `config.sh` 赋值。
 
 `qwb-run.sh` 派发前尝试预置信任。文件缺失、格式不符或首次启动对话框可能仍需人工处理；旧基线首次派发曾需手工确认并补发提示（母本仓 `docs/E2E-RUNBOOK.md`），不能据此宣称当前无人介入路径已验证。
 

@@ -85,6 +85,10 @@ if [[ "$REPORT_SET" -eq 1 ]]; then
     printf '%s\t%s\n' "$head" "$status"
   }
   BEFORE="$(git_snapshot)"
+  CMD_SHA="$(printf '%s' "$CMD" | shasum -a 256 | cut -d' ' -f1)" \
+    || { echo "错误：无法记录本次质量门命令摘要" >&2; exit 2; }
+  CONF_SHA_BEFORE="$(shasum -a 256 "$CONF" | cut -d' ' -f1)" \
+    || { echo "错误：无法记录配置运行前摘要" >&2; exit 2; }
   # 先采样，再创建本次的任何临时文件，避免把自己的探针记作 dirty。
   REPORT_PROBE="$(mktemp "$REPORT_DIR/.qwb-test-preflight.XXXXXXXX" 2>/dev/null)" || {
     echo "错误：报告父目录不可写：${REPORT_DIR}" >&2; exit 2;
@@ -104,6 +108,7 @@ if [[ "$REPORT_SET" -eq 1 ]]; then
   metadata_ok=1
   ENDED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')" || metadata_ok=0
   AFTER="$(git_snapshot)" || metadata_ok=0
+  CONF_SHA_AFTER="$(shasum -a 256 "$CONF" | cut -d' ' -f1)" || metadata_ok=0
   IFS=$'\t' read -r HEAD_BEFORE STATUS_BEFORE <<< "$BEFORE"
   IFS=$'\t' read -r HEAD_AFTER STATUS_AFTER <<< "$AFTER"
   REPORT_TMP="$(mktemp "$REPORT_DIR/.qwb-test-report.XXXXXXXX" 2>/dev/null)" || REPORT_TMP=""
@@ -113,6 +118,8 @@ if [[ "$REPORT_SET" -eq 1 ]]; then
     {
       printf '# qwb-test-report-v1\n\n' &&
       printf -- '- 检查：%s\n- 项目目录：%s\n- 配置来源：%s + %s\n' "$GATE" "$REPORT_PROJECT_ROOT" "$CONF" "$VAR" &&
+      printf -- '- 命令 SHA-256：%s\n- 配置运行前 SHA-256：%s\n- 配置运行后 SHA-256：%s\n' \
+        "$CMD_SHA" "$CONF_SHA_BEFORE" "$CONF_SHA_AFTER" &&
       printf -- '- 开始时间：%s\n- 结束时间：%s\n' "$STARTED_AT" "$ENDED_AT" &&
       printf -- '- 运行前提交：%s\n- 运行前工作区：%s\n' "$HEAD_BEFORE" "$STATUS_BEFORE" &&
       printf -- '- 运行后提交：%s\n- 运行后工作区：%s\n' "$HEAD_AFTER" "$STATUS_AFTER" &&

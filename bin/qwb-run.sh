@@ -15,7 +15,7 @@ usage() {
 选项:
   --project <根>        项目根（默认：当前目录）
   --worktree <路径>     在既有 worktree 目录里派活（新窗口的 cwd）
-  --create-worktree     先开 <根>/.worktrees/<任务id>（git worktree add；与默认行为同义）
+  --create-worktree     先开 <根>/.worktrees/<任务id> 并在 Herdr Spaces 登记（与默认行为同义）
                         隔离副本的创建是幂等的：已是本任务的有效 worktree 则复用，不重建
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
   --pane <pane_id>      复用既有 pane（须为交互 shell），否则新开 herdr tab
@@ -36,9 +36,9 @@ bash -c 执行一次（如 pnpm install --offline --frozen-lockfile && cp ../../
 monorepo 副本自装依赖/环境；stdout/stderr 透传，非 0 → 拒绝派发、副本保留供排查
 （任务书无 dispatch 行、无 tab 创建）。只对新建副本执行：复用既有副本 / --here /
 --worktree <既有路径> 均不跑。
-工人 tab 落在哪个 workspace：config.sh 的 QWB_WORKSPACE（非空即用，本机 herdr 查不到就拒绝派发，不静默回退）；
-未声明时按 herdr workspace list 的 worktree.repo_root 与项目根物理路径匹配（多个匹配取 focused 的）；
-都没有则落调用者 workspace 并在 stderr 警告。--pane 复用路径不建 tab，不受影响。
+项目根派发时，工人 tab 落在 config.sh 的 QWB_WORKSPACE、匹配项目根的非 linked workspace，
+或带警告回退到调用者 workspace；任务 Git worktree 派发时，tab 落在其独立 Herdr Space。
+--pane 仍须在目标目录的对应 Space 中，不会隐式搬动已有 pane。
 派发前有验收场景门：任务书必须含「验收场景」块（Given/When/Then 或 ≥2 个 user_ 场景标题）
 且至少一条失败路径场景，否则拒绝派发；通过则把场景块指纹写成 scenarios-fp: 供 lint 冻结比对。
 派发前有疑点门：最后一个 spec-defect:/spec-resolved: 相关事件是 blocked: spec-defect:（未决规格疑点）
@@ -356,6 +356,19 @@ if [[ -n "$PANE" ]]; then
     || { echo "错误：目标目录 ${EDIR} 尚不存在（默认 worktree 是派发时才建的），pane cwd 不可能已相符——修复：不带 --pane 先派发一次建出副本，或改用 --here / --worktree <已存在目录> 并先把 pane cd 到那里" >&2; exit 1; }
   [[ -n "$pcd" && "$pcd" == "$ecd" ]] \
     || { echo "错误：--pane ${PANE} 的 cwd（${pcwd:-未知}）与目标目录（${EDIR}）不符——修复：在该 pane 里先执行 cd ${EDIR} 再重跑，或不带 --pane 新开 tab" >&2; exit 1; }
+  wt_kind_rc=0
+  qwb_is_project_worktree "$PROJECT_ROOT" "$ecd" || wt_kind_rc=$?
+  [[ "$wt_kind_rc" -ne 2 ]] || { echo "错误：无法确认 --pane 目标的 Git worktree 身份，拒绝派发" >&2; exit 1; }
+  if [[ "$wt_kind_rc" -eq 0 ]]; then
+    pane_space="$(qwb_worktree_space "$PROJECT_ROOT" "$ecd")" || exit 1
+    [[ -n "$pane_space" ]] \
+      || { echo "错误：目标 worktree 尚未在 Herdr Spaces 登记；先不带 --pane 派发，或先 herdr worktree open 后在该 Space 准备空闲 pane" >&2; exit 1; }
+    actual_space="$(printf '%s' "$pinfo" | perl -MJSON::PP=decode_json -0777 -e '
+      my $j=eval{decode_json(<STDIN>)}; my $v=$j->{result}{pane}{workspace_id};
+      print $v if defined $v && !ref $v;' || true)"
+    [[ "$actual_space" == "$pane_space" ]] \
+      || { echo "错误：--pane ${PANE} 不属于目标 worktree Space ${pane_space}，拒绝投递" >&2; exit 1; }
+  fi
 fi
 
 # —— 返工/续派复用既有工人（只对 herdr 模式新开 tab 的路径；--pane 与 pane-run 不参与）——
@@ -375,7 +388,16 @@ validate_reuse() {
     || { echo "错误：复用目标目录不存在，拒绝投递" >&2; return 1; }
   actual_dir="$(cd "$ag_cwd" 2>/dev/null && pwd -P)" \
     || { echo "错误：复用工人 cwd 无法确认：$ag_cwd" >&2; return 1; }
-  expected_ws="$(resolve_workspace "$PROJECT_ROOT")" || return 1
+  local wt_kind_rc=0
+  qwb_is_project_worktree "$PROJECT_ROOT" "$expected_dir" || wt_kind_rc=$?
+  [[ "$wt_kind_rc" -ne 2 ]] || { echo "错误：无法确认复用目标的 Git worktree 身份，拒绝派发" >&2; return 1; }
+  if [[ "$wt_kind_rc" -eq 0 ]]; then
+    expected_ws="$(qwb_worktree_space "$PROJECT_ROOT" "$expected_dir")" || return 1
+    [[ -n "$expected_ws" ]] \
+      || { echo "错误：目标 worktree 尚未在 Herdr Spaces 登记，拒绝复用历史工人" >&2; return 1; }
+  else
+    expected_ws="$(resolve_workspace "$PROJECT_ROOT")" || return 1
+  fi
   if [[ -z "$expected_ws" ]]; then
     expected_ws="${HERDR_WORKSPACE_ID:-}"
     if [[ -z "$expected_ws" && -n "${HERDR_PANE_ID:-}" ]]; then
@@ -410,7 +432,7 @@ validate_reuse() {
      && "$ag_pane" == "$pane_id" && "$actual_dir" == "$expected_dir" \
      && "$pane_dir" == "$expected_dir" && "$ag_ws" == "$expected_ws" \
      && "$pane_ws" == "$expected_ws" ]] \
-    || { echo "错误：同名工人 $NAME 的 worker/cwd/workspace 与本次目标不符，拒绝复用" >&2; return 1; }
+    || { echo "错误：同名工人 $NAME 的 worker/cwd/workspace 与本次目标不符，拒绝复用；旧工人若仍在主 workspace，请换 --name 重派" >&2; return 1; }
   last_dispatch="$(grep '^dispatch:' "$TASK_FILE" | tail -1 || true)"
   hist_dir="${last_dispatch##* dir=}"
   hist_dir="$(cd "$hist_dir" 2>/dev/null && pwd -P || true)"
@@ -478,17 +500,10 @@ fi
 
 # 主控锁：防两个主控同时动手。无锁→获取；他人持锁→拒绝派发；自己持有的锁可重复派发。
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
-LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
 SELF="${HERDR_PANE_ID:-pid:$$}"
 [[ -f "$LOCK_BIN" ]] || { echo "错误：找不到 ${LOCK_BIN}" >&2; exit 1; }
-if ! bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" >/dev/null 2>&1; then
-  holder_id="$(sed -n 's/^[^ ]* //p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
-  if [[ "$holder_id" != "$SELF" ]]; then
-    echo "错误：主控锁被占用，锁主：$(cat "$LOCK_DIR/owner" 2>/dev/null || echo '（锁目录存在但无 owner 文件）')" >&2
-    echo "确认是残留锁后手动释放：bash ${LOCK_BIN} release --project ${PROJECT_ROOT}" >&2
-    exit 1
-  fi
-fi
+lock_out="$(bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" 2>&1)" \
+  || { printf '错误：主控锁获取失败，拒绝派发：\n%s\n' "$lock_out" >&2; exit 1; }
 
 # —— 显式修订（--revise-scenarios）：锁内、任何派发副作用之前重新核对并更新指纹 ——
 # 先在临时文件写「新指纹 + 修订记录」再原子 mv 回任务书：写与换任何一步失败即退出，不留半更新状态。
@@ -545,26 +560,14 @@ if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
   fi
   WORKTREE="$PROJECT_ROOT/.worktrees/$TASK_ID"
   mkdir -p "$PROJECT_ROOT/.worktrees"
-  # 有效 worktree 判定（两个条件都要满足）：① 该目录真的是一个 git 工作区且根就在这个路径——
-  # prunable 残留（登记还在、目录被删/被换成普通目录）会被 git 回退解析到外层仓 → 不等，拒；
-  # ② 本项目 worktree 列表能查到该路径（按物理路径比对，避开 /tmp→/private/tmp 这类符号链接差异）。
-  wt_is_valid() {
-    local want want_real top p p_real
-    want="$1"
-    want_real="$(cd "$want" 2>/dev/null && pwd -P)" || return 1
-    top="$(git -C "$want" rev-parse --show-toplevel 2>/dev/null)" || return 1
-    [[ -n "$top" && "$(cd "$top" 2>/dev/null && pwd -P)" == "$want_real" ]] || return 1
-    while IFS= read -r p; do
-      [[ -n "$p" ]] || continue
-      p_real="$(cd "$p" 2>/dev/null && pwd -P)" || continue
-      [[ "$p_real" == "$want_real" ]] && return 0
-    done < <(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
-    return 1
-  }
+  # 物理目录和本项目 Git 登记均须吻合；坏残留拒绝复用。
   # 幂等（返工 / 修订后继续派发走的就是这条路）：目标路径已存在且是本任务的有效 worktree → 复用，不重建；
   # 存在但不是有效 worktree（脏残留 / 普通目录）→ 拒绝，不盲目复用也不删别人的东西。
   if [[ -e "$WORKTREE" ]]; then
-    if wt_is_valid "$WORKTREE"; then
+    wt_kind_rc=0
+    qwb_is_project_worktree "$PROJECT_ROOT" "$WORKTREE" || wt_kind_rc=$?
+    [[ "$wt_kind_rc" -ne 2 ]] || { echo "错误：无法查询 Git worktree 登记，拒绝复用副本" >&2; exit 1; }
+    if [[ "$wt_kind_rc" -eq 0 ]]; then
       echo "复用既有隔离副本（幂等，不重建）：${WORKTREE}"
     else
       {
@@ -601,6 +604,48 @@ if [[ "$WT_CREATED" -eq 1 && -n "${QWB_WORKTREE_SETUP:-}" ]]; then
     echo "错误：worktree 初始化失败（退出码 ${init_rc}），副本保留在 ${DIR} 供排查，未派发" >&2
     exit 1
   fi
+fi
+
+# 任务副本必须作为独立 worktree 显示在 Herdr Spaces；登记早于信任预置和账本写入。
+TASK_SPACE=""
+wt_kind_rc=0
+qwb_is_project_worktree "$PROJECT_ROOT" "$DIR" || wt_kind_rc=$?
+[[ "$wt_kind_rc" -ne 2 ]] || { echo "错误：无法确认目标的 Git worktree 身份，拒绝派发" >&2; exit 1; }
+if [[ "$wt_kind_rc" -eq 0 ]]; then
+  TASK_SPACE="$(qwb_worktree_space "$PROJECT_ROOT" "$DIR")" || exit 1
+  if [[ -z "$TASK_SPACE" ]]; then
+    space_out="$(herdr worktree open --cwd "$PROJECT_ROOT" --path "$DIR" --label "$TASK_ID" --no-focus 2>&1)" \
+      || { echo "错误：worktree 已保留但 Herdr Space 登记失败，未派发：$space_out" >&2; exit 1; }
+    space_meta="$(printf '%s' "$space_out" | perl -MJSON::PP=decode_json -0777 -e '
+      my $j=eval{decode_json(<STDIN>)}; my $r=$j->{result};
+      exit 1 unless ref $r eq "HASH" && ref $r->{workspace} eq "HASH" && ref $r->{root_pane} eq "HASH";
+      my ($id,$tab)=($r->{workspace}{workspace_id},$r->{root_pane}{tab_id});
+      exit 1 unless defined $id && !ref $id && $id ne "" && defined $tab && !ref $tab && $tab ne "";
+      printf "%s\t%s\t%s", $id,$tab,($r->{already_open} ? 1 : 0);' || true)"
+    [[ -n "$space_meta" ]] \
+      || { echo "错误：herdr worktree open 响应无 workspace/root tab 身份，副本保留，未派发：$space_out" >&2; exit 1; }
+    opened_id="$(printf '%s' "$space_meta" | cut -f1)"
+    opened_tab="$(printf '%s' "$space_meta" | cut -f2)"
+    already_open="$(printf '%s' "$space_meta" | cut -f3)"
+    TASK_SPACE="$(qwb_worktree_space "$PROJECT_ROOT" "$DIR")" || exit 1
+    [[ -n "$TASK_SPACE" && "$TASK_SPACE" == "$opened_id" ]] \
+      || { echo "错误：worktree Space 登记后路径/身份无法唯一核对，副本保留，未派发" >&2; exit 1; }
+    if [[ "$already_open" == 0 ]]; then
+      space_line="worktree-space: id=${TASK_SPACE} root-tab=${opened_tab} path=${DIR}"
+      printf '%s\n' "$space_line" >> "$TASK_FILE" || {
+        herdr workspace close "$TASK_SPACE" >/dev/null 2>&1 \
+          || echo "警告：新建 Space ${TASK_SPACE} 关闭失败，请手工核对" >&2
+        echo "错误：worktree Space 所有权未能记入任务书，拒绝派发" >&2
+        exit 1
+      }
+    fi
+  fi
+  recorded_space="$(sed -n 's/^worktree-space: id=\([^ ]*\).*/\1/p' "$TASK_FILE" | tail -1)"
+  [[ -z "$recorded_space" || "$recorded_space" == "$TASK_SPACE" ]] \
+    || { echo "错误：任务书登记的 Space ${recorded_space} 与当前 ${TASK_SPACE} 不符，拒绝派发" >&2; exit 1; }
+  TAB_WS="$TASK_SPACE"
+elif [[ "$HERE" -eq 0 && -n "$WORKTREE" ]]; then
+  echo "提示：--worktree 路径不是本项目的 linked Git worktree，沿用既有目录派发，不登记 worktree Space" >&2
 fi
 
 # —— 派发前预置目录信任：claude/codex 对新目录弹信任框且不被权限参数跳过，起工人前把 $DIR

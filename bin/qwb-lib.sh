@@ -18,12 +18,12 @@ qwb_last_spec_event() {
 qwb_scenario_block() {
   awk '
     inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|scenarios-fp):/) { inblk=0 }
+    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|scenarios-fp):/) { inblk=0 }
     inblk==1 { print }
   ' "$1"
 }
 
-# —— herdr workspace list 响应 → TSV 行「workspace_id<TAB>focused<TAB>worktree.repo_root 物理路径」——
+# —— herdr workspace list 响应 → TSV 行「id<TAB>focused<TAB>repo_root<TAB>linked<TAB>checkout_path」——
 # 形状防御（R2-M2）：result.workspaces 必须是数组；每项 workspace_id 必须是非空 JSON 字符串
 # （对象/数组/数字/布尔/null/空串一律判整体失败）。任一项不符 → 非 0 退出，调用方据此拒绝派发，
 # 不静默跳过坏项、也不用缺 id 的项继续匹配。
@@ -41,7 +41,11 @@ qwb_ws_rows() {
       my $rr = (ref $w->{worktree} eq "HASH") ? $w->{worktree}{repo_root} : undef;
       $rr = "" unless defined $rr && !ref $rr;
       if ($rr ne "") { my $cr = realpath($rr); $rr = $cr if defined $cr; }
-      printf "%s\t%s\t%s\n", $id, ($w->{focused} ? 1 : 0), $rr;
+      my $linked = (ref $w->{worktree} eq "HASH" && $w->{worktree}{is_linked_worktree}) ? 1 : 0;
+      my $checkout = (ref $w->{worktree} eq "HASH") ? $w->{worktree}{checkout_path} : undef;
+      $checkout = "" unless defined $checkout && !ref $checkout;
+      if ($checkout ne "") { my $cc = realpath($checkout); $checkout = $cc if defined $cc; }
+      printf "%s\t%s\t%s\t%s\t%s\n", $id, ($w->{focused} ? 1 : 0), $rr, $linked, $checkout;
     }
   '
 }
@@ -77,19 +81,19 @@ resolve_workspace() {
   fi
   avail="$(printf '%s\n' "$rows" | cut -f1 | grep -v '^$' | paste -sd, -)"
   if [[ -n "$declared" ]]; then
-    if printf '%s\n' "$rows" | cut -f1 | grep -qxF -- "$declared"; then
+    if printf '%s\n' "$rows" | perl -F'\t' -lane 'BEGIN { $id = shift @ARGV; $found = 0 } $found = 1 if @F >= 4 && $F[0] eq $id && $F[3] eq "0"; END { exit($found ? 0 : 1) }' "$declared"; then
       printf '%s' "$declared"
       return 0
     fi
     {
-      echo "错误：config.sh 声明了 QWB_WORKSPACE='${declared}'，但本机 herdr 里没有这个 workspace（现有：${avail}）——拒绝派发，不静默回退到别的 workspace。"
+      echo "错误：config.sh 声明了 QWB_WORKSPACE='${declared}'，但本机 herdr 里没有这个主 workspace（或它是任务 worktree Space；现有：${avail}）——拒绝派发。"
       echo "修复：把 QWB_WORKSPACE 改成上面某个 id，或清空它（留空则按 worktree.repo_root 自动匹配项目根）。"
     } >&2
     return 1
   fi
   local rroot hits="" id f first="" focus="" n=0
   rroot="$(cd "$root" 2>/dev/null && pwd -P)" || rroot="$root"
-  hits="$(printf '%s\n' "$rows" | perl -F'\t' -lane 'BEGIN { $r = shift @ARGV } print "$F[0]\t$F[1]" if @F >= 3 && $F[2] ne "" && $F[2] eq $r' "$rroot")"
+  hits="$(printf '%s\n' "$rows" | perl -F'\t' -lane 'BEGIN { $r = shift @ARGV } print "$F[0]\t$F[1]" if @F >= 4 && $F[2] ne "" && $F[2] eq $r && $F[3] eq "0"' "$rroot")"
   while IFS=$'\t' read -r id f; do
     if [[ -n "$id" ]]; then
       n=$((n + 1))
@@ -110,6 +114,40 @@ resolve_workspace() {
   fi
   printf '%s' "$first"
   return 0
+}
+
+# 本项目指定 linked Git worktree 在 Spaces 中的唯一 workspace ID；不存在时输出空串。
+# 查询失败、响应不合法或同一路径重复登记均失败关闭。
+qwb_worktree_space() {
+  local root="$1" dir="$2" raw rows matches count
+  raw="$(herdr workspace list 2>&1)" || { echo "错误：herdr workspace list 失败：$raw" >&2; return 1; }
+  rows="$(printf '%s' "$raw" | qwb_ws_rows)" || { echo "错误：herdr workspace list 响应不合法" >&2; return 1; }
+  root="$(cd "$root" && pwd -P)" || return 1
+  dir="$(cd "$dir" && pwd -P)" || return 1
+  matches="$(printf '%s\n' "$rows" | perl -F'\t' -lane '
+    BEGIN { ($root, $dir) = splice @ARGV, 0, 2 }
+    print $F[0] if @F >= 5 && $F[2] eq $root && $F[3] eq "1" && $F[4] eq $dir
+  ' "$root" "$dir")"
+  count="$(printf '%s\n' "$matches" | grep -c . || true)"
+  [[ "$count" -le 1 ]] || { echo "错误：同一 worktree 对应多个 Herdr Space：$dir" >&2; return 1; }
+  printf '%s' "$matches"
+}
+
+# 路径必须是本项目登记的独立 Git worktree，不能把普通目录或别的仓库误当任务 Space。
+qwb_is_project_worktree() {
+  local root="$1" dir="$2" root_phys dir_phys top p listing
+  root_phys="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  dir_phys="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  [[ "$dir_phys" != "$root_phys" ]] || return 1
+  top="$(git -C "$dir_phys" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ "$(cd "$top" 2>/dev/null && pwd -P)" == "$dir_phys" ]] || return 1
+  listing="$(git -C "$root_phys" worktree list --porcelain)" \
+    || { echo "错误：无法查询本项目 Git worktree 列表" >&2; return 2; }
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    [[ "$(cd "$p" 2>/dev/null && pwd -P)" == "$dir_phys" ]] && return 0
+  done < <(printf '%s\n' "$listing" | sed -n 's/^worktree //p')
+  return 1
 }
 
 # worker_lost <任务书> —— 工人丢失判定（关机/herdr 重启后 pane 没了，票还 running）

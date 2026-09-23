@@ -84,4 +84,66 @@ with tempfile.TemporaryDirectory() as tmp:
     result = run(project, source / "bin/qwb-init.sh")
     assert result.returncode != 0 and "缺少专项文档源文件" in result.stderr, result.stderr
 
+    # Core templates and parent directories must not redirect installation outside the project.
+    unsafe = base / "unsafe-core"
+    (unsafe / "qwbuddy").mkdir(parents=True)
+    core_sentinel = base / "core-sentinel.md"
+    core_sentinel.write_text("keep core\n")
+    (unsafe / "qwbuddy/QWBUDDY.md").symlink_to(core_sentinel)
+    result = run(unsafe)
+    assert result.returncode != 0 and core_sentinel.read_text() == "keep core\n", result.stderr
+
+    unsafe_dir = base / "unsafe-directory"
+    (unsafe_dir / "qwbuddy").mkdir(parents=True)
+    external_bin = base / "external-bin"
+    external_bin.mkdir()
+    (unsafe_dir / "qwbuddy/bin").symlink_to(external_bin, target_is_directory=True)
+    result = run(unsafe_dir)
+    assert result.returncode != 0 and not list(external_bin.iterdir()), result.stderr
+
+    dangling = base / "dangling-config"
+    (dangling / "qwbuddy").mkdir(parents=True)
+    outside_config = base / "outside-config.sh"
+    (dangling / "qwbuddy/config.sh").symlink_to(outside_config)
+    result = run(dangling)
+    assert result.returncode != 0 and not outside_config.exists(), result.stderr
+
+    unsafe_backup = base / "unsafe-pi-backup"
+    (unsafe_backup / ".pi/extensions").mkdir(parents=True)
+    (unsafe_backup / ".pi/extensions/qwb-watch.ts").write_text("old extension\n")
+    backup_sentinel = base / "pi-backup-sentinel"
+    backup_sentinel.write_text("keep backup\n")
+    (unsafe_backup / ".pi/extensions/qwb-watch.ts.bak").symlink_to(backup_sentinel)
+    result = run(unsafe_backup)
+    assert result.returncode != 0 and backup_sentinel.read_text() == "keep backup\n", result.stderr
+
+    safe_temp = base / "settings-temp"
+    (safe_temp / ".claude").mkdir(parents=True)
+    settings_sentinel = base / "settings-temp-sentinel"
+    settings_sentinel.write_text("keep settings\n")
+    (safe_temp / ".claude/settings.json.qwbtmp").symlink_to(settings_sentinel)
+    result = run(safe_temp)
+    assert result.returncode == 0 and settings_sentinel.read_text() == "keep settings\n", result.stderr
+
+    linked_hook = base / "linked-hook"
+    linked_hook.mkdir()
+    (linked_hook / "CLAUDE.md").write_text("shared\n")
+    (linked_hook / "AGENTS.md").symlink_to(linked_hook / "CLAUDE.md")
+    result = run(linked_hook)
+    assert result.returncode != 0 and (linked_hook / "CLAUDE.md").read_text() == "shared\n", result.stderr
+
+    linked = base / "hardlinked-files"
+    (linked / "qwbuddy").mkdir(parents=True)
+    outside_core = base / "outside-core.md"
+    outside_core.write_text("keep hardlink\n")
+    os.link(outside_core, linked / "qwbuddy/QWBUDDY.md")
+    outside_ignore = base / "outside-ignore"
+    outside_ignore.write_text("keep ignore\n")
+    os.link(outside_ignore, linked / ".gitignore")
+    result = run(linked)
+    assert result.returncode == 0, result.stderr
+    assert outside_core.read_text() == "keep hardlink\n"
+    assert outside_ignore.read_text() == "keep ignore\n"
+    assert (linked / "qwbuddy/QWBUDDY.md").read_text() != "keep hardlink\n"
+
 print("on-demand-guide: installed links, upgrade, symlink and missing-source checks passed")

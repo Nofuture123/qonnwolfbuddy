@@ -68,6 +68,17 @@ key='boundary-secret-canary'
 check 'HTTP 错误不反射凭据且维持 error' '[[ $rr -eq 0 ]] && grep -q "status: error" "$TMP/route.out" && grep -q "http 500" "$TMP/route.out" && ! grep -q "$key" "$TMP/route.out" "$TMP/route.err"'
 
 W="$TMP/work"; mkdir -p "$W/tasks/foo" "$W/.worktrees/foo"; git -C "$W" init -q
+HB="$TMP/herdr-empty"; mkdir -p "$HB"
+cat > "$HB/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1 $2" == 'workspace list' ]]; then
+  printf '{"result":{"workspaces":[]}}\n'
+else
+  exit 9
+fi
+EOF
+chmod +x "$HB/herdr"
+export PATH="$HB:$PATH"
 git -C "$W" config user.email test@example.invalid; git -C "$W" config user.name Test
 printf 'base\n' > "$W/base"; git -C "$W" add base; git -C "$W" commit -qm base
 printf 'state: done\n' > "$W/tasks/2099-01-01-foo.md"
@@ -98,6 +109,15 @@ bash "$WORKTREE" finish foreign --keep --project "$W" > "$TMP/foreign.log" 2>&1;
 check '其他仓登记的 worktree 拒绝' '[[ $fr -ne 0 ]] && [[ -d "$W/.worktrees/foreign" ]] && ! grep -q "^worktree:" "$W/tasks/2099-01-07-foreign.md"'
 bash "$WORKTREE" finish good --merged --project "$W" > "$TMP/good.log" 2>&1; gr=$?
 check '合法已合入 worktree 收尾' '[[ $gr -eq 0 ]] && [[ ! -e "$W/.worktrees/good" ]] && grep -q "^worktree: merged" "$W/tasks/2099-01-03-good.md"'
+REMOTE="$TMP/remote.git"; git init -q --bare "$REMOTE"
+git -C "$W" remote add origin "$REMOTE"
+git -C "$W" worktree add -q -b pushed "$W/.worktrees/pushed" HEAD
+git -C "$W/.worktrees/pushed" commit -qm pushed --allow-empty
+git -C "$W" push -q origin pushed:pushed
+git -C "$W" fetch -q origin
+printf 'state: verified\n' > "$W/tasks/2099-01-10-pushed.md"
+bash "$WORKTREE" finish pushed --merged --project "$W" > "$TMP/pushed.log" 2>&1; pur=$?
+check '仅远端跟踪分支已落地时完整收尾并记账' '[[ $pur -eq 0 && ! -e "$W/.worktrees/pushed" ]] && ! git -C "$W" show-ref --verify -q refs/heads/pushed && grep -q "^worktree: merged" "$W/tasks/2099-01-10-pushed.md"'
 git -C "$W" worktree add -q -b unmerged "$W/.worktrees/unmerged" HEAD
 printf 'state: done\n' > "$W/tasks/2099-01-09-unmerged.md"
 git -C "$W/.worktrees/unmerged" commit -qm new --allow-empty
