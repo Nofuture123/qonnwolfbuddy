@@ -3792,6 +3792,17 @@ else
   cat "$TMP/worktree-space.log"
 fi
 
+echo "== 80. R1 Space 收尾与归档恢复公开 CLI 回归 =="
+if grep -q '^R1 OPEN CLEANUP PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 NESTED ROOT PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 WORKER FINISH PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 ARCHIVE RECOVERY PASS:' "$TMP/worktree-space.log"; then
+  ok "R1 三审点 CLI 用例均执行并通过"
+else
+  bad "R1 三审点 CLI 用例未全部通过"
+  cat "$TMP/worktree-space.log"
+fi
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

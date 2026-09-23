@@ -209,11 +209,28 @@ race_note() {
 
 SPACE_ID=""
 partial_fail() {
-  local stage="$1"
-  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s\n' \
-    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" >> "$TASK_FILE" \
+  local stage="$1" recovery="" script_path
+  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s oid=%s\n' \
+    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" "$HEAD_OID" >> "$TASK_FILE" \
     || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
-  echo "错误：收尾停在 ${stage}；核对 Git worktree/分支与 Herdr Space 后再恢复，已保留现有引用" >&2
+  echo "错误：收尾停在 ${stage}（OID ${HEAD_OID}）；核对 Git worktree/分支与 Herdr Space 后再恢复" >&2
+  if [[ "$stage" == "branch-delete" && "$DETACHED" -eq 0 ]]; then
+    printf -v recovery 'git -C %q update-ref -d %q %q' \
+      "$PROJECT_ROOT" "refs/heads/$BRANCH" "$HEAD_OID"
+  elif [[ "$stage" == "worktree-remove" ]]; then
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
+    if [[ "$ACTION" == "archive" ]]; then
+      # shellcheck disable=SC2016
+      printf -v recovery 'test "$(git -C %q rev-parse HEAD)" = %q && test "$(git -C %q rev-parse %q)" = %q && bash %q finish %q --archive --project %q' \
+        "$WT_DIR" "$HEAD_OID" "$PROJECT_ROOT" "refs/tags/$TAG^{commit}" "$HEAD_OID" \
+        "$script_path" "$TASK_ID" "$PROJECT_ROOT"
+    else
+      # shellcheck disable=SC2016
+      printf -v recovery 'test "$(git -C %q rev-parse HEAD)" = %q && bash %q finish %q --merged --project %q' \
+        "$WT_DIR" "$HEAD_OID" "$script_path" "$TASK_ID" "$PROJECT_ROOT"
+    fi
+  fi
+  [[ -z "$recovery" ]] || echo "恢复命令：${recovery}" >&2
   exit 1
 }
 
@@ -337,21 +354,26 @@ case "$ACTION" in
     TAG="archive/$TASK_ID"
     tag_rc=0
     git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/tags/$TAG" || tag_rc=$?
-    if [[ "$tag_rc" -eq 0 ]]; then
-      echo "拒绝：归档标签 ${TAG} 已存在，未关闭 Space 或删除 Git worktree" >&2
-      exit 1
-    fi
-    [[ "$tag_rc" -eq 1 ]] || { echo "拒绝：无法核对归档标签 ${TAG}" >&2; exit 1; }
+    [[ "$tag_rc" -le 1 ]] || { echo "拒绝：无法核对归档标签 ${TAG}" >&2; exit 1; }
     # 标签打向「即将打的那一刻」的实际 HEAD：收尾期间若已被推进，以当前真实提交为准
     cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; exit 1; }
     if [[ "$cur" != "$HEAD_OID" ]]; then
       echo "提示：收尾期间 ${WT_DIR} 的 HEAD 已推进（${HEAD_OID} → ${cur}），标签将指向当前提交" >&2
       HEAD_OID="$cur"
     fi
+    if [[ "$tag_rc" -eq 0 ]]; then
+      tag_oid="$(git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null)" || tag_oid=""
+      [[ "$tag_oid" == "$HEAD_OID" ]] || {
+        echo "拒绝：归档标签 ${TAG} 已存在且不指向当前实际 HEAD ${HEAD_OID}，未关闭 Space 或删除 Git worktree" >&2
+        exit 1
+      }
+    fi
     branch_only_here || exit 1
     prepare_space_close || exit 1
     close_task_space || exit 1
-    git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID" || partial_fail tag-create
+    if [[ "$tag_rc" -eq 1 ]]; then
+      git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID" || partial_fail tag-create
+    fi
     check_unchanged "标签 ${TAG}（→ ${HEAD_OID}）已打且保留；" || partial_fail head-changed-after-tag
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
     if [[ "$DETACHED" -eq 1 ]]; then

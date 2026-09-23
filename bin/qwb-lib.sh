@@ -126,11 +126,15 @@ qwb_worktree_space() {
   dir="$(cd "$dir" && pwd -P)" || return 1
   matches="$(printf '%s\n' "$rows" | perl -F'\t' -lane '
     BEGIN { ($root, $dir) = splice @ARGV, 0, 2 }
-    print $F[0] if @F >= 5 && $F[2] eq $root && $F[3] eq "1" && $F[4] eq $dir
+    print "$F[0]\t$F[2]" if @F >= 5 && $F[3] eq "1" && $F[4] eq $dir
   ' "$root" "$dir")"
   count="$(printf '%s\n' "$matches" | grep -c . || true)"
   [[ "$count" -le 1 ]] || { echo "错误：同一 worktree 对应多个 Herdr Space：$dir" >&2; return 1; }
-  printf '%s' "$matches"
+  if [[ -n "$matches" && "${matches#*$'\t'}" != "$root" ]]; then
+    echo "错误：worktree Space ${matches%%$'\t'*} 的 repo_root 与项目根不符，拒绝操作：$dir" >&2
+    return 1
+  fi
+  printf '%s' "${matches%%$'\t'*}"
 }
 
 # 路径必须是本项目登记的独立 Git worktree，不能把普通目录或别的仓库误当任务 Space。
