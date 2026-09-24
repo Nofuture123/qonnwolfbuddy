@@ -120,7 +120,56 @@ WT_BASE_PHYS="$(cd "$WT_BASE" && pwd -P)"
 TASK_FILE="$(unique_task_for "$TASK_ID")" \
   || { echo "错误：任务 '${TASK_ID}' 在 ${LEDGER} 匹配不到唯一任务书，记账无处可写" >&2; exit 1; }
 WT_DIR="$WT_BASE/$TASK_ID"
-[[ -d "$WT_DIR" ]] || { echo "错误：worktree 不存在：${WT_DIR}" >&2; exit 1; }
+cleanup_branch_config() {
+  local keys key found=0 command_text
+  if ! keys="$(git -C "$PROJECT_ROOT" config --local --list --name-only 2>/dev/null)"; then
+    found=1
+  else
+    while IFS= read -r key; do
+      [[ "$key" == "branch.$BRANCH."* ]] && found=1
+    done <<< "$keys"
+  fi
+  [[ "$found" -eq 1 ]] || return 0
+  if ! git -C "$PROJECT_ROOT" config --local --remove-section "branch.$BRANCH"; then
+    printf -v command_text 'git -C %q config --local --remove-section %q' "$PROJECT_ROOT" "branch.$BRANCH"
+    echo "警告：分支 ${BRANCH} 的配置节清理失败；请执行 ${command_text}（分支 ref 已删除，不回滚）" >&2
+  fi
+}
+
+# worktree 已删后的唯一可续做阶段：只接受本票最后一条带旧 OID 的 branch-delete 收据。
+if [[ ! -d "$WT_DIR" ]]; then
+  [[ "$ACTION" != keep && ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
+    || { echo "错误：worktree 不存在或任务书是符号链接：${WT_DIR}" >&2; exit 1; }
+  partial="$(grep '^worktree:' "$TASK_FILE" | tail -1 || true)"
+  if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})$ ]]; then
+    echo "错误：worktree 不存在且没有可续做的 branch-delete 记录：${WT_DIR}" >&2; exit 1
+  fi
+  [[ "${BASH_REMATCH[1]}" == "$ACTION" ]] \
+    || { echo "拒绝：续做动作与 partial 记录不符" >&2; exit 1; }
+  BRANCH="${BASH_REMATCH[2]}"; TAG="${BASH_REMATCH[3]}"; HEAD_OID="${BASH_REMATCH[5]}"
+  [[ "$BRANCH" != detached ]] || { echo "拒绝：detached 收据不能续做分支删除" >&2; exit 1; }
+  if [[ "$ACTION" == archive ]]; then
+    [[ "$TAG" == "archive/$TASK_ID" && "$(git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null || true)" == "$HEAD_OID" ]] \
+      || { echo "拒绝：归档标签与 partial OID 不符" >&2; exit 1; }
+  else
+    [[ "$TAG" == - ]] || { echo "拒绝：合并收据标签身份不符" >&2; exit 1; }
+  fi
+  [[ "$(git -C "$PROJECT_ROOT" rev-parse "refs/heads/$BRANCH" 2>/dev/null || true)" == "$HEAD_OID" ]] \
+    || { echo "拒绝：分支 ${BRANCH} 顶端与 partial OID 不符，不删引用" >&2; exit 1; }
+  listing="$(git -C "$PROJECT_ROOT" worktree list --porcelain)" \
+    || { echo "拒绝：无法核对 Git worktree 登记" >&2; exit 1; }
+  if printf '%s\n' "$listing" | grep -Fxq "worktree $WT_DIR" \
+    || printf '%s\n' "$listing" | grep -Fxq "branch refs/heads/$BRANCH"; then
+    echo "拒绝：目标目录或分支仍被 worktree 检出" >&2; exit 1
+  fi
+  git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
+    || { echo "错误：按 partial OID 续删分支失败，原记录保留" >&2; exit 1; }
+  cleanup_branch_config
+  printf 'worktree: %s branch=%s tag=%s\n' "$ACTION" "$BRANCH" "$TAG" >> "$TASK_FILE" \
+    || { echo "错误：分支已删但最终记账失败，请手工核对：$TASK_FILE" >&2; exit 1; }
+  echo "已续做：按 partial OID ${HEAD_OID} 删除分支 ${BRANCH}，并记账 worktree: ${ACTION}"
+  exit 0
+fi
 [[ ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
   || { echo "错误：任务书或 worktree 是符号链接，拒绝收尾" >&2; exit 1; }
 TASK_PHYS="$(cd "$(dirname "$TASK_FILE")" && pwd -P)/$(basename "$TASK_FILE")"
@@ -215,8 +264,10 @@ partial_fail() {
     || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
   echo "错误：收尾停在 ${stage}（OID ${HEAD_OID}）；核对 Git worktree/分支与 Herdr Space 后再恢复" >&2
   if [[ "$stage" == "branch-delete" && "$DETACHED" -eq 0 ]]; then
-    printf -v recovery 'git -C %q update-ref -d %q %q' \
-      "$PROJECT_ROOT" "refs/heads/$BRANCH" "$HEAD_OID"
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
+    # shellcheck disable=SC2016
+    printf -v recovery 'test "$(git -C %q rev-parse %q)" = %q && bash %q finish %q --%s --project %q' \
+      "$PROJECT_ROOT" "refs/heads/$BRANCH" "$HEAD_OID" "$script_path" "$TASK_ID" "$ACTION" "$PROJECT_ROOT"
   elif [[ "$stage" == "worktree-remove" ]]; then
     script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
     if [[ "$ACTION" == "archive" ]]; then
@@ -344,6 +395,7 @@ case "$ACTION" in
       fi
       git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
         || partial_fail branch-delete
+      cleanup_branch_config
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}），分支 ${BRANCH} 已删"
     else
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}）；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
@@ -388,6 +440,7 @@ case "$ACTION" in
       fi
       git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
         || partial_fail branch-delete
+      cleanup_branch_config
       echo "已归档：tag ${TAG} → ${HEAD_OID}（分支 ${BRANCH} 顶端）；worktree 已删，分支已删"
     else
       echo "已归档：tag ${TAG} → ${HEAD_OID}；worktree 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"

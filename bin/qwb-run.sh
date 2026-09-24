@@ -495,17 +495,27 @@ fi
 # 早于锁、worktree、tab、账本写等一切副作用。--pane 复用路径与复用既有工人路径不建 tab，不解析。
 TAB_WS=""
 if [[ -z "$PANE" && -z "$REUSE_PANE" ]]; then
-  TAB_WS="$(resolve_workspace "$PROJECT_ROOT")" || exit 1
+  quiet_fallback=""
+  if [[ "$HERE" -eq 0 ]] && { [[ -z "$WORKTREE" ]] || qwb_is_project_worktree "$PROJECT_ROOT" "$WORKTREE"; }; then
+    quiet_fallback=task-worktree
+  fi
+  TAB_WS="$(resolve_workspace "$PROJECT_ROOT" "$quiet_fallback")" || exit 1
 fi
 
 # Herdr 的 repo_root 指向主工作树根；子目录安装或 linked worktree 根无法安全登记任务 Space。
 require_main_worktree_root() {
-  local git_common main_root
+  local top git_dir git_common root_phys
+  top="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "错误：无法核对项目 Git 工作树根，拒绝登记 worktree Space" >&2; return 1; }
+  root_phys="$(cd "$PROJECT_ROOT" && pwd -P)"
+  [[ "$(cd "$top" && pwd -P)" == "$root_phys" ]] \
+    || { echo "错误：项目根不是 Git 工作树根（${top}），拒绝登记 worktree Space；请在仓库根安装 QWB" >&2; return 1; }
+  git_dir="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir 2>/dev/null)" \
+    || { echo "错误：无法核对当前 Git 目录，拒绝登记 worktree Space" >&2; return 1; }
   git_common="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-    || { echo "错误：无法核对项目 Git 主工作树根，拒绝登记 worktree Space" >&2; return 1; }
-  main_root="$(cd "$(dirname "$git_common")" && pwd -P)"
-  [[ "$main_root" == "$(cd "$PROJECT_ROOT" && pwd -P)" ]] \
-    || { echo "错误：项目根不是 Git 主工作树根（${main_root}），拒绝登记 worktree Space；请在主工作树根安装 QWB" >&2; return 1; }
+    || { echo "错误：无法核对 Git 公共目录，拒绝登记 worktree Space" >&2; return 1; }
+  [[ "$(cd "$git_dir" && pwd -P)" == "$(cd "$git_common" && pwd -P)" ]] \
+    || { echo "错误：项目根是 linked worktree，拒绝登记新 worktree Space；请在主工作树根安装 QWB" >&2; return 1; }
 }
 if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
   require_main_worktree_root || exit 1

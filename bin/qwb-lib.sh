@@ -63,7 +63,7 @@ qwb_ws_rows() {
 # 返回：0 = 解析完成（输出可能为空）；非 0 = 拒绝（响应不符契约 / 查询失败 / 声明的 id 不存在）
 # 查询失败与响应不合契约都在任何副作用之前非 0 退出，让调用方 fail-closed。
 resolve_workspace() {
-  local root="${1:-}" declared="${QWB_WORKSPACE:-}" raw rows avail
+  local root="${1:-}" quiet_fallback="${2:-}" declared="${QWB_WORKSPACE:-}" raw rows avail
   [[ -n "$root" ]] || root="$(pwd)"
   if ! raw="$(herdr workspace list 2>&1)"; then
     {
@@ -102,7 +102,9 @@ resolve_workspace() {
     fi
   done <<< "$hits"
   if (( n == 0 )); then
-    echo "警告：工人 tab 开在调用者 workspace ${HERDR_WORKSPACE_ID:-（未知）}——本项目未声明 QWB_WORKSPACE；跨项目派活请在 <项目>/qwbuddy/config.sh 里填 QWB_WORKSPACE=<该项目 workspace id>" >&2
+    if [[ "$quiet_fallback" != task-worktree ]]; then
+      echo "警告：工人 tab 开在调用者 workspace ${HERDR_WORKSPACE_ID:-（未知）}——本项目未声明 QWB_WORKSPACE；跨项目派活请在 <项目>/qwbuddy/config.sh 里填 QWB_WORKSPACE=<该项目 workspace id>" >&2
+    fi
     return 0
   fi
   if [[ -n "$focus" ]]; then

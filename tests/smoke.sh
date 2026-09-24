@@ -3803,6 +3803,14 @@ else
   cat "$TMP/worktree-space.log"
 fi
 
+echo "== 81. R2 安装权限、Git 布局、收尾续做与派发提示公开 CLI 回归 =="
+if python3 "$ROOT/tests/r2-cli.py" > "$TMP/r2-cli.log" 2>&1; then
+  ok "R2 安装权限、布局、配置清理、部分收尾续做与提示用例通过"
+else
+  bad "R2 公开 CLI 回归失败"
+  cat "$TMP/r2-cli.log"
+fi
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

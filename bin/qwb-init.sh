@@ -172,6 +172,11 @@ atomic_copy() {
     return 1
   fi
 }
+new_file_mode() {
+  local mask
+  mask="$(umask)"
+  printf '%03o' "$(( 0666 & ~ (8#$mask) ))"
+}
 
 # 先核对本次可能写入的全部路径，避免晚发现链接时留下半套安装。
 for dir in "$ROOT/qwbuddy" "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" \
@@ -264,6 +269,7 @@ ignore_rules=(
 )
 gitign_tmp="$(mktemp "$ROOT/.qwb-gitignore.XXXXXXXX")"
 if [[ -f "$GITIGN" ]]; then cp -p "$GITIGN" "$gitign_tmp"; fi
+if [[ ! -f "$GITIGN" ]]; then chmod "$(new_file_mode)" "$gitign_tmp"; fi
 if [[ -f "$GITIGN" ]] && grep -qF '# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）' "$GITIGN"; then
   had_marker=1
 else
@@ -299,9 +305,13 @@ append_hook() {
     echo "跳过：$(basename "$target") 已有 QW buddy 钩子"
   else
     tmp="$(mktemp "$ROOT/.qwb-hook.XXXXXXXX")" || return 1
-    if [[ -f "$target" ]]; then cp -p "$target" "$tmp" || return 1; fi
-    { echo; cat "$TPL/$hook"; } >> "$tmp" || return 1
-    mv -f "$tmp" "$target" || return 1
+    if [[ -f "$target" ]]; then
+      cp -p "$target" "$tmp" || { rm -f "$tmp"; return 1; }
+    else
+      chmod "$(new_file_mode)" "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    { echo; cat "$TPL/$hook"; } >> "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$target" || { rm -f "$tmp"; return 1; }
     echo "写入：$(basename "$target") 追加 QW buddy 钩子"
   fi
 }
@@ -341,7 +351,7 @@ merge_claude_hook() {
     return 1
   fi
   CLAUDE_SETTINGS="$ROOT/.claude/settings.json" python3 - <<'PYEOF'
-import json, os, sys, tempfile
+import json, os, stat, sys, tempfile
 
 path = os.environ["CLAUDE_SETTINGS"]
 entry = {
@@ -360,6 +370,7 @@ def die(msg):
     sys.exit(1)
 
 if os.path.exists(path):
+    file_mode = stat.S_IMODE(os.stat(path).st_mode)
     with open(path, encoding="utf-8") as f:
         raw = f.read()
     try:
@@ -370,6 +381,9 @@ if os.path.exists(path):
         die(f"{path} 顶层不是 JSON 对象，拒绝写入")
 else:
     data = {}
+    old_umask = os.umask(0)
+    os.umask(old_umask)
+    file_mode = 0o666 & ~old_umask
 
 hooks = data.setdefault("hooks", {})
 if not isinstance(hooks, dict):
@@ -396,6 +410,7 @@ else:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".qwb-settings.", dir=os.path.dirname(path))
     try:
+        os.fchmod(fd, file_mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
