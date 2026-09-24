@@ -159,20 +159,21 @@ def start_controller():
     argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", "-c", trust,
             "--dangerously-bypass-approvals-and-sandbox"]
     h("pane", "run", CONTROL_PANE, shlex.join(argv))
-    wait_idle(CONTROL_PANE)
-    view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
-    if trust_prompt_is_current(view):
-        h("pane", "send-keys", CONTROL_PANE, "enter")
-        wait_idle(CONTROL_PANE)
-        view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
-    h("pane", "run", CONTROL_PANE, "/status")
-    for _ in range(12):
+    model_line = re.compile(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b")
+    trust_sent = False
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
         time.sleep(1)
-        view += pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
-        if MODEL in view and re.search(rf"\b{re.escape(EFFORT)}\b", view, re.I):
+        view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
+        if model_line.search(view):
             break
-    if not re.search(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b", view):
+        if trust_prompt_is_current(view) and not trust_sent:
+            h("pane", "send-keys", CONTROL_PANE, "enter")
+            trust_sent = True
+            event("识别到 Codex 的 Trust this folder?，仅按一次 Enter")
+    else:
         raise RuntimeError(f"Codex TUI 未显示请求的模型与推理档：{MODEL}/{EFFORT}；见 controller-transcript.txt")
+    wait_idle(CONTROL_PANE)
     event(f"Codex TUI 已核对模型={MODEL} 推理档={EFFORT}")
     prompt = (
         "你现在是 QW buddy。按 qwbuddy/QWBUDDY.md 开局；账本里的未结票派给 " + WORKER +
