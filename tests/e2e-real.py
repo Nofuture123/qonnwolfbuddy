@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
+import tomllib
 import traceback
 
 ROOT = Path(os.environ["QWB_E2E_ROOT"])
@@ -37,6 +38,11 @@ BASE_SPACES = []
 LAST_SPACES = []
 DONE = False
 BLOCKED = False
+CONFIG_PATH = Path.home() / ".codex/config.toml"
+CONFIG_PROJECTS_BEFORE = None
+CONFIG_PROJECTS_ADDED = []
+CONFIG_PROJECTS_CHANGED = []
+CONFIG_PROJECTS_REMOVED = []
 NAMED_ENV = os.environ.copy()
 for key in ("HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"):
     NAMED_ENV.pop(key, None)
@@ -47,6 +53,28 @@ def event(message):
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     TIMELINE.append(f"{now} {message}")
     print(message, flush=True)
+
+
+def config_projects():
+    with CONFIG_PATH.open("rb") as file:
+        projects = tomllib.load(file).get("projects", {})
+    if not isinstance(projects, dict):
+        raise RuntimeError("Codex config.toml 的 projects 不是表")
+    return projects
+
+
+def check_config_projects():
+    global CONFIG_PROJECTS_ADDED, CONFIG_PROJECTS_CHANGED, CONFIG_PROJECTS_REMOVED
+    if CONFIG_PROJECTS_BEFORE is None:
+        return
+    after = config_projects()
+    CONFIG_PROJECTS_ADDED = sorted(after.keys() - CONFIG_PROJECTS_BEFORE.keys())
+    CONFIG_PROJECTS_CHANGED = sorted(key for key in after.keys() & CONFIG_PROJECTS_BEFORE.keys()
+                                     if after[key] != CONFIG_PROJECTS_BEFORE[key])
+    CONFIG_PROJECTS_REMOVED = sorted(CONFIG_PROJECTS_BEFORE.keys() - after.keys())
+    CHECKS["config_projects_unchanged"] = not (CONFIG_PROJECTS_ADDED or CONFIG_PROJECTS_CHANGED or CONFIG_PROJECTS_REMOVED)
+    if not CHECKS["config_projects_unchanged"]:
+        event(f"Codex config.toml projects 变化：新增={CONFIG_PROJECTS_ADDED} 修改={CONFIG_PROJECTS_CHANGED} 删除={CONFIG_PROJECTS_REMOVED}")
 
 
 def run(args, *, cwd=None, env=None, timeout=60, check=True):
@@ -97,14 +125,13 @@ def wait_idle(pane, seconds=120):
             if state == "blocked":
                 view = pane_read(pane, BASE / "controller-transcript.txt", 90)
                 if trust_prompt_is_current(view):
-                    h("pane", "send-keys", pane, "enter")
-                    continue
+                    raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
                 raise RuntimeError(f"主控 pane {pane} 进入 blocked；见 controller-transcript.txt")
             if state == "idle":
                 return
         view = pane_read(pane, BASE / "controller-transcript.txt", 90)
         if trust_prompt_is_current(view):
-            h("pane", "send-keys", pane, "enter")
+            raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
     raise RuntimeError(f"主控 pane {pane} 启动后未进入 idle")
 
 
@@ -155,22 +182,21 @@ def setup():
 
 
 def start_controller():
+    # Herdr resolves /tmp to /private/tmp before launching Codex. Match that
+    # physical cwd in the invocation-scoped override; never persist trust.
     trust = f'projects."{REPO.resolve()}".trust_level="trusted"'
     argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", "-c", trust,
-            "--dangerously-bypass-approvals-and-sandbox"]
+            "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]
     h("pane", "run", CONTROL_PANE, shlex.join(argv))
     model_line = re.compile(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b")
-    trust_sent = False
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         time.sleep(1)
         view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
+        if trust_prompt_is_current(view):
+            raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
         if model_line.search(view):
             break
-        if trust_prompt_is_current(view) and not trust_sent:
-            h("pane", "send-keys", CONTROL_PANE, "enter")
-            trust_sent = True
-            event("识别到 Codex 的 Trust this folder?，仅按一次 Enter")
     else:
         raise RuntimeError(f"Codex TUI 未显示请求的模型与推理档：{MODEL}/{EFFORT}；见 controller-transcript.txt")
     wait_idle(CONTROL_PANE)
@@ -306,19 +332,24 @@ def report(rc):
              f"- 工人转录：`{BASE / 'worker-transcript.txt'}`",
              f"- Herdr/命令日志：`{BASE / 'commands.jsonl'}`、`{BASE / 'monitor.jsonl'}`",
              f"- 最终 rc：`{rc}`"]
+    lines.extend([f"- Codex config.toml 项目新增：`{CONFIG_PROJECTS_ADDED}`",
+                  f"- Codex config.toml 项目修改：`{CONFIG_PROJECTS_CHANGED}`",
+                  f"- Codex config.toml 项目删除：`{CONFIG_PROJECTS_REMOVED}`"])
     if ERROR:
         lines.extend([f"- 错误：`{ERROR}`"])
     REPORT.open("x").write("\n".join(lines) + "\n")
 
 
 def main():
-    global ERROR
+    global ERROR, CONFIG_PROJECTS_BEFORE
     rc = 1
     try:
+        CONFIG_PROJECTS_BEFORE = config_projects()
         setup()
         start_controller()
         monitor()
         assert_result()
+        check_config_projects()
         if all(value for key, value in CHECKS.items() if key != "invalid_utf8_observed"):
             rc = 0
     except Exception as exc:
@@ -326,6 +357,14 @@ def main():
         (BASE / "exception.log").write_text(traceback.format_exc())
         event(f"E2E 失败：{exc}")
     finally:
+        try:
+            check_config_projects()
+            if not CHECKS.get("config_projects_unchanged", False):
+                rc = 1
+        except Exception as exc:
+            CHECKS["config_projects_unchanged"] = False
+            ERROR = f"{ERROR}; Codex config.toml 核对失败：{exc}" if ERROR else f"Codex config.toml 核对失败：{exc}"
+            rc = 1
         report(rc)
         event(f"报告已写入：{REPORT}；rc={rc}")
     return rc
