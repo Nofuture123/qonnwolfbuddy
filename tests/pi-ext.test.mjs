@@ -56,7 +56,7 @@ function makeStream() {
   };
 }
 
-function makeHarness({ owner = "wT:p1", paneId = "wT:p1", intervalMs = 100 } = {}) {
+function makeHarness({ owner = "wT:p1", paneId = "wT:p1", intervalMs = 100, sendImpl } = {}) {
   const state = {
     spawns: [], // { args, child }
     messages: [], // 注入的文本
@@ -77,6 +77,7 @@ function makeHarness({ owner = "wT:p1", paneId = "wT:p1", intervalMs = 100 } = {
       return child;
     },
     sendMessage: (text) => {
+      if (sendImpl) return sendImpl(text, state);
       state.messages.push(text);
     },
     schedule: (ms, fn) => {
@@ -143,7 +144,7 @@ function ok(name) {
   ok("非锁主：spawn 0 次、无 .watch、无注入");
 }
 
-// 场景 3：exit 2 注入并重启
+// 场景 3：exit 2 注入后等 turn_end 才重启，忙碌回合不堆 followUp
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
@@ -153,8 +154,14 @@ function ok(name) {
   assert.equal(state.messages.length, 1, "sendUserMessage 被调 1 次");
   assert.ok(state.messages[0].startsWith(WAKE_PREFIX), `内容以 ${WAKE_PREFIX} 开头`);
   assert.ok(state.messages[0].includes(line1) && state.messages[0].includes(line2), "含那两行");
-  assert.equal(state.spawns.length, 2, "spawn 随即第 2 次被调");
-  ok("exit 2：注入 [qwb-wake] 摘要含两行，spawn 立即第 2 次");
+  assert.equal(state.spawns.length, 1, "turn_end 前不重启 --block");
+  core.onSessionStart();
+  assert.equal(state.spawns.length, 1, "重复 session_start 不得绕过待投递消息");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2, "turn_end 后恢复 --block");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2, "重复 turn_end 不得双开");
+  ok("exit 2：注入 [qwb-wake]；turn_end 前单条待投递，之后恢复值守");
 }
 
 // 场景 4：exit 0 不注入不重启
@@ -229,7 +236,7 @@ function ok(name) {
   ok("turn_end 探测：--max-ms 1、124 重新值守、0 继续闲置");
 }
 
-// 场景 8：shutdown 杀子进程且迟来回调不作数
+// 场景 8：probe exit 2 也等下一次 turn_end 再恢复值守
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
@@ -241,9 +248,11 @@ function ok(name) {
   assert.equal(core.failures, 0, "probe exit 2 不计故障");
   assert.deepEqual(state.errLines, [], "probe exit 2 不写故障日志");
   assert.equal(state.timers.length, 0, "probe exit 2 不进入退避");
-  assert.equal(state.spawns.length, 3, "probe exit 2 立即恢复常规值守");
+  assert.equal(state.spawns.length, 2, "probe exit 2 不在本回合重启");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 3, "下一次 turn_end 恢复常规值守");
   assert.deepEqual(state.spawns[2].args.slice(1), ["--block"], "恢复值守不带探测上限");
-  ok("turn_end probe exit 2：摘要交付一次，无故障退避，立即恢复常规值守");
+  ok("turn_end probe exit 2：摘要交付一次，无故障退避，下回合恢复常规值守");
 }
 
 // 场景 9：shutdown 杀子进程且迟来回调不作数
@@ -351,6 +360,50 @@ function ok(name) {
   assert.ok(state.watch?.includes(`pid=${state.spawns[1].child.pid}`), "旧回调不得清新登记");
   assert.equal(state.spawns.length, 2, "旧回调不得再启动第三个实例");
   ok("快速失锁重获：旧进程 close/管道排空前不双开，旧回调不清新登记");
+}
+
+// exit 2 的消息投递失败时保留同一摘要，重试成功前不重新消费账本。
+{
+  let attempts = 0;
+  const { core, state } = makeHarness({ sendImpl: (text, s) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("暂时无法投递");
+    s.messages.push(text);
+  } });
+  core.onSessionStart();
+  state.spawns[0].child.exit(2, "看账本：同步失败后重试");
+  assert.equal(state.spawns.length, 1);
+  assert.equal(state.messages.length, 0);
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "投递失败期间不得重启值守");
+  flushTimers(state);
+  assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：同步失败后重试`]);
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2, "投递成功后的下一次 turn_end 恢复值守");
+  assert.equal(state.errLines.length, 1);
+  ok("同步投递失败：单飞重试原摘要，成功后下一回合恢复值守");
+}
+
+{
+  let attempts = 0;
+  const { core, state } = makeHarness({ sendImpl: (text, s) => {
+    attempts += 1;
+    if (attempts === 1) return Promise.reject(new Error("异步拒绝"));
+    s.messages.push(text);
+  } });
+  core.onSessionStart();
+  state.spawns[0].child.exit(2, "看账本：异步失败后重试");
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(state.spawns.length, 1);
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 1);
+  flushTimers(state);
+  assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：异步失败后重试`]);
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2);
+  assert.equal(state.errLines.length, 1);
+  ok("异步投递失败：单飞重试原摘要，成功后下一回合恢复值守");
 }
 
 console.log(`pi-ext tests: ${passed} passed`);

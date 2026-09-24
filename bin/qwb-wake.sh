@@ -487,7 +487,7 @@ ts_epoch() {
 # —— 一轮判定：--once/--dry-run 循环与 --block 完全共用同一份判定，不写两份 ——
 # collect_due <输出文件>：遍历未结项，把「本轮要叫」的票逐行 TSV 写进 $1：
 #   文件路径 <TAB> state <TAB> fp <TAB> 最后状态行原文截160字符 <TAB> 丢失pane（空=未丢失/未知）
-# 跳过的票往 stdout 打「跳过：…」说明；全局 OPEN_N = 未结项总数。
+# 非 --block 模式将跳过的票往 stdout 打「跳过：…」说明；全局 OPEN_N = 未结项总数。
 # fp 输入 = state\n最后状态行（\nlost=<pane> 仅 running 票判定为工人丢失时追加）；
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 OPEN_N=0
@@ -513,17 +513,17 @@ collect_due() {
       # 时间兜底重叫只对 running 生效：兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
       # blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过（重叫只烧主控 token）。
       if [[ "$st" != "running" ]]; then
-        echo "跳过：$(basename "$f") state=${st} 等裁决（进展未变，不重叫）"
+        [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st} 等裁决（进展未变，不重叫）"
         continue
       fi
       if [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
         we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
         if [[ -n "$we" ]] && (( $(now_ms) - we * 1000 < QWB_REWAKE_MS )); then
-          echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+          [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
           continue
         fi
       else
-        echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+        [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
         continue
       fi
     fi
@@ -544,6 +544,7 @@ compose_msg() {
   local f st fp last lostpane sep=""
   while IFS=$'\t' read -r f st fp last lostpane; do
     DUE_N=$((DUE_N + 1))
+    [[ -n "$last" ]] || last="尚无状态行"
     DUE_MSG="${DUE_MSG}${sep}$(seq_mark "$DUE_N") $(basename "$f" .md)(${st}) 最近: ${last}"
     [[ -n "$lostpane" ]] && DUE_MSG="${DUE_MSG}（工人丢失）"
     sep=" "

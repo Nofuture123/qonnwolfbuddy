@@ -12,6 +12,7 @@ usage() {
   herdr --session <脚本输出的会话名>
 附着旁观。默认结束时 stop/delete 会话；--keep 保留会话供排障。报告文件必须不存在。
 全局状态：codex 用启动参数覆盖信任，~/.codex/config.toml 跑前跑后须不变；
+codex 固定 service_tier="default"，TUI 模型/状态行出现 fast 即失败；
 pi 用 --approve 并把会话存在临时目录，~/.pi/agent/trust.json 跑前跑后须不变；
 claude 只在识别出信任框后接受一次，由 CLI 自行写 ~/.claude.json，报告 projects 新键。
 EOF

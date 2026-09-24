@@ -6,7 +6,8 @@
 //   session_start：主控锁在手（qwbuddy/.controller.lock/owner 末字段 == 本进程 HERDR_PANE_ID）
 //     → spawn `bash qwbuddy/bin/qwb-wake.sh --block`（无 --max-ms，无限阻塞），并登记
 //     qwbuddy/.watch（kind=pi-ext pid=<子进程 pid>）。非锁主 → 不动（非主控的 pi 会话不值守）。
-//   exit 2 → stdout 摘要以 `[qwb-wake] …` sendUserMessage(deliverAs:"followUp") 注入，立即重启下一轮。
+//   exit 2 → stdout 摘要以 `[qwb-wake] …` sendUserMessage(deliverAs:"followUp") 注入，
+//     下一次 turn_end 才重启阻塞值守，忙碌回合不堆积唤醒。
 //   exit 0 → 不注入不重启，清 .watch；下次 turn_end 用 `--block --max-ms 1` 探测
 //     （0 = 账本无未结项 / 124 = 有未结项），有未结项即重新值守——判定复用 qwb-wake.sh，不另写账本解析。
 //   其他退出码 → 记 qwbuddy/.pi-watch.err，指数退避重启（上限 QWB_WAKE_INTERVAL_MS × 8），
@@ -69,6 +70,8 @@ export function createWatchCore(d: WatchCoreDeps) {
   let failures = 0;
   let warned = false; // 退避到顶告警只发一次
   let idleAfterZero = false; // exit 0 后闲置，等 turn_end 探测
+  let awaitingTurnEnd = false; // exit 2 已投递 followUp，下一次 turn_end 前不再产生唤醒
+  let pendingWakeText: string | null = null; // 投递失败时保留摘要，单飞重试同一条
   let generation = 0; // 会话代际：被单飞替换的旧子进程的 exit 回调不作数
   let stopped = false;
   let retiring = false; // kill 已请求，close/管道排空前仍占住单飞位置
@@ -180,19 +183,41 @@ export function createWatchCore(d: WatchCoreDeps) {
     });
   }
 
+  function deliverWake() {
+    if (stopped || !ownsLock() || pendingWakeText === null) return;
+    const text = pendingWakeText;
+    const accepted = () => {
+      if (stopped || pendingWakeText !== text) return;
+      pendingWakeText = null;
+      awaitingTurnEnd = true;
+    };
+    const retry = () => {
+      if (stopped || pendingWakeText !== text) return;
+      d.appendErr(d.root, "exit=2 摘要注入失败，等待重试");
+      restartTimer = d.schedule(d.intervalMs, () => {
+        restartTimer = null;
+        deliverWake();
+      });
+    };
+    try {
+      const sent = d.sendMessage(text);
+      if (sent && typeof (sent as Promise<unknown>).then === "function") {
+        Promise.resolve(sent).then(accepted, retry);
+      } else {
+        accepted();
+      }
+    } catch {
+      retry();
+    }
+  }
+
   function onExit(code: number, wasProbe: boolean, out: string) {
     if (code === 2) {
       failures = 0;
       warned = false;
       const summary = out.trim() || "（空摘要）";
-      try {
-        Promise.resolve(d.sendMessage(`${WAKE_PREFIX} ${summary}`)).catch(() => {
-          d.appendErr(d.root, `exit=2 摘要注入失败`);
-        });
-      } catch {
-        d.appendErr(d.root, `exit=2 摘要注入失败`);
-      }
-      startBlock(); // 立即重启下一轮
+      pendingWakeText = `${WAKE_PREFIX} ${summary}`;
+      deliverWake();
       return;
     }
     if (wasProbe) {
@@ -212,7 +237,7 @@ export function createWatchCore(d: WatchCoreDeps) {
 
   return {
     onSessionStart() {
-      if (stopped || !ownsLock() || child || restartTimer) return;
+      if (stopped || !ownsLock() || child || restartTimer || awaitingTurnEnd || pendingWakeText) return;
       startBlock();
     },
     onTurnEnd() {
@@ -222,9 +247,16 @@ export function createWatchCore(d: WatchCoreDeps) {
         if (restartTimer) { restartTimer.cancel(); restartTimer = null; }
         killChild();
         idleAfterZero = false;
+        awaitingTurnEnd = false;
+        pendingWakeText = null;
         return;
       }
-      if (child || restartTimer) return; // 值守在跑或退避等待中：不动
+      if (child || restartTimer || pendingWakeText) return; // 值守在跑、待投递或退避等待中：不动
+      if (awaitingTurnEnd) {
+        awaitingTurnEnd = false;
+        startBlock();
+        return;
+      }
       if (!idleAfterZero) { startBlock(); return; } // 晚获锁
       startChild(["--block", "--max-ms", "1"], true);
     },
@@ -237,6 +269,8 @@ export function createWatchCore(d: WatchCoreDeps) {
       }
       killChild();
       idleAfterZero = false;
+      awaitingTurnEnd = false;
+      pendingWakeText = null;
       childIsProbe = false;
     },
     // 测试观察用

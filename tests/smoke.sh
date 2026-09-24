@@ -3694,8 +3694,8 @@ run_pi_ext() {
   "${runner[@]}" "$ROOT/tests/pi-ext.test.mjs" 2>&1
 }
 extout="$(run_pi_ext)"; extrc=$?
-{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 15 passed'; } \
-  && ok "pi 扩展单元测试 15 项通过（锁主/晚获锁/退出交付/退避/清理）" \
+{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 17 passed'; } \
+  && ok "pi 扩展单元测试 17 项通过（锁主/晚获锁/退出交付/投递重试/退避/清理）" \
   || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
 if command -v node >/dev/null 2>&1; then
@@ -3835,6 +3835,14 @@ if python3 -B "$ROOT/tests/e2e-controllers-cli.py" > "$TMP/e2e-controllers-cli.l
 else
   bad "真实 E2E 三宿主入口参数回归失败"
   cat "$TMP/e2e-controllers-cli.log"
+fi
+
+echo "== 85. --block 多轮输出仅最终摘要，空状态行明确显示 =="
+if bash "$ROOT/tests/wake-block-output.sh" > "$TMP/wake-block-output.log" 2>&1; then
+  ok "--block 无逐轮跳过；--once/--dry-run 保留日志；空状态行有说明"
+else
+  bad "--block 输出公开 CLI 回归失败"
+  cat "$TMP/wake-block-output.log"
 fi
 
 # 新节必须加在本行之前
