@@ -4,20 +4,25 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-用法: bash tests/e2e-real.sh --worker devin|cmdc [--controller-model gpt-6-luna] [--controller-effort max] [--timeout-ms 2700000] [--report <新文件>] [--keep]
+用法: bash tests/e2e-real.sh --worker devin|cmdc [--controller codex|claude|pi] [--controller-model <模型>] [--controller-effort <档位>] [--timeout-ms 2700000] [--report <新文件>] [--keep]
 
-前提：Herdr pane 内运行；codex 与所选工人 CLI 已登录。会真实调用模型并产生花费。
+默认主控/模型/推理档：codex gpt-6-luna/max；claude opus/high；pi zai-coding-cn/glm-5.3-flash/high。
+前提：Herdr pane 内运行；所选主控与工人 CLI 已登录。交互运行会真实调用模型并产生花费。
 脚本在隔离 /tmp Git 项目与新 named Herdr session 运行；可在另一终端用
   herdr --session <脚本输出的会话名>
 附着旁观。默认结束时 stop/delete 会话；--keep 保留会话供排障。报告文件必须不存在。
+全局状态：codex 用启动参数覆盖信任，~/.codex/config.toml 跑前跑后须不变；
+pi 用 --approve 并把会话存在临时目录，~/.pi/agent/trust.json 跑前跑后须不变；
+claude 只在识别出信任框后接受一次，由 CLI 自行写 ~/.claude.json，报告 projects 新键。
 EOF
 }
 
-WORKER=""; MODEL=gpt-6-luna; EFFORT=max; TIMEOUT_MS=2700000; REPORT=""; KEEP=0
+WORKER=""; CONTROLLER=codex; MODEL=""; EFFORT=""; TIMEOUT_MS=2700000; REPORT=""; KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --worker) WORKER="${2:-}"; shift 2 ;;
+    --controller) CONTROLLER="${2:-}"; shift 2 ;;
     --controller-model) MODEL="${2:-}"; shift 2 ;;
     --controller-effort) EFFORT="${2:-}"; shift 2 ;;
     --timeout-ms) TIMEOUT_MS="${2:-}"; shift 2 ;;
@@ -27,28 +32,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$WORKER" == devin || "$WORKER" == cmdc ]] || { echo "错误：--worker 只接受 devin|cmdc" >&2; exit 2; }
+[[ "$CONTROLLER" == codex || "$CONTROLLER" == claude || "$CONTROLLER" == pi ]] \
+  || { echo "错误：--controller 只接受 codex|claude|pi" >&2; exit 2; }
+case "$CONTROLLER" in
+  codex) MODEL="${MODEL:-gpt-6-luna}"; EFFORT="${EFFORT:-max}" ;;
+  claude) MODEL="${MODEL:-opus}"; EFFORT="${EFFORT:-high}" ;;
+  pi) MODEL="${MODEL:-zai-coding-cn/glm-5.3-flash}"; EFFORT="${EFFORT:-high}" ;;
+esac
 [[ "$TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "错误：--timeout-ms 须为正整数" >&2; exit 2; }
 [[ "${HERDR_ENV:-}" == 1 ]] || { echo "错误：须从 Herdr pane 运行真实 E2E" >&2; exit 1; }
-command -v herdr >/dev/null && command -v codex >/dev/null && command -v "$WORKER" >/dev/null \
-  || { echo "错误：缺少 Herdr、Codex 或所选工人 CLI" >&2; exit 1; }
+command -v herdr >/dev/null && command -v "$CONTROLLER" >/dev/null && command -v "$WORKER" >/dev/null \
+  || { echo "错误：缺少 Herdr、所选主控或工人 CLI" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SHA="$(git -C "$ROOT" rev-parse HEAD)"
 [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || { echo "错误：候选工作区不干净，先冻结 SHA" >&2; exit 1; }
-if [[ -z "$REPORT" ]]; then REPORT="/tmp/qwb-e2e-${WORKER}-${SHA:0:7}-$(date +%s).md"; fi
+if [[ -z "$REPORT" ]]; then REPORT="/tmp/qwb-e2e-${CONTROLLER}-${WORKER}-${SHA:0:7}-$(date +%s).md"; fi
 [[ ! -e "$REPORT" && ! -L "$REPORT" && -d "$(dirname "$REPORT")" ]] \
   || { echo "错误：报告路径必须尚不存在且父目录存在：$REPORT" >&2; exit 2; }
 REPORT="$(cd "$(dirname "$REPORT")" && pwd -P)/$(basename "$REPORT")"
-BASE="$(mktemp -d "/tmp/qwb-e2e-${WORKER}.XXXXXXXX")"
-SESSION="qwb-e2e-${WORKER}-$(date +%s)-$$"
+BASE="$(mktemp -d "/tmp/qwb-e2e-${CONTROLLER}-${WORKER}.XXXXXXXX")"
+SESSION="qwb-e2e-${CONTROLLER}-${WORKER}-$(date +%s)-$$"
 SOCKET="$HOME/.config/herdr/sessions/$SESSION/herdr.sock"
 SERVER_PID=""
 case "$WORKER" in
   devin) WORKER_MODEL=swe-2-max ;;
   cmdc) WORKER_MODEL=deepseek/deepseek-v4-flash ;;
 esac
-CODEX_VERSION="$(codex --version)" || { echo "错误：当前 Herdr pane 无法读取 Codex 版本" >&2; exit 1; }
-echo "真实 E2E：worker=${WORKER}；主控 ${MODEL}/${EFFORT}；工人模型=${WORKER_MODEL}"
+CONTROLLER_VERSION="$("$CONTROLLER" --version)" || { echo "错误：无法读取主控 CLI 版本" >&2; exit 1; }
+echo "真实 E2E：主控=${CONTROLLER} ${MODEL}/${EFFORT}；worker=${WORKER} ${WORKER_MODEL}"
 echo "会话：${SESSION}（旁观：herdr --session ${SESSION}）"
 echo "候选：${SHA}；临时目录：${BASE}；报告：${REPORT}"
 
@@ -91,6 +103,7 @@ done
 
 export QWB_E2E_ROOT="$ROOT" QWB_E2E_SHA="$SHA" QWB_E2E_BASE="$BASE"
 export QWB_E2E_SESSION="$SESSION" QWB_E2E_SOCKET="$SOCKET" QWB_E2E_WORKER="$WORKER"
+export QWB_E2E_CONTROLLER="$CONTROLLER"
 export QWB_E2E_MODEL="$MODEL" QWB_E2E_EFFORT="$EFFORT" QWB_E2E_TIMEOUT_MS="$TIMEOUT_MS" QWB_E2E_REPORT="$REPORT"
-export QWB_E2E_CODEX_VERSION="$CODEX_VERSION"
+export QWB_E2E_CONTROLLER_VERSION="$CONTROLLER_VERSION"
 python3 -B "$ROOT/tests/e2e-real.py"

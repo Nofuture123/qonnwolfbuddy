@@ -528,7 +528,7 @@ Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿�
 
 **工人入口更正**：§二十六、§二十八的 zcode 与 cmd 记录是当时版本的历史结论。zcode 0.16.9 从 `zcode` 或 `zcode tui` 进入；`zcodecli chat`、`chat-open` 已不存在。本机 Herdr 0.9.1 不能识别该 TUI，且写文件默认停在审批，因此目前不能配置为无人值守的 pane-run 工人；使用者决定本轮不用，也不做集成。Command Code 1.65.0 的 `cmd`、`cmdc` 是同一入口，交互启动使用 `cmdc --yolo --trust --skip-onboarding`，需要指定模型时加 `-m <模型>`；本机通过 `commandcode.integration` 向 Herdr 上报 `cmd` 状态。当前 Devin 和 cmdc 的可复现预设见 `templates/worker-launch-guide.md`。
 
-**真实 E2E**：`tests/e2e-real.sh` 使用已登录的真实 CLI、交互主控与工人，会产生模型费用，时间与外部服务结果也不确定，所以不纳入确定性的 fast/full 门。合并生产相关改动前、安装到生产项目前，必须对冻结候选运行该真实 E2E，并把候选 SHA、模型、Herdr 会话、逐项断言和原始退出码留在报告；门结果不能替代它。
+**真实 E2E**：`tests/e2e-real.sh` 使用已登录的真实 CLI、交互主控与工人，会产生模型费用，时间与外部服务结果也不确定，所以不纳入确定性的 fast/full 门。`--controller codex|claude|pi` 默认 codex；各自默认模型/推理档是 `gpt-6-luna/max`、`opus/high`、`zai-coding-cn/glm-5.3-flash/high`，可用 `--controller-model` 与 `--controller-effort` 覆盖。三者只用交互 TUI；codex 启动参数覆盖信任且 `~/.codex/config.toml` 跑前跑后字节不变；pi 用 `--approve`，会话写临时目录且 `~/.pi/agent/trust.json` 字节不变；claude 只在识别确定的信任框时接受一次，由 CLI 自行写 `~/.claude.json`，报告只列出 `projects` 新增键。合并生产相关改动前、安装到生产项目前，必须对冻结候选运行真实 E2E；安装前须用生产项目实际采用的主控宿主跑一遍。报告保留候选 SHA、主控与工人模型、CLI 版本、Herdr 会话、宿主唤醒证据、逐项断言和原始退出码；门结果不能替代它。
 
 ## 四十、字节解析与用户文本输出分开（2026-09-24）
 

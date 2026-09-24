@@ -3829,6 +3829,14 @@ else
   cat "$TMP/r4-cli.log"
 fi
 
+echo "== 84. 真实 E2E 三宿主帮助与非法参数公开 CLI 回归 =="
+if python3 -B "$ROOT/tests/e2e-controllers-cli.py" > "$TMP/e2e-controllers-cli.log" 2>&1; then
+  ok "三宿主帮助声明及非法主控拒绝通过"
+else
+  bad "真实 E2E 三宿主入口参数回归失败"
+  cat "$TMP/e2e-controllers-cli.log"
+fi
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi
