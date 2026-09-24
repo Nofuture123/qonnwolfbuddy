@@ -38,6 +38,7 @@ BASE_SPACES = []
 LAST_SPACES = []
 DONE = False
 BLOCKED = False
+INVALID_UTF8_OBSERVED = False
 CONFIG_PATH = Path.home() / ".codex/config.toml"
 CONFIG_PROJECTS_BEFORE = None
 CONFIG_PROJECTS_ADDED = []
@@ -283,6 +284,7 @@ def monitor():
 
 
 def assert_result():
+    global INVALID_UTF8_OBSERVED
     raw = TICKET.read_bytes()
     text = raw.decode("utf-8", "replace")
     (BASE / "ticket.raw.md").write_bytes(raw)
@@ -305,7 +307,8 @@ def assert_result():
     CHECKS["space_cleanup"] = (
         final_ids == baseline_ids and
         all(s["workspace_id"] != TASK_SPACE for s in final) and
-        all((a.get("worktree") or {}).get("checkout_path") == (b.get("worktree") or {}).get("checkout_path")
+        all(((a.get("worktree") or {}).get("checkout_path") or str(REPO.resolve())) ==
+            (b.get("worktree") or {}).get("checkout_path")
             for a in BASE_SPACES for b in final if a["workspace_id"] == b["workspace_id"])
     )
     CHECKS["controller_done"] = DONE and not BLOCKED
@@ -317,9 +320,9 @@ def assert_result():
                                    and str(BASE) not in default_ws.stdout + default_panes.stdout)
     try:
         raw.decode("utf-8")
-        CHECKS["invalid_utf8_observed"] = False
+        INVALID_UTF8_OBSERVED = False
     except UnicodeDecodeError:
-        CHECKS["invalid_utf8_observed"] = True
+        INVALID_UTF8_OBSERVED = True
     event("断言：" + ", ".join(f"{key}={'PASS' if value else 'FAIL'}" for key, value in CHECKS.items()))
 
 
@@ -331,7 +334,7 @@ def report(rc):
              f"- 工具版本：`{json.dumps(VERSIONS, ensure_ascii=False)}`", "",
              "## 时间线", "", *[f"- {line}" for line in TIMELINE], "", "## 断言", "",
              *[f"- {'PASS' if value else 'FAIL'} {key}" for key, value in CHECKS.items()],
-             "", f"- 账本含非法 UTF-8：`{CHECKS.get('invalid_utf8_observed', False)}`",
+             "", f"- 账本含非法 UTF-8：`{INVALID_UTF8_OBSERVED}`",
              f"- 主控转录：`{BASE / 'controller-transcript.txt'}`",
              f"- 工人转录：`{BASE / 'worker-transcript.txt'}`",
              f"- Herdr/命令日志：`{BASE / 'commands.jsonl'}`、`{BASE / 'monitor.jsonl'}`",
@@ -354,7 +357,7 @@ def main():
         monitor()
         assert_result()
         check_config_projects()
-        if all(value for key, value in CHECKS.items() if key != "invalid_utf8_observed"):
+        if all(CHECKS.values()):
             rc = 0
     except Exception as exc:
         ERROR = str(exc)
