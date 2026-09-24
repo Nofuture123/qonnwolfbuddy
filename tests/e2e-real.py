@@ -223,13 +223,19 @@ def monitor():
                     CHECKS["worker_space_observed"] = True
                     pane_read(pane, BASE / "worker-transcript.txt", 100)
         ctl = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 140)
-        lines = [line.strip() for line in ctl.splitlines()]
         controller_finished = controller_started_working and statuses.get("controller") in ("idle", "done")
-        if controller_finished and ctl.count("QWB_E2E_CONTROLLER_BLOCKED") >= 2:
+        # The submitted prompt contains both markers. Herdr's recent transcript
+        # eventually scrolls that prompt away, so counting two occurrences loses
+        # a completed answer. Codex prints "Worked for" after its final answer.
+        def final_marker(marker):
+            return re.search(r"(?m)^\s*" + re.escape(marker) +
+                             r"(?:[^\n]*)\n(?:[ \t]*\n)*[ \t]*Worked for\b", ctl) is not None
+
+        if controller_finished and final_marker("QWB_E2E_CONTROLLER_BLOCKED"):
             BLOCKED = True
             event("主控输出 BLOCKED")
             break
-        if controller_finished and ctl.count("QWB_E2E_CONTROLLER_DONE") >= 2:
+        if controller_finished and final_marker("QWB_E2E_CONTROLLER_DONE"):
             DONE = True
             event("主控输出 DONE")
             break
