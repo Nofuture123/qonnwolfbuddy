@@ -7,8 +7,8 @@
 //     → spawn `bash qwbuddy/bin/qwb-wake.sh --block`（无 --max-ms，无限阻塞），并登记
 //     qwbuddy/.watch（kind=pi-ext pid=<子进程 pid>）。非锁主 → 不动（非主控的 pi 会话不值守）。
 //   exit 2 → stdout 摘要以 `[qwb-wake] …` sendUserMessage(deliverAs:"followUp") 注入，
-//     下一次 turn_end 才重启阻塞值守，忙碌回合不堆积唤醒。
-//   exit 0 → 不注入不重启，清 .watch；下次 turn_end 用 `--block --max-ms 1` 探测
+//     agent_settled 后才重启阻塞值守，忙碌运行不堆积唤醒。
+//   exit 0 → 不注入不重启，清 .watch；下次 agent_settled 用 `--block --max-ms 1` 探测
 //     （0 = 账本无未结项 / 124 = 有未结项），有未结项即重新值守——判定复用 qwb-wake.sh，不另写账本解析。
 //   其他退出码 → 记 qwbuddy/.pi-watch.err，指数退避重启（上限 QWB_WAKE_INTERVAL_MS × 8），
 //     退避到顶注入一次 `[qwb-wake] 值守故障：…`——这是叫醒主控去修，不是通知使用者。
@@ -69,8 +69,9 @@ export function createWatchCore(d: WatchCoreDeps) {
   let restartTimer: { cancel(): void } | null = null;
   let failures = 0;
   let warned = false; // 退避到顶告警只发一次
-  let idleAfterZero = false; // exit 0 后闲置，等 turn_end 探测
-  let awaitingTurnEnd = false; // exit 2 已投递 followUp，下一次 turn_end 前不再产生唤醒
+  let idleAfterZero = false; // exit 0 后闲置，等 agent_settled 探测
+  let awaitingSettled = false; // exit 2 已投递 followUp，agent_settled 前不再产生唤醒
+  let agentIdle = true; // session_start 在首次 agent_start 前；后续只由 agent_settled 重新置闲
   let pendingWakeText: string | null = null; // 投递失败时保留摘要，单飞重试同一条
   let generation = 0; // 会话代际：被单飞替换的旧子进程的 exit 回调不作数
   let stopped = false;
@@ -96,7 +97,7 @@ export function createWatchCore(d: WatchCoreDeps) {
   }
 
   function startChild(args: string[], isProbe: boolean, onStdout?: (text: string) => void) {
-    if (stopped || !ownsLock() || child) return;
+    if (stopped || !agentIdle || !ownsLock() || child) return;
     generation += 1;
     const gen = generation;
     idleAfterZero = false;
@@ -189,7 +190,7 @@ export function createWatchCore(d: WatchCoreDeps) {
     const accepted = () => {
       if (stopped || pendingWakeText !== text) return;
       pendingWakeText = null;
-      awaitingTurnEnd = true;
+      awaitingSettled = true;
     };
     const retry = () => {
       if (stopped || pendingWakeText !== text) return;
@@ -221,14 +222,14 @@ export function createWatchCore(d: WatchCoreDeps) {
       return;
     }
     if (wasProbe) {
-      // turn_end 探测：2 已按普通唤醒处理；0 = 无未结项；124 = 有未结项。
+      // 空闲探测：2 已按普通唤醒处理；0 = 无未结项；124 = 有未结项。
       if (code === 124) startBlock();
       else if (code === 0) idleAfterZero = true;
       else fail(code);
       return;
     }
     if (code === 0) {
-      // 账本无未结项：不注入不重启，清登记；turn_end 时再探测
+      // 账本无未结项：不注入不重启，清登记；agent_settled 时再探测
       idleAfterZero = true;
       return;
     }
@@ -237,23 +238,30 @@ export function createWatchCore(d: WatchCoreDeps) {
 
   return {
     onSessionStart() {
-      if (stopped || !ownsLock() || child || restartTimer || awaitingTurnEnd || pendingWakeText) return;
+      if (stopped || !ownsLock() || child || restartTimer || awaitingSettled || pendingWakeText) return;
       startBlock();
     },
+    onAgentStart() {
+      agentIdle = false;
+    },
     onTurnEnd() {
+      // Pi 的 turn_end 是单次模型请求边界，同一忙碌运行内可能多次发生。
+    },
+    onAgentSettled() {
+      agentIdle = true;
       if (stopped) return;
       if (!ownsLock()) {
         generation += 1;
         if (restartTimer) { restartTimer.cancel(); restartTimer = null; }
         killChild();
         idleAfterZero = false;
-        awaitingTurnEnd = false;
+        awaitingSettled = false;
         pendingWakeText = null;
         return;
       }
       if (child || restartTimer || pendingWakeText) return; // 值守在跑、待投递或退避等待中：不动
-      if (awaitingTurnEnd) {
-        awaitingTurnEnd = false;
+      if (awaitingSettled) {
+        awaitingSettled = false;
         startBlock();
         return;
       }
@@ -269,7 +277,7 @@ export function createWatchCore(d: WatchCoreDeps) {
       }
       killChild();
       idleAfterZero = false;
-      awaitingTurnEnd = false;
+      awaitingSettled = false;
       pendingWakeText = null;
       childIsProbe = false;
     },
@@ -366,8 +374,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     core.shutdown();
   });
-  pi.on("turn_end", async () => {
-    core.onTurnEnd();
+  pi.on("agent_start", async () => {
+    core.onAgentStart();
+  });
+  pi.on("agent_settled", async () => {
+    core.onAgentSettled();
   });
   // pi 进程退出保底：session_shutdown 覆盖常规路径，这里兜住 SIGKILL 之外的直接退出
   process.once("exit", () => {

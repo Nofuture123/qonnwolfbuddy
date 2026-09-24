@@ -1,4 +1,4 @@
-// qwb-watch.ts 行为单元测试（票 2026-09-16-watch-invisible-pi §1 前六场景 + turn_end 探测）。
+// qwb-watch.ts 行为单元测试（票 2026-09-16-watch-invisible-pi §1 前六场景 + agent_settled 探测）。
 // 不依赖 pi 进程：createWatchCore 全依赖注入，子进程/时钟/消息全部假件。
 // 由 tests/smoke.sh 调用；node ≥23.6 直跑，旧 node 退回 --experimental-strip-types，或 bun。
 import assert from "node:assert/strict";
@@ -144,24 +144,35 @@ function ok(name) {
   ok("非锁主：spawn 0 次、无 .watch、无注入");
 }
 
-// 场景 3：exit 2 注入后等 turn_end 才重启，忙碌回合不堆 followUp
+// 场景 3：同一忙碌运行可有多次 turn_end，只有 agent_settled 后才重启
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
+  core.onAgentStart();
   const line1 = "看账本：1 张未结项有进展";
   const line2 = "2099-01-01-a.md state=running 最后: done: hello";
   state.spawns[0].child.exit(2, `${line1}\n${line2}\n`);
   assert.equal(state.messages.length, 1, "sendUserMessage 被调 1 次");
   assert.ok(state.messages[0].startsWith(WAKE_PREFIX), `内容以 ${WAKE_PREFIX} 开头`);
   assert.ok(state.messages[0].includes(line1) && state.messages[0].includes(line2), "含那两行");
-  assert.equal(state.spawns.length, 1, "turn_end 前不重启 --block");
+  assert.equal(state.spawns.length, 1, "agent_settled 前不重启 --block");
   core.onSessionStart();
   assert.equal(state.spawns.length, 1, "重复 session_start 不得绕过待投递消息");
-  core.onTurnEnd();
-  assert.equal(state.spawns.length, 2, "turn_end 后恢复 --block");
-  core.onTurnEnd();
-  assert.equal(state.spawns.length, 2, "重复 turn_end 不得双开");
-  ok("exit 2：注入 [qwb-wake]；turn_end 前单条待投递，之后恢复值守");
+  for (let i = 0; i < 4; i += 1) core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "忙碌运行内多次 turn_end 不得重启值守");
+  assert.equal(state.messages.length, 1, "忙碌运行内只投递一条 followUp");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 2, "agent_settled 后恢复 --block");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 2, "重复 agent_settled 不得双开");
+  ok("exit 2：多次 turn_end 不重启；agent_settled 后恢复值守");
+}
+
+{
+  const source = readFileSync(new URL("../templates/pi-extensions/qwb-watch.ts", import.meta.url), "utf8");
+  assert.match(source, /pi\.on\("agent_settled"/);
+  assert.doesNotMatch(source, /pi\.on\("turn_end"/);
+  ok("扩展订阅 agent_settled，不订阅 turn_end");
 }
 
 // 场景 4：exit 0 不注入不重启
@@ -211,48 +222,55 @@ function ok(name) {
   ok("session_start 重复：复用现有子进程，单飞");
 }
 
-// 场景 7：exit 0 后 turn_end 探测（复用 --block --max-ms 1 判定）
+// 场景 7：exit 0 后 agent_settled 探测（复用 --block --max-ms 1 判定）
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
+  core.onAgentStart();
   state.spawns[0].child.exit(0, "");
-  core.onTurnEnd(); // 探测
+  for (let i = 0; i < 3; i += 1) core.onTurnEnd();
+  assert.equal(state.spawns.length, 1, "忙碌运行内 exit 0 不探测");
+  core.onAgentSettled(); // 探测
   assert.equal(state.spawns.length, 2);
   assert.deepEqual(state.spawns[1].args.slice(1), ["--block", "--max-ms", "1"], "探测参数 --block --max-ms 1");
   assert.equal(state.watch, null, "探测不是值守形态，不写 .watch");
+  core.onAgentStart();
   state.spawns[1].child.exit(124, ""); // 有未结项
-  assert.equal(state.spawns.length, 3, "探测 124 → 重新值守 spawn");
+  core.onTurnEnd();
+  assert.equal(state.spawns.length, 2, "忙碌运行内探测 124 不立即重启");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 3, "agent_settled 后探测 124 → 重新值守 spawn");
   assert.deepEqual(state.spawns[2].args.slice(1), ["--block"], "重新值守无 --max-ms");
   assert.ok(state.watch && state.watch.includes("kind=pi-ext"), "重新值守后 .watch 登记");
   // 反向：探测 0 → 继续闲置
   const h2 = makeHarness();
   h2.core.onSessionStart();
   h2.state.spawns[0].child.exit(0, "");
-  h2.core.onTurnEnd();
+  h2.core.onAgentSettled();
   h2.state.spawns[1].child.exit(0, "");
-  h2.core.onTurnEnd(); // 仍闲置 → 再探测一次
+  h2.core.onAgentSettled(); // 仍闲置 → 再探测一次
   h2.state.spawns[2].child.exit(0, "");
   assert.equal(h2.state.spawns.length, 3, "探测 0 后仍闲置（不直接值守）");
-  ok("turn_end 探测：--max-ms 1、124 重新值守、0 继续闲置");
+  ok("agent_settled 探测：忙碌时不启动，124 恢复值守、0 继续闲置");
 }
 
-// 场景 8：probe exit 2 也等下一次 turn_end 再恢复值守
+// 场景 8：probe exit 2 也等下一次 agent_settled 再恢复值守
 {
   const { core, state } = makeHarness();
   core.onSessionStart();
   state.spawns[0].child.exit(0, "");
-  core.onTurnEnd();
-  assert.equal(state.spawns.length, 2, "turn_end 已启动 probe");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 2, "agent_settled 已启动 probe");
   state.spawns[1].child.exit(2, "看账本：新进展\n");
   assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：新进展`], "probe exit 2 交付恰好一条摘要");
   assert.equal(core.failures, 0, "probe exit 2 不计故障");
   assert.deepEqual(state.errLines, [], "probe exit 2 不写故障日志");
   assert.equal(state.timers.length, 0, "probe exit 2 不进入退避");
   assert.equal(state.spawns.length, 2, "probe exit 2 不在本回合重启");
-  core.onTurnEnd();
-  assert.equal(state.spawns.length, 3, "下一次 turn_end 恢复常规值守");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 3, "下一次 agent_settled 恢复常规值守");
   assert.deepEqual(state.spawns[2].args.slice(1), ["--block"], "恢复值守不带探测上限");
-  ok("turn_end probe exit 2：摘要交付一次，无故障退避，下回合恢复常规值守");
+  ok("agent_settled probe exit 2：摘要交付一次，无故障退避，下回合恢复常规值守");
 }
 
 // 场景 9：shutdown 杀子进程且迟来回调不作数
@@ -281,18 +299,22 @@ function ok(name) {
   rmSync(r, { recursive: true, force: true });
 }
 
-// 生命周期回归：开局无锁，晚获锁后在现有 turn_end 自动启动；失锁不续命。
+// 生命周期回归：开局无锁，晚获锁后在现有 agent_settled 自动启动；失锁不续命。
 {
   const { core, state, setOwner } = makeHarness({ owner: "wOther:p9" });
   core.onSessionStart();
+  core.onAgentStart();
   assert.equal(state.spawns.length, 0);
   setOwner("wT:p1");
-  core.onTurnEnd();
+  for (let i = 0; i < 3; i += 1) core.onTurnEnd();
+  core.onSessionStart();
+  assert.equal(state.spawns.length, 0, "忙碌运行内晚获锁不得启动值守");
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 1, "晚获锁应自动启动一个值守");
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 1, "重复事件不得多开");
   setOwner("wOther:p9");
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.ok(state.spawns[0].child.killed, "失锁须杀旧子进程");
   state.spawns[0].child.exit(2, "旧会话输出");
   assert.equal(state.messages.length, 0);
@@ -304,7 +326,7 @@ function ok(name) {
   core.onSessionStart();
   const c = state.spawns[0].child;
   core.shutdown();
-  core.onTurnEnd();
+  core.onAgentSettled();
   core.onSessionStart();
   assert.equal(state.spawns.length, 1, "shutdown 后旧回调不得重启");
   assert.notEqual(state.watch, null, "close 前仍保留旧实例登记与单飞位置");
@@ -342,15 +364,15 @@ function ok(name) {
   core.onSessionStart();
   const old = state.spawns[0].child;
   setOwner("wOther:p9");
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.ok(old.killed, "失锁要求终止旧子进程");
   setOwner("wT:p1");
-  core.onTurnEnd();
+  core.onAgentSettled();
   core.onSessionStart();
   assert.equal(state.spawns.length, 1, "旧子进程未 close 前不得双开");
   old.exit(143, "尾部输出", { drain: false });
   old.stdout.end();
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 1, "仅 exit/stdout end 不足以证明管道全部排空");
   old.stderr.end();
   old.close(143);
@@ -374,12 +396,12 @@ function ok(name) {
   state.spawns[0].child.exit(2, "看账本：同步失败后重试");
   assert.equal(state.spawns.length, 1);
   assert.equal(state.messages.length, 0);
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 1, "投递失败期间不得重启值守");
   flushTimers(state);
   assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：同步失败后重试`]);
-  core.onTurnEnd();
-  assert.equal(state.spawns.length, 2, "投递成功后的下一次 turn_end 恢复值守");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 2, "投递成功后的下一次 agent_settled 恢复值守");
   assert.equal(state.errLines.length, 1);
   ok("同步投递失败：单飞重试原摘要，成功后下一回合恢复值守");
 }
@@ -396,11 +418,11 @@ function ok(name) {
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(state.spawns.length, 1);
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 1);
   flushTimers(state);
   assert.deepEqual(state.messages, [`${WAKE_PREFIX} 看账本：异步失败后重试`]);
-  core.onTurnEnd();
+  core.onAgentSettled();
   assert.equal(state.spawns.length, 2);
   assert.equal(state.errLines.length, 1);
   ok("异步投递失败：单飞重试原摘要，成功后下一回合恢复值守");
