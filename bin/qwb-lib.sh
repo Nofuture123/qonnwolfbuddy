@@ -16,6 +16,41 @@ qwb_ledger_utf8_ok() {
   ' "$1" >/dev/null 2>&1
 }
 
+# 对外摘要只输出合法 UTF-8；先替换坏字节，再按 Unicode 字符截断。
+# LC_ALL=C 仍用于账本解析，不能拿 bash 字节子串直接交给 Herdr。
+qwb_utf8_excerpt() {
+  perl -MEncode=decode,encode,FB_DEFAULT -e '
+    my $limit = shift;
+    local $/; my $raw = <STDIN> // "";
+    my $text = decode("UTF-8", $raw, FB_DEFAULT);
+    $text =~ tr/\t\r\n/   /;
+    binmode STDOUT, ":raw";
+    print encode("UTF-8", substr($text, 0, $limit));
+  ' "${1:-160}"
+}
+
+# 默认工人名：ASCII id 与旧算法逐字节一致；中文 id 用字符截取后附完整 id 短哈希。
+qwb_default_agent_name() {
+  perl -MEncode=decode,FB_DEFAULT -MDigest::SHA=sha1_hex -e '
+    local $/; my $raw = <STDIN> // "";
+    my $hash = substr(sha1_hex($raw), 0, 8);
+    my $nonascii = $raw =~ /[\x80-\xff]/;
+    my $text = decode("UTF-8", $raw, FB_DEFAULT);
+    my $name = substr("qwb-" . $text, 0, 32);
+    $name =~ tr/A-Z/a-z/;
+    $name =~ s/[^a-z0-9_-]//g;
+    if ($nonascii) {
+      $name = substr($name, 0, 23) . "-" . $hash;
+    } else {
+      my $suffix = $name;
+      $suffix =~ s/^qwb-//;
+      $suffix =~ s/[^a-z0-9]//g;
+      $name = "qwb-" . $hash if length($suffix) < 3;
+    }
+    print $name;
+  '
+}
+
 # 最后一条规格疑点相关事件；普通进展行不解除疑点。
 qwb_last_spec_event() {
   grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$1" | tail -1 || true

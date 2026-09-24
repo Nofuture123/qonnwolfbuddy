@@ -8,7 +8,8 @@ usage() {
 用法: qwb-wake.sh [选项]
 
 循环：读账本列未结项 → 有未结项且进展指纹已变 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
-未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}。
+未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}；非法 state 或账本 UTF-8 损坏
+         也按 needs-decision 叫主控查看（state 合法值仍只有五个）。
 去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串；
      running 票判定为工人丢失时再追加 "\nlost=<pane>" 段——工人一消失指纹变一次、叫一次，之后指纹不变不重叫）；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
@@ -529,7 +530,7 @@ collect_due() {
     if [[ "$DRY" -eq 1 ]]; then
       echo "未结项（将叫醒）: $(basename "$f") state=$st"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "${last:0:160}" "$lostpane" >> "$out"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$(printf '%s' "$last" | qwb_utf8_excerpt 160)" "$lostpane" >> "$out"
   done < <(open_items)
 }
 

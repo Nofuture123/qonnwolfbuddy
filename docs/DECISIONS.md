@@ -529,3 +529,9 @@ Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿�
 **工人入口更正**：§二十六、§二十八的 zcode 与 cmd 记录是当时版本的历史结论。zcode 0.16.9 从 `zcode` 或 `zcode tui` 进入；`zcodecli chat`、`chat-open` 已不存在。本机 Herdr 0.9.1 不能识别该 TUI，且写文件默认停在审批，因此目前不能配置为无人值守的 pane-run 工人；使用者决定本轮不用，也不做集成。Command Code 1.65.0 的 `cmd`、`cmdc` 是同一入口，交互启动使用 `cmdc --yolo --trust --skip-onboarding`，需要指定模型时加 `-m <模型>`；本机通过 `commandcode.integration` 向 Herdr 上报 `cmd` 状态。当前 Devin 和 cmdc 的可复现预设见 `templates/worker-launch-guide.md`。
 
 **真实 E2E**：`tests/e2e-real.sh` 使用已登录的真实 CLI、交互主控与工人，会产生模型费用，时间与外部服务结果也不确定，所以不纳入确定性的 fast/full 门。合并生产相关改动前、安装到生产项目前，必须对冻结候选运行该真实 E2E，并把候选 SHA、模型、Herdr 会话、逐项断言和原始退出码留在报告；门结果不能替代它。
+
+## 四十、字节解析与用户文本输出分开（2026-09-24）
+
+**账本边界**：入口脚本保留 `LC_ALL=C`，使损坏 UTF-8 不会让 state、场景或疑点解析中途失败；指纹继续使用原始账本字节。凡按字符处理账本文本，或把账本文本作为参数交给 Herdr，须经 `qwb-lib.sh` 的 `qwb_utf8_excerpt`：坏字节替换为 U+FFFD，再按 UTF-8 字符数截断。值守最近状态行上限为 160 个字符，`--once` 与 `--block` 共用该摘要，不允许把半个字符送给 Herdr 或主控。
+
+**默认工人名**：纯 ASCII 任务 id 维持原净化规则；含非 ASCII 的任务 id 按字符截取，保留其中的 ASCII 部分，并附完整 id 的 SHA-1 前 8 位，长度不超过 32。显式 `--name` 沿原规则净化，不自动加哈希。

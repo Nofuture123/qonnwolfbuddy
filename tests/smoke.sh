@@ -3425,7 +3425,7 @@ git -C "$GP2" worktree add -q -b foo "$GP2/.worktrees/foo" HEAD
   && ! grep -q '^worktree:' "$GP2/tasks/2099-01-02-foo-bar.md"; } \
   && ok "worktree finish 精确命中 foo（记账落对文件）" || { bad "finish 记账落点不对（rc=${rc}）"; }
 
-echo "== 66. agent 名塌缩兜底（中文 id → qwb-<sha1 前 8 位>）=="
+echo "== 66. 中文 agent 名保留 ASCII 残段并附完整 id 短哈希 =="
 ANP="$TMP/agentname"; mkdir -p "$ANP"; bash "$ROOT/bin/qwb-init.sh" "$ANP" >/dev/null
 mk_an_task() { # $1=id
 cat > "$ANP/tasks/2099-01-01-$1.md" <<EOF
@@ -3448,11 +3448,12 @@ mk_an_task "场景完善-01真实闭环"
 : > "$STUBLOG"
 ( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task "场景完善-01真实闭环" --worker pi --here ) >/dev/null 2>&1; rc=$?
 anline="$(grep 'agent start' "$STUBLOG" | head -1)"
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$anline" | grep -Eq 'agent start qwb-[0-9a-f]{8} '; } \
-  && ok "中文 id 净化后塌缩 → agent 名兜底为 qwb-<8hex>（${anline:0:60}…）" \
+an_expected="qwb--01-$(printf '%s' '场景完善-01真实闭环' | shasum | cut -c1-8)"
+{ [[ "$rc" -eq 0 ]] && printf '%s' "$anline" | grep -Fq "agent start ${an_expected} "; } \
+  && ok "中文 id 保留 -01 并附完整 id 短哈希（${anline:0:60}…）" \
   || bad "中文 id 兜底不对（rc=${rc}，line=${anline:0:80}）"
-grep -q '^dispatch: .*agent=qwb-[0-9a-f]\{8\} ' "$ANP/tasks/2099-01-01-场景完善-01真实闭环.md" \
-  && ok "dispatch 行记录兜底后的实际 agent 名" || bad "dispatch 行 agent 名不对"
+grep -Fq "agent=${an_expected} " "$ANP/tasks/2099-01-01-场景完善-01真实闭环.md" \
+  && ok "dispatch 行记录新规则的实际 agent 名" || bad "dispatch 行 agent 名不对"
 mk_an_task "plain-id"
 : > "$STUBLOG"
 ( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task plain-id --worker pi --here ) >/dev/null 2>&1; rc=$?
@@ -3818,6 +3819,14 @@ if python3 "$ROOT/tests/invalid-ledger.py" > "$TMP/invalid-ledger.log" 2>&1; the
 else
   bad "损坏账本公开 CLI 回归失败"
   cat "$TMP/invalid-ledger.log"
+fi
+
+echo "== 83. R4 UTF-8 唤醒摘要与中文票工人名公开 CLI 回归 =="
+if python3 -B "$ROOT/tests/r4-cli.py" > "$TMP/r4-cli.log" 2>&1; then
+  ok "严格 Herdr 接收摘要，中文票名稳定且不重名，ASCII 命名保持兼容"
+else
+  bad "R4 公开 CLI 回归失败"
+  cat "$TMP/r4-cli.log"
 fi
 
 # 新节必须加在本行之前

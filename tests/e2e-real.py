@@ -1,5 +1,6 @@
 """Implementation of e2e-real.sh; only invoked by the foreground shell entrypoint."""
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,8 +24,11 @@ EFFORT = os.environ["QWB_E2E_EFFORT"]
 TIMEOUT_MS = int(os.environ["QWB_E2E_TIMEOUT_MS"])
 REPORT = Path(os.environ["QWB_E2E_REPORT"])
 REPO = BASE / "project"
-TICKET = REPO / "tasks/2099-01-01-e2e.md"
-WT = REPO / ".worktrees/e2e"
+TASK_ID = "真实闭环-e2e"
+TICKET = REPO / f"tasks/2099-01-01-{TASK_ID}.md"
+WT = REPO / f".worktrees/{TASK_ID}"
+AGENT_PREFIX = re.sub(r"[^a-z0-9_-]", "", ("qwb-" + TASK_ID)[:32].lower())[:23]
+EXPECTED_AGENT = f"{AGENT_PREFIX}-{hashlib.sha1(TASK_ID.encode('utf-8')).hexdigest()[:8]}"
 NONCE = secrets.token_hex(8)
 EXPECTED = f"QWB E2E OK {NONCE}\n".encode()
 TIMELINE = []
@@ -208,9 +212,9 @@ def start_controller():
     event(f"Codex TUI 已核对模型={MODEL} 推理档={EFFORT}")
     prompt = (
         "你现在是 QW buddy。按 qwbuddy/QWBUDDY.md 开局；账本里的未结票派给 " + WORKER +
-        " 工人（默认新建 worktree），按 Codex 宿主规则前台值守。工人报 done 后独立验收"
+        " 工人（默认新建 worktree，不传 --name），按 Codex 宿主规则前台值守。工人报 done 后独立验收"
         "（跑 qwb-test.sh fast/full 并核对产出），合格则合并进 main、把 state 改为 verified、"
-        "执行 qwb-worktree.sh finish e2e --merged。全部完成后单独输出一行 "
+        f"执行 qwb-worktree.sh finish {TASK_ID} --merged。全部完成后单独输出一行 "
         "QWB_E2E_CONTROLLER_DONE；无法完成则输出 QWB_E2E_CONTROLLER_BLOCKED <原因>。"
     )
     h("pane", "run", CONTROL_PANE, prompt)
@@ -294,9 +298,14 @@ def assert_result():
         bool(re.search(r"(?m)^done:", text)), bool(re.search(r"(?m)^wake:", text)),
         "worktree: merged" in text, bool(re.search(r"(?m)^state: verified\s*$", text)),
     ))
+    if WORKER == "devin":
+        dispatch = [line for line in text.splitlines()
+                    if line.startswith("dispatch:") and f"worker={WORKER}" in line]
+        CHECKS["devin_agent_name"] = bool(dispatch and
+            re.search(r"(?:^| )agent=" + re.escape(EXPECTED_AGENT) + r"(?: |$)", dispatch[-1]))
     CHECKS["main_content"] = (REPO / "e2e/hello.txt").read_bytes() == EXPECTED if (REPO / "e2e/hello.txt").exists() else False
-    branch = run(["git", "-C", str(REPO), "show-ref", "--verify", "--quiet", "refs/heads/e2e"], check=False)
-    config = run(["git", "-C", str(REPO), "config", "--local", "--get-regexp", r"^branch\.e2e\."], check=False)
+    branch = run(["git", "-C", str(REPO), "show-ref", "--verify", "--quiet", f"refs/heads/{TASK_ID}"], check=False)
+    config = run(["git", "-C", str(REPO), "config", "--local", "--get-regexp", rf"^branch\.{TASK_ID}\."], check=False)
     CHECKS["git_cleanup"] = not WT.exists() and branch.returncode != 0 and config.returncode != 0
     CHECKS["space_observed"] = bool(TASK_SPACE and CHECKS.get("worker_space_observed"))
     final = spaces()
@@ -328,6 +337,7 @@ def assert_result():
 
 def report(rc):
     lines = ["# QWB real E2E", "", f"- 候选 SHA：`{SHA}`", f"- 工人：`{WORKER}`",
+             f"- 中文票 id：`{TASK_ID}`", f"- 默认工人名预期：`{EXPECTED_AGENT}`",
              f"- 主控模型/推理档：`{MODEL}` / `{EFFORT}`",
              f"- 工人模型：`{'swe-2-max' if WORKER == 'devin' else 'deepseek/deepseek-v4-flash'}`",
              f"- 会话：`{SESSION}`", f"- 临时项目：`{REPO}`", f"- nonce：`{NONCE}`",

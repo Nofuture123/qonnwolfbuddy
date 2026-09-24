@@ -29,7 +29,7 @@
 
 - `tasks/` 是**唯一真相**。任务书 `tasks/YYYY-MM-DD-<主题>.md`，头部必须有 `state: <值>` 字段行。
 - `state` 值域固定五个：`running` / `blocked` / `needs-decision` / `done` / `verified`。
-- 任务书**写好即写 `state: running`**。「已写好、待派发」不需要单独状态——对值守而言「待派」与「已派」同义：都要主控动手。写了非 5 值域的值（如 `pending`）等于静默丢弃：`qwb-status.sh` 标 `[非法]`、`qwb-wake.sh` 警告且不叫。
+- 任务书**写好即写 `state: running`**。「已写好、待派发」不需要单独状态——对值守而言「待派」与「已派」同义：都要主控动手。非 5 值域的值（如 `pending`）或账本 UTF-8 损坏时，`qwb-status.sh` 仍列为 `[未结]` 并提示主控查看，`qwb-wake.sh` 按 `needs-decision` 叫醒主控；`qwb-run.sh` 拒绝非法 state，`qwb-lint.sh` 报 FAIL。主控写票仍只能使用上述五个合法值。
 - 所有任务经任务书文件派发，**无隐性依赖**——换会话、换 AI、重启都不丢。
 - 派发时给工人**主账本的绝对路径**（`<项目根>/tasks/...`）。工人在 worktree 副本里干活，写进副本 `tasks/` 的东西你**看不到**。
 - 工人只往主账本**追加**状态行，不改别人的行、不改 `state:` 字段。

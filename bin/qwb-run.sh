@@ -20,9 +20,9 @@ usage() {
                         隔离副本的创建是幂等的：已是本任务的有效 worktree 则复用，不重建
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
   --pane <pane_id>      复用既有 pane（须为交互 shell），否则新开 herdr tab
-  --name <agent名>      工人 agent 名（默认：qwb-<任务id>；任务 id 净化后只剩短残渣
-                         ——如中文 id 被剔成 qwb--01——则兑底为 qwb-<sha1(任务id)前8位>，
-                         显式给 --name 时不兑底）
+  --name <agent名>      工人 agent 名（默认：ASCII 任务 id 保持 qwb-<任务id> 净化结果；
+                         含非 ASCII 的 id 保留前段可读 ASCII 并附完整 id 的 sha1 前 8 位；
+                         显式给 --name 时按旧规则净化，不加哈希）
   --accept-new-scenarios  主控显式确认：曾派发但丢 scenarios-fp 基线的任务书，允许重建冻结基线（留一行说明）
   --revise-scenarios=<原因>  主控显式修订验收场景：票内已有基线且场景块被有意改动时，
                          更新 scenarios-fp 并追加 working: scenarios-revised: 留痕记录（原因非空，须写明条款依据）
@@ -234,13 +234,10 @@ if [[ "$LAUNCH_MODE" == pane-run ]]; then
 fi
 NAME_GIVEN=0
 [[ -n "$NAME" ]] && NAME_GIVEN=1
-NAME="${NAME:-qwb-$TASK_ID}"
-NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-# agent 名塔缩兑底：中文任务 id 经 tr 净化后可能只剩短残渣（如 场景完善-01真实闭环 →
-# qwb--01），两票同名。仅在未显式给 --name 时兑底为 qwb-<sha1(任务id) 前 8 位>；
-# 有效名（剩余字母数字 ≥ 3 个）保持原样，ASCII id 名与现状字节一致。
-if [[ "$NAME_GIVEN" -eq 0 ]] && [[ "$(printf '%s' "${NAME#qwb-}" | tr -cd 'a-z0-9' | wc -c | tr -d ' ')" -lt 3 ]]; then
-  NAME="qwb-$(printf '%s' "$TASK_ID" | shasum | cut -c1-8)"
+if [[ "$NAME_GIVEN" -eq 0 ]]; then
+  NAME="$(printf '%s' "$TASK_ID" | qwb_default_agent_name)"
+else
+  NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 fi
 
 # —— 常驻规则附页（brief-include）：读与校验在任何派发副作用之前 ——
