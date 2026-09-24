@@ -129,3 +129,20 @@
 - 关闭 Space `wGR`。里面有 opus-qwb-plan 的 Claude 会话和 Codex 返修会话。
 - 删除 worktree `/Users/rocky/.herdr/worktrees/qonnwolfbuddy/qwb-production-optimization` 和分支 `qwb-production-optimization`。
 - push main。
+
+## 收尾结果（2026-09-24T07:45:05+00:00，使用者确认后执行）
+
+- **Space 与分支**
+  - 已执行 `herdr worktree remove --workspace wGR`，rc=0，未用 --force。Space 已关闭，worktree 目录已删除。
+  - 分支已用 `git branch -d` 删除（删除前指向 d807f27），没有残留的 `branch.qwb-production-optimization.*` 配置。
+- **推送**
+  - main 已推送：`846fcce..884b22c`。
+  - `git ls-remote origin refs/heads/main` 返回 884b22c。
+  - 本节是另一个文档提交，随后单独推送。
+- **`~/.codex/config.toml`**
+  - 删除了 6 个指向 /private/tmp 的信任条目，这些路径都已不存在。projects 从 101 条变为 95 条。
+  - 其余配置解析后完全一致，文件权限保持 0600。
+  - 备份：`~/.codex/config.toml.bak-20260924T074430Z-tmp-trust`。
+- **Herdr 会话**
+  - 审核用的 named session `qwbrev-iso3` 已 stop 并 delete。
+  - default 会话中只关闭了 wGR；同期消失的 wHA、wHD、wHE 属于 qonnwolfai-student 的 simplify 工人，不是本次操作关闭的。
