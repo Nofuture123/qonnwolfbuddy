@@ -43,7 +43,12 @@ BASE="$(mktemp -d "/tmp/qwb-e2e-${WORKER}.XXXXXXXX")"
 SESSION="qwb-e2e-${WORKER}-$(date +%s)-$$"
 SOCKET="$HOME/.config/herdr/sessions/$SESSION/herdr.sock"
 SERVER_PID=""
-echo "真实 E2E：worker=${WORKER}；主控 ${MODEL}/${EFFORT}；工人模型=$(case "$WORKER" in devin) echo swe-2-max;; cmdc) echo deepseek/deepseek-v4-flash;; esac)"
+case "$WORKER" in
+  devin) WORKER_MODEL=swe-2-max ;;
+  cmdc) WORKER_MODEL=deepseek/deepseek-v4-flash ;;
+esac
+CODEX_VERSION="$(codex --version)" || { echo "错误：当前 Herdr pane 无法读取 Codex 版本" >&2; exit 1; }
+echo "真实 E2E：worker=${WORKER}；主控 ${MODEL}/${EFFORT}；工人模型=${WORKER_MODEL}"
 echo "会话：${SESSION}（旁观：herdr --session ${SESSION}）"
 echo "候选：${SHA}；临时目录：${BASE}；报告：${REPORT}"
 
@@ -87,4 +92,5 @@ done
 export QWB_E2E_ROOT="$ROOT" QWB_E2E_SHA="$SHA" QWB_E2E_BASE="$BASE"
 export QWB_E2E_SESSION="$SESSION" QWB_E2E_SOCKET="$SOCKET" QWB_E2E_WORKER="$WORKER"
 export QWB_E2E_MODEL="$MODEL" QWB_E2E_EFFORT="$EFFORT" QWB_E2E_TIMEOUT_MS="$TIMEOUT_MS" QWB_E2E_REPORT="$REPORT"
+export QWB_E2E_CODEX_VERSION="$CODEX_VERSION"
 python3 "$ROOT/tests/e2e-real.py"

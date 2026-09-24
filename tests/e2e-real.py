@@ -95,24 +95,34 @@ def wait_idle(pane, seconds=120):
         if result:
             state = result["result"]["agent"]["agent_status"]
             if state == "blocked":
-                view = pane_read(pane, BASE / "controller-transcript.txt", 90).lower()
-                if "trust this directory" in view or "trust the contents of this directory" in view:
+                view = pane_read(pane, BASE / "controller-transcript.txt", 90)
+                if trust_prompt_is_current(view):
                     h("pane", "send-keys", pane, "enter")
                     continue
                 raise RuntimeError(f"主控 pane {pane} 进入 blocked；见 controller-transcript.txt")
             if state == "idle":
                 return
-        view = pane_read(pane, BASE / "controller-transcript.txt", 90).lower()
-        if "trust this directory" in view or "trust the contents of this directory" in view:
+        view = pane_read(pane, BASE / "controller-transcript.txt", 90)
+        if trust_prompt_is_current(view):
             h("pane", "send-keys", pane, "enter")
     raise RuntimeError(f"主控 pane {pane} 启动后未进入 idle")
+
+
+def trust_prompt_is_current(view):
+    text = view.lower()
+    prompt_at = max(text.rfind("trust this folder?"), text.rfind("trust this directory"))
+    return (prompt_at >= 0 and "trust and continue" in text[prompt_at:]
+            and prompt_at > text.rfind("ask codex to do anything"))
 
 
 def setup():
     global CONTROL_PANE, BASE_SPACES
     for name in ("herdr", "codex", "devin", "cmdc"):
-        result = run([name, "--version"], check=False, timeout=30)
-        VERSIONS[name] = (result.stdout or result.stderr).strip().splitlines()[:2]
+        if name == "codex":
+            VERSIONS[name] = [os.environ["QWB_E2E_CODEX_VERSION"]]
+        else:
+            result = run([name, "--version"], check=False, timeout=30)
+            VERSIONS[name] = (result.stdout or result.stderr).strip().splitlines()[:2]
     REPO.mkdir()
     run(["git", "init", "-q", "-b", "main", str(REPO)])
     run(["git", "-C", str(REPO), "config", "user.name", "QWB E2E"])
@@ -145,13 +155,13 @@ def setup():
 
 
 def start_controller():
-    trust = f'projects."{REPO}".trust_level="trusted"'
+    trust = f'projects."{REPO.resolve()}".trust_level="trusted"'
     argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", "-c", trust,
             "--dangerously-bypass-approvals-and-sandbox"]
     h("pane", "run", CONTROL_PANE, shlex.join(argv))
     wait_idle(CONTROL_PANE)
     view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
-    if "trust this directory" in view.lower() or "trust the contents of this directory" in view.lower():
+    if trust_prompt_is_current(view):
         h("pane", "send-keys", CONTROL_PANE, "enter")
         wait_idle(CONTROL_PANE)
         view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
@@ -161,7 +171,7 @@ def start_controller():
         view += pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
         if MODEL in view and re.search(rf"\b{re.escape(EFFORT)}\b", view, re.I):
             break
-    if MODEL not in view or not re.search(rf"\b{re.escape(EFFORT)}\b", view, re.I):
+    if not re.search(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b", view):
         raise RuntimeError(f"Codex TUI 未显示请求的模型与推理档：{MODEL}/{EFFORT}；见 controller-transcript.txt")
     event(f"Codex TUI 已核对模型={MODEL} 推理档={EFFORT}")
     prompt = (
@@ -178,6 +188,7 @@ def start_controller():
 def monitor():
     global WORKER_PANE, TASK_SPACE, LAST_SPACES, DONE, BLOCKED
     deadline = time.monotonic() + TIMEOUT_MS / 1000
+    controller_started_working = False
     while time.monotonic() < deadline:
         current = spaces()
         LAST_SPACES = current
@@ -203,6 +214,8 @@ def monitor():
             if info:
                 obj = info["result"]["pane"]
                 statuses[label] = obj.get("agent_status", "unknown")
+                if label == "controller" and statuses[label] == "working":
+                    controller_started_working = True
                 if label == "worker" and TASK_SPACE:
                     if obj.get("workspace_id") != TASK_SPACE:
                         raise RuntimeError(f"工人 pane {pane} 不在任务 Space {TASK_SPACE}")
@@ -210,11 +223,12 @@ def monitor():
                     pane_read(pane, BASE / "worker-transcript.txt", 100)
         ctl = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 140)
         lines = [line.strip() for line in ctl.splitlines()]
-        if "QWB_E2E_CONTROLLER_BLOCKED" in ctl and any(line.startswith("QWB_E2E_CONTROLLER_BLOCKED") for line in lines):
+        controller_finished = controller_started_working and statuses.get("controller") in ("idle", "done")
+        if controller_finished and ctl.count("QWB_E2E_CONTROLLER_BLOCKED") >= 2:
             BLOCKED = True
             event("主控输出 BLOCKED")
             break
-        if "QWB_E2E_CONTROLLER_DONE" in lines:
+        if controller_finished and ctl.count("QWB_E2E_CONTROLLER_DONE") >= 2:
             DONE = True
             event("主控输出 DONE")
             break
