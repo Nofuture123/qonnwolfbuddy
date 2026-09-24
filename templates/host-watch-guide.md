@@ -15,7 +15,7 @@
 Claude Code 和 Pi 在派发后、或处理完一次唤醒后，直接结束本回合，交给已安装的 hook 或扩展等待下次进展；不要用 sleep 循环轮询账本，也不要由主控自己运行 `qwb-wake.sh`。Codex 继续按下述前台阻塞入口等待。
 
 - **Claude Code**：母本安装器把 Stop hook 合并进 `.claude/settings.json`，指向 `qwbuddy/bin/qwb-hook-claude-stop.sh`。安装报错须修复后重装。hook 回合结束前台调用 `qwb-wake.sh --block`。健康 hook 沿用；回合间查配置与下次 Stop 的实际结果。未知时查设置、`qwbuddy/.hook.err` 和主控锁。
-- **Pi**：母本 `templates/pi-extensions/qwb-watch.ts` 由 `bin/qwb-init.sh` 安装到目标项目 `.pi/extensions/qwb-watch.ts`。安装或更新后重启 Pi 或执行 `/reload`，并验证扩展已实际加载、当前 `HERDR_PANE_ID` 持有锁；不能只看文件存在。启动时已有锁则在 `session_start` 值守，启动后获锁则在下一次 `turn_end` 接入。扩展持有 `qwb-wake.sh --block` 子进程，exit 2 的摘要以 `[qwb-wake]` 与 `followUp` 接续；投递后等下一次 `turn_end` 才重启阻塞值守，避免主控忙时堆积通知。用 `qwb-status.sh` 核对 `值守：pi-ext（pid …）`；异常查安装文件、reload、锁主和 `qwbuddy/.pi-watch.err`。
+- **Pi**：母本 `templates/pi-extensions/qwb-watch.ts` 由 `bin/qwb-init.sh` 安装到目标项目 `.pi/extensions/qwb-watch.ts`。安装或更新后重启 Pi 或执行 `/reload`，并验证扩展已实际加载、当前 `HERDR_PANE_ID` 持有锁；不能只看文件存在。启动时已有锁则在 `session_start` 值守，启动后获锁则在 `agent_settled`（Pi 不再自动继续）接入。扩展持有 `qwb-wake.sh --block` 子进程，exit 2 的摘要以 `[qwb-wake]` 与 `followUp` 接续；投递后等 `agent_settled` 才重启阻塞值守，避免主控忙时堆积通知。`turn_end` 是同一运行内的模型请求边界，不用于启动值守。用 `qwb-status.sh` 核对 `值守：pi-ext（pid …）`；异常查安装文件、reload、锁主和 `qwbuddy/.pi-watch.err`。
 - **Codex**：当前主控回合真正前台 tool call 运行 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000`，循环等待。exit 2：处理 stdout 摘要及账本，然后再次前台等待。exit 124：到期无变化，立即再次前台等待。exit 0：仅表示本轮值守结束；核对输出、`qwb-lock.sh status` 锁主归属与账本确无未结项后收工。孤儿值守或归属不明时先查锁主、恢复归属，再按账本续接；调用报错查锁、`HERDR_PANE_ID` 与错误输出。中断或主控退出后重新开局，主动查询不能代替阻塞等待。
 
 `qwb-wake.sh --block` 每轮复核主控锁，孤儿值守不消费唤醒。一轮最多投递一条含各票 state 与末行的摘要；`QWB_REWAKE_MS` 兜底只对 running 生效。`--check` 只报健康，`--ensure` 只供历史 tab 手工排障。主控退出或机器重启后由使用者重启主控，按总说明开局和未结账本接续，不会自动恢复。
