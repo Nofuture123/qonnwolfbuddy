@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # qwb-wake.sh —— 值守：以账本未结项为准，叫醒主控窗口；同一项进展未变不重复叫
 set -euo pipefail
+export LC_ALL=C  # 损坏字节不应让未结票从值守列表消失。
 
 usage() {
   cat <<'EOF'
@@ -439,7 +440,7 @@ _ensure_body() {
 if [[ "$CHECK" -eq 1 ]]; then watch_check; exit 0; fi
 if [[ "$ENSURE" -eq 1 ]]; then watch_ensure; exit 0; fi
 
-# 未结项：输出「文件<TAB>state」。state 不在 5 值域 → stderr 警告（不算未结项，但必须说出来）。
+# 未结项：输出「文件<TAB>state」。state 异常按 needs-decision 叫主控查看。
 # 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
 open_items() {
   local f st
@@ -447,10 +448,16 @@ open_items() {
     [[ -e "$f" ]] || continue
     grep -q '^state:' "$f" || continue
     st="$(qwb_task_state "$f")"
+    if ! qwb_ledger_utf8_ok "$f"; then
+      echo "警告：$(basename "$f") 账本 UTF-8 损坏，按未结项叫主控查看" >&2
+      printf '%s\tneeds-decision\n' "$f"
+      continue
+    fi
     case "$st" in
       running|blocked|needs-decision) printf '%s\t%s\n' "$f" "$st" ;;
       done|verified) ;;
-      *) echo "警告：$(basename "$f") state=${st} 非法（不在 5 值域内），不会被叫醒" >&2 ;;
+      *) echo "警告：$(basename "$f") state=${st} 非法，按未结项叫主控查看" >&2
+         printf '%s\tneeds-decision\n' "$f" ;;
     esac
   done
 }

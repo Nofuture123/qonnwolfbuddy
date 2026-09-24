@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # qwb-run.sh —— 派发 + 记账：在指定 worktree/窗口里派活，把窗口、派发时间、state: running 写进任务书
 set -euo pipefail
+export LC_ALL=C  # 场景、疑点与状态行按原始字节解析；损坏 UTF-8 不得绕过派发门。
 
 usage() {
   cat <<'EOF'
@@ -102,6 +103,13 @@ fi
 # 任务 id = 文件名去日期前缀与扩展名
 TASK_ID="$(basename "$TASK_FILE" .md | sed 's/^[0-9][0-9-]*-//')"
 [[ -n "$TASK_ID" ]] || TASK_ID="$(basename "$TASK_FILE" .md)"
+if grep -q '^state:' "$TASK_FILE"; then
+  task_state="$(qwb_task_state "$TASK_FILE")"
+  case "$task_state" in
+    running|blocked|needs-decision|done|verified) ;;
+    *) echo "错误：任务书 state 非法（${task_state}），须主控查看，拒绝派发" >&2; exit 1 ;;
+  esac
+fi
 
 # 工人须在 config.sh 的 QWB_WORKERS 里；启动定义另见 workers.sh。
 [[ -f "$CONF" ]] || { echo "错误：找不到 ${CONF}（先跑 qwb-init.sh）" >&2; exit 1; }

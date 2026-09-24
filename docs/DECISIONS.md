@@ -523,3 +523,9 @@ Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿�
 **安全写入**：安装器在第一笔写入前检查目标及父目录；覆盖文件拒绝符号链接，保留型配置只读有效链接、拒绝断链，追加式文件拒绝链接。普通文件用同目录独占临时文件替换，以免改写外部硬链接。主控锁的同 owner 重入须在 `flock` 内确认；锁命令其余非零结果不再靠 owner 文本放行。
 
 **收尾与证据**：远端跟踪分支已证明落地时，本地分支按实际 OID 条件删除，避免 `branch -d` 因无 upstream 在 checkout 已删除后失败；后续失败留下 `worktree: partial` 记录。可选门报告记录执行命令及配置前后 SHA-256，不写命令正文；报告仍只证明该次配置门执行，不替代产品验收。
+
+## 三十九、当前工人入口与真实 E2E 边界（2026-09-24）
+
+**工人入口更正**：§二十六、§二十八的 zcode 与 cmd 记录是当时版本的历史结论。zcode 0.16.9 从 `zcode` 或 `zcode tui` 进入；`zcodecli chat`、`chat-open` 已不存在。本机 Herdr 0.9.1 不能识别该 TUI，且写文件默认停在审批，因此目前不能配置为无人值守的 pane-run 工人；使用者决定本轮不用，也不做集成。Command Code 1.65.0 的 `cmd`、`cmdc` 是同一入口，交互启动使用 `cmdc --yolo --trust --skip-onboarding`，需要指定模型时加 `-m <模型>`；本机通过 `commandcode.integration` 向 Herdr 上报 `cmd` 状态。当前 Devin 和 cmdc 的可复现预设见 `templates/worker-launch-guide.md`。
+
+**真实 E2E**：`tests/e2e-real.sh` 使用已登录的真实 CLI、交互主控与工人，会产生模型费用，时间与外部服务结果也不确定，所以不纳入确定性的 fast/full 门。合并生产相关改动前、安装到生产项目前，必须对冻结候选运行该真实 E2E，并把候选 SHA、模型、Herdr 会话、逐项断言和原始退出码留在报告；门结果不能替代它。

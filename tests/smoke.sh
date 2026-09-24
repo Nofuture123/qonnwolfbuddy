@@ -385,19 +385,20 @@ echo "== 16. R4：非法 state 变可见 =="
 ILF="$TMP/tasks/2099-01-06-illegal.md"
 printf '# 非法状态\nstate: pending\n' > "$ILF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '非法' && ok "status 对 state=pending 显示非法标记" || bad "status 未标非法 state"
+{ printf '%s' "$out" | grep -q '\[未结\].*state=pending' && printf '%s' "$out" | grep -q '状态异常'; } \
+  && ok "status 对 state=pending 标未结并要求主控查看" || bad "status 未把非法 state 标为未结"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
 printf '%s' "$out" | grep -q 'state=pending 非法' && ok "wake 对 state=pending 发 stderr 警告" || bad "wake 未警告非法 state"
 printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-06-illegal' \
-  && bad "非法 state 被列为未结项" || ok "非法 state 不算未结项"
+  && ok "非法 state 仍列为未结项供主控查看" || bad "非法 state 从值守中消失"
 # 对照：无 state: 字段行的说明文档（如 lessons.md）不算任务书，status 跳过不标 [非法]
 DOCF="$TMP/tasks/lessons.md"
 printf '# 错题本\n只是说明文档，无 state 字段\n' > "$DOCF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep '非法' | grep -q 'lessons\.md' \
-  && bad "无 state 字段文档被误标 [非法]" || ok "无 state 字段文档 status 不标 [非法]"
-printf '%s' "$out" | grep -q '非法' \
-  && ok "有非法值任务书仍报 [非法]" || bad "有非法值任务书未报 [非法]"
+printf '%s' "$out" | grep '\[未结\]' | grep -q 'lessons\.md' \
+  && bad "无 state 字段文档被误标未结" || ok "无 state 字段文档 status 不标未结"
+printf '%s' "$out" | grep -q 'state=pending.*状态异常' \
+  && ok "有非法值任务书仍报状态异常" || bad "有非法值任务书未报异常"
 
 echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
 GP="$TMP/gitp"
@@ -2151,15 +2152,15 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qw
   && ok "pane-run 拒绝 -p 等 headless 命令且零副作用" \
   || { bad "pane-run headless 禁令未生效（rc=${rc}）"; printf '%s\n' "$out"; }
 
-# 47d 值含空格：按下一个「工人名=」切分，zcode 启动命令保持完整的 zcodecli chat。
-printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd' 'qwb_worker zcode pane-run zcodecli chat' > "$LM/qwbuddy/workers.sh"
+# 47d 仅模拟多词 argv 传递；zcode 的真实 TUI 尚无 Herdr 状态上报，不能作为实际工人。
+printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd' 'qwb_worker zcode pane-run zcode tui' > "$LM/qwbuddy/workers.sh"
 mk_launch_task zspace
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=1 \
   HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
   QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task zspace --worker zcode --here --name qwb-disp 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "含空格的 zcode pane-run 派发成功" || { bad "zcode 空格命令 rc=${rc}"; printf '%s\n' "$out"; }
-{ grep -qxF "herdr pane run w93:p7 'zcodecli' 'chat'" "$STUBLOG" \
+{ grep -qxF "herdr pane run w93:p7 'zcode' 'tui'" "$STUBLOG" \
    && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-zspace.md" "$STUBLOG" \
    && grep -q 'agent wait w93:p7 --until working --until done --until blocked --timeout 300' "$STUBLOG" \
    && ! grep -q 'pane send-keys w93:p7 enter' "$STUBLOG" \
@@ -3809,6 +3810,14 @@ if python3 "$ROOT/tests/r2-cli.py" > "$TMP/r2-cli.log" 2>&1; then
 else
   bad "R2 公开 CLI 回归失败"
   cat "$TMP/r2-cli.log"
+fi
+
+echo "== 82. R3 损坏账本仍可点名和值守 =="
+if python3 "$ROOT/tests/invalid-ledger.py" > "$TMP/invalid-ledger.log" 2>&1; then
+  ok "非法 UTF-8 账本在公开 CLI 中可见、可叫醒，lint 明确拒绝"
+else
+  bad "损坏账本公开 CLI 回归失败"
+  cat "$TMP/invalid-ledger.log"
 fi
 
 # 新节必须加在本行之前

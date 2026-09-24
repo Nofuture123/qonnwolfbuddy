@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # qwb-lint.sh —— QW buddy 自身规范检查：能自动检查的规范不只写在纸上
 set -uo pipefail
+export LC_ALL=C  # 先按字节扫账本，再单独校验 UTF-8；非法字节不能中断后续检查。
 
 usage() {
   cat <<'EOF'
@@ -81,7 +82,12 @@ fi
 
 echo "== 2. 账本 state 合法 =="
 bad_states=""
+bad_utf8=""
 for f in "$PROJECT_ROOT"/tasks/*.md; do
+  [[ -e "$f" ]] || continue
+  if ! qwb_ledger_utf8_ok "$f"; then
+    bad_utf8="${bad_utf8} $(basename "$f")"
+  fi
   grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
   st="$(qwb_task_state "$f")"
   if [[ -z "$st" ]]; then
@@ -93,6 +99,11 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
     *) bad_states="${bad_states} $(basename "$f")=${st}" ;;
   esac
 done
+if [[ -n "$bad_utf8" ]]; then
+  fail "账本含非法 UTF-8 字节:${bad_utf8}；须主控查看原始文件，不能把解析失败当已结项"
+else
+  pass "账本 UTF-8 字节合法"
+fi
 if [[ -z "$bad_states" ]]; then
   pass "tasks/*.md 的 state 值全部合法"
 else

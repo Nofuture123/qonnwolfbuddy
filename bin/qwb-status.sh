@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # qwb-status.sh —— 点名 + 汇报：读账本列出全部任务与状态，合并 herdr 窗口/状态输出
 set -euo pipefail
+export LC_ALL=C  # 账本可能含损坏 UTF-8；状态前缀按字节解析，不能让整票消失。
 
 usage() {
   cat <<'EOF'
@@ -45,14 +46,22 @@ else
     grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
     name="$(basename "$f")"
     st="$(qwb_task_state "$f")"
-    case "$st" in
-      running|blocked|needs-decision) mark="未结" ;;
-      done|verified) mark="已结" ;;
-      *) mark="非法" ;;
-    esac
+    bytes_ok=1
+    qwb_ledger_utf8_ok "$f" || bytes_ok=0
+    if [[ "$bytes_ok" -eq 0 ]]; then
+      mark="未结"
+    else
+      case "$st" in
+        running|blocked|needs-decision) mark="未结" ;;
+        done|verified) mark="已结" ;;
+        *) mark="未结" ;;
+      esac
+    fi
     last="$(grep -E '^(working|done|blocked|needs-decision|wake|dispatch):' "$f" 2>/dev/null | tail -1 || true)"
-    if [[ "$mark" == "非法" ]]; then
-      printf '[非法] %-40s state=%s —— 该任务不会被值守叫醒\n' "$name" "$st"
+    if [[ "$bytes_ok" -eq 0 ]]; then
+      printf '[未结] %-40s state=%s —— 账本 UTF-8 损坏，须主控查看\n' "$name" "$st"
+    elif [[ "$st" != running && "$st" != blocked && "$st" != needs-decision && "$st" != "done" && "$st" != verified ]]; then
+      printf '[未结] %-40s state=%s —— 状态异常，须主控查看\n' "$name" "$st"
     else
       printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
     fi

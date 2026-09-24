@@ -9,6 +9,13 @@ qwb_task_state() {
   sed -n 's/^state:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'
 }
 
+# 文件里任意非法 UTF-8 都代表账本不能完整解释；点名/值守须按未结处理。
+qwb_ledger_utf8_ok() {
+  perl -MEncode=decode,FB_CROAK -e '
+    local $/; eval { decode("UTF-8", <>, FB_CROAK) }; exit($@ ? 1 : 0)
+  ' "$1" >/dev/null 2>&1
+}
+
 # 最后一条规格疑点相关事件；普通进展行不解除疑点。
 qwb_last_spec_event() {
   grep -E '^blocked:[[:space:]]*spec-defect:|^working:[[:space:]]*spec-resolved:' "$1" | tail -1 || true

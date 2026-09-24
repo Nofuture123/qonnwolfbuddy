@@ -3,6 +3,7 @@
 # 收尾前提：该 worktree 的写入者（工人/agent）已停止写入。删前复核与删除是两次 Git 调用，
 # 之间的窗口在 Git 层面无法封死——无法确认写入者已停时，先确认再收尾。
 set -euo pipefail
+export LC_ALL=C  # 收尾账本记录按字节解析，损坏 UTF-8 不得误判 Space/分支身份。
 
 usage() {
   cat <<'EOF'
@@ -70,7 +71,12 @@ open_task_for() {
   for f in "$LEDGER"/*"$1"*.md; do
     [[ -e "$f" ]] || continue
     st="$(qwb_task_state "$f")"
-    case "$st" in running|blocked|needs-decision) printf '%s' "$f"; return 0 ;; esac
+    if ! qwb_ledger_utf8_ok "$f"; then printf '%s' "$f"; return 0; fi
+    case "$st" in
+      running|blocked|needs-decision) printf '%s' "$f"; return 0 ;;
+      done|verified) ;;
+      *) printf '%s' "$f"; return 0 ;;
+    esac
   done
   return 1
 }
