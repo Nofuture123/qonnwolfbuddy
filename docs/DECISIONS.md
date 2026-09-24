@@ -535,3 +535,13 @@ Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿�
 **账本边界**：入口脚本保留 `LC_ALL=C`，使损坏 UTF-8 不会让 state、场景或疑点解析中途失败；指纹继续使用原始账本字节。凡按字符处理账本文本，或把账本文本作为参数交给 Herdr，须经 `qwb-lib.sh` 的 `qwb_utf8_excerpt`：坏字节替换为 U+FFFD，再按 UTF-8 字符数截断。值守最近状态行上限为 160 个字符，`--once` 与 `--block` 共用该摘要，不允许把半个字符送给 Herdr 或主控。
 
 **默认工人名**：纯 ASCII 任务 id 维持原净化规则；含非 ASCII 的任务 id 按字符截取，保留其中的 ASCII 部分，并附完整 id 的 SHA-1 前 8 位，长度不超过 32。显式 `--name` 沿原规则净化，不自动加哈希。
+
+## 四十一、主控忙时不堆积唤醒（2026-09-24）
+
+**Pi 扩展**：`qwb-wake.sh --block` 返回 exit 2 并投递一条 `followUp` 后先暂停，直到 `agent_settled` 才重新值守；同一时刻最多一条待投递的唤醒。晚获主控锁后的首次接入、exit 0 后用 `--block --max-ms 1` 探测，以及探测返回 124 后恢复常规值守，也只在 Pi 空闲时启动。`turn_end` 只表示一次模型请求及其工具调用结束，同一次运行中会出现多次，因此扩展不再订阅它。依据是 `081e6ce` 的真实 Pi 轮：10 条唤醒中 9 条在 `finish --merged` 后才送达；本机 Pi 0.87.1 的 `types.d.ts` 声明了 `agent_settled`，`docs/extensions.md` 将其定义为 Pi 不再自动继续的边界。**本条取代 §三十二、§三十三、§三十四中 Pi 值守由 `turn_end` 接入、探测或立即重启的描述**；旧节保留为历史记录。修复后的证据见 `docs/reviews/2026-09-24-qwb-e2e-controllers-r2-execution.md`。
+
+**阻塞值守输出**：`qwb-wake.sh --block` 只输出最终摘要，不夹带逐轮的「跳过」行；票尚无状态行时显示「尚无状态行」。面向人的 `--once` 和 `--dry-run` 输出保持不变。
+
+**主控回合**：Claude Code 和 Pi 派发后或处理完一次唤醒后直接结束本回合，由 Stop hook 或 Pi 扩展叫醒；不在回合内 sleep 轮询账本，也不由主控自行运行 `qwb-wake.sh`。Codex 的前台阻塞值守规则不变。
+
+**真实 E2E 的 Codex 档位**：使用者明令禁止 fast 模式。Codex 主控启动时显式传入 `-c service_tier="default"`；TUI 的模型行或状态行出现 `fast` 即判失败。

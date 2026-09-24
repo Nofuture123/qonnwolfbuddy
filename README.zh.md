@@ -42,7 +42,7 @@ bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
 
 ## 每个主控只选一种值守入口
 
-Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在后续 `turn_end` 启动；进展以 `[qwb-wake]` follow-up 接续。Codex 把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为真正前台 tool call 循环：退出 2 处理进展、124 再等待、0 只表示本轮值守结束；须核对输出、主控锁归属和账本，确认无未结项后才收工，孤儿提示或归属不明则按主控说明的锁恢复步骤处理。循环中断后须重新开局。未知宿主不支持，取锁或接入值守前须先确认宿主。
+Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在 `agent_settled`（Pi 不再自动继续）时启动；进展以 `[qwb-wake]` follow-up 接续。exit 2 投递后也要等到 `agent_settled` 才重启值守。Codex 把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为真正前台 tool call 循环：退出 2 处理进展、124 再等待、0 只表示本轮值守结束；须核对输出、主控锁归属和账本，确认无未结项后才收工，孤儿提示或归属不明则按主控说明的锁恢复步骤处理。循环中断后须重新开局。未知宿主不支持，取锁或接入值守前须先确认宿主。
 
 用 `bash qwbuddy/bin/qwb-status.sh` 排查账本和值守。健康结果为「未知」时检查失败的查询、安装和主控锁，不启动另一种值守。单凭 status 不能证明 Codex 前台调用仍在等待，也不能用 Claude hook 回合间的结果断言 hook 未安装。主控退出后须重新启动。运行时保留可见 tab 命令供手工排障，不作为主控开局入口。
 
