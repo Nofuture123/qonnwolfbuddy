@@ -168,3 +168,19 @@
 - push main：本分支 8 个提交，加上本验收提交。
 - 关闭 Space `wHH`（只有 `wHH:p1`，是 Codex 执行者会话，已空闲），删除 worktree `/Users/rocky/.herdr/worktrees/qonnwolfbuddy/qwb-e2e-controllers` 和分支 `qwb-e2e-controllers`。
 - 可选：等所有 Claude 会话都关掉以后，清理 `~/.claude.json` 里上面列出的 `/private/tmp` 项目键。
+
+## 收尾结果（2026-09-24T10:08:43+00:00，使用者确认后执行）
+
+- **推送**
+  - main 已推送：`e2a3a80..ad5a421`，共 9 个提交。
+  - `git ls-remote origin refs/heads/main` 返回 ad5a421。
+  - 本节是另一个文档提交，随后单独推送。
+- **Space 与分支**
+  - 已执行 `herdr worktree remove --workspace wHH`，结果为 `worktree_removed`、`forced:false`。Space 已关闭，worktree 目录已删除。
+  - 分支已用 `git branch -d` 删除，删除前指向 b3941d3。没有残留的 `branch.qwb-e2e-controllers.*` 配置，`git worktree list` 只剩主仓。
+- **临时文件**
+  - 审核者自己的导出副本和反转副本都在会话 scratchpad 里，已删除。
+  - 执行者留在 `/tmp` 的 E2E 报告、转录和临时项目是本文引用的证据，没有删。
+- **没有执行的**
+  - 使用者没有选择删除 `~/.claude/settings.json` 里的两条明文密码放行规则，所以没动。
+  - `~/.claude.json` 的临时项目键仍然保留，要等所有 Claude 会话都关掉以后再清。
