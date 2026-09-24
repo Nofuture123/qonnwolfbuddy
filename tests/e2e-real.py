@@ -185,7 +185,11 @@ def start_controller():
     # Herdr resolves /tmp to /private/tmp before launching Codex. Match that
     # physical cwd in the invocation-scoped override; never persist trust.
     trust = f'projects."{REPO.resolve()}".trust_level="trusted"'
-    argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", "-c", trust,
+    # Codex 0.156.1 still shows the trust dialog with only the dotted override.
+    # The inline table makes the same path visible to the startup trust check.
+    trust_table = f'projects={{{json.dumps(str(REPO.resolve()))}={{trust_level="trusted"}}}}'
+    argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}",
+            "-c", trust, "-c", trust_table,
             "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]
     h("pane", "run", CONTROL_PANE, shlex.join(argv))
     model_line = re.compile(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b")
