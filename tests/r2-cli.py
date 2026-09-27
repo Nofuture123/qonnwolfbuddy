@@ -46,7 +46,7 @@ elif a[:2]==["agent","get"]:
 elif a[:2]==["worktree","open"]:
     path=a[a.index("--path")+1]; state.write_text(path)
     out({"already_open":False,"workspace":{"workspace_id":"wTask"},
-         "root_pane":{"tab_id":"wTask:t1"}})
+         "root_pane":{"tab_id":"wTask:t1","pane_id":"wTask:p1"}})
 elif a[:2]==["tab","create"]:
     out({"root_pane":{"pane_id":"wTask:p2","tab_id":"wTask:t2"}})
 else: out({"type":"ok"})
@@ -237,7 +237,9 @@ def warning():
         assert result.returncode == 0, result.stderr
         assert "工人 tab 开在调用者 workspace" not in result.stderr, result.stderr
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        assert any(c[:2] == ["tab", "create"] and "wTask" in c for c in calls), calls
+        assert any(c[:2] == ["agent", "start"] and "--pane" in c
+                   and c[c.index("--pane") + 1] == "wTask:p1" for c in calls), calls
+        assert not any(c[:2] == ["tab", "create"] for c in calls), calls
         ticket2 = repo / "tasks/2099-01-02-reuse.md"; ticket2.write_text(TASK)
         reused = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
                       "--task", "reuse", "--worker", "pi", "--worktree",

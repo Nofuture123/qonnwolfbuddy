@@ -122,13 +122,14 @@ case "\${1:-} \${2:-}" in
                 done
                 [[ -n "\$root" && -n "\$path" ]] || failjson invalid_args "missing worktree path"
                 mkdir -p "\$DYNH"
+                if [[ -f "\$DYNH/worktree-open.json" ]]; then sed '/^#/d' "\$DYNH/worktree-open.json"; exit 0; fi
                 id="wQ\$(printf '%s' "\$path" | shasum | cut -c1-8)"; already=false
                 if [[ -f "\$DYNH/spaces.tsv" ]] && cut -f3 "\$DYNH/spaces.tsv" | grep -Fxq "\$path"; then
                   already=true
                 else printf '%s\t%s\t%s\n' "\$id" "\$root" "\$path" >> "\$DYNH/spaces.tsv"; fi
                 perl -MJSON::PP=encode_json -e 'my (\$id,\$already)=@ARGV;
                   print encode_json({result=>{already_open=>(\$already eq "true" ? JSON::PP::true : JSON::PP::false),
-                    workspace=>{workspace_id=>\$id},root_pane=>{tab_id=>"\$id:t1"}}}),"\n";' "\$id" "\$already" ;;
+                    workspace=>{workspace_id=>\$id},root_pane=>{tab_id=>"\$id:t1",pane_id=>"\$id:p1"}}}),"\n";' "\$id" "\$already" ;;
   "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json";
                 elif [[ -f "\$DYNH/get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/get-\$(san "\${3:-}").err" >&2; exit 1;
                 else failjson pane_not_found "pane \${3:-} not found"; fi ;;
@@ -153,6 +154,9 @@ case "\${1:-} \${2:-}" in
                 else fix agent-get-error.json >&2; exit 1; fi ;;
   "agent rename") fix agent-get-cmd.json ;;
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
+  "tab list")   if [[ -f "\$DYNH/tab-list.json" ]]; then sed '/^#/d' "\$DYNH/tab-list.json"; else failjson io_error "no mocked tab list"; fi ;;
+  "workspace close") if [[ "\${HERDR_FAIL:-}" == *wsclose* ]]; then failjson io_error "mocked workspace close failure"; fi
+                printf '{"id":"cli:workspace:close","result":{"type":"ok"}}\n' ;;
   "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
                 printf '{"id":"cli:tab:close","result":{"type":"ok"}}\n' ;;
   "agent start") if [[ "\${HERDR_FAIL:-}" == *start* ]]; then fix agent-start-name-taken.json >&2; exit 1; fi
@@ -491,6 +495,222 @@ EOF
 r1out="$( cd "$GP" && PATH="$STUB:$PATH" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnew --worker codex --create-worktree 2>&1 )"
 printf '%s' "$r1out" | grep -q '残留' && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
 [[ -d "$GP/.worktrees/wtnew" ]] && ok "警告不阻塞：worktree 已建" || bad "--create-worktree 被阻塞"
+
+echo "== 17b. 方案A：隔离派发直落根 pane；finish --root-tab-missing 兑底（本票 8 场景）=="
+# —— S1 正路径：新建 Space（already_open=false）→ agent start 直落根 pane，无 tab create
+: > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
+cat > "$GP/tasks/2099-01-17-rootpane.md" <<'EOF'
+# rootpane
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given git 项目
+When  默认隔离派发
+Then  工人落在 Space 根 pane 且不另开 tab
+### user_失败
+Given 根 pane 启动失败
+When  派发
+Then  不关根 tab 且 dispatch 原位撤销
+EOF
+ra_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ra bash "$TMP/qwbuddy/bin/qwb-run.sh" --task rootpane --worker codex 2>&1 )"; ra_rc=$?
+ra_dir="$(cd "$GP/.worktrees/rootpane" && pwd)"   # 与 qwb-run 的 DIR 同形态（pwd，非 pwd -P）
+ra_space="wQ$(printf '%s' "$ra_dir" | shasum | cut -c1-8)"
+{ [[ "$ra_rc" -eq 0 ]] && grep -q "agent start qwb-rootpane --kind codex --pane ${ra_space}:p1" "$STUBLOG" \
+  && ! grep -q 'tab create' "$STUBLOG" \
+  && grep -qF "worktree-space: id=${ra_space} root-tab=${ra_space}:t1 path=${ra_dir}" "$GP/tasks/2099-01-17-rootpane.md" \
+  && grep -q "worker=codex agent=qwb-rootpane pane=${ra_space}:p1 dir=${ra_dir}" "$GP/tasks/2099-01-17-rootpane.md" \
+  && printf '%s' "$ra_out" | grep -q "pane=${ra_space}:p1 dir="; } \
+  && ok "S1 新建 Space：agent start 直落根 pane、无 tab create、worktree-space/dispatch/提示记根 pane" \
+  || { bad "S1 方案A 直落根 pane 不对（rc=${ra_rc}）"; grep -E 'worktree open|agent start|tab create' "$STUBLOG"; }
+
+# —— S2 复用既有 Space（spaces.tsv 已登记该路径）→ 仍走 tab create，不占根 pane
+: > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
+( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ra bash "$TMP/qwbuddy/bin/qwb-run.sh" --task rootpane --worker codex ) >/dev/null 2>&1; ra2_rc=$?
+{ [[ "$ra2_rc" -eq 0 ]] && grep -q "tab create --workspace ${ra_space}" "$STUBLOG" \
+  && grep -q 'agent start qwb-rootpane --kind codex --pane w93:p7' "$STUBLOG"; } \
+  && ok "S2 复用既有 Space：仍 tab create 开工人 tab（不占根 pane），现有行为不回归" \
+  || { bad "S2 复用 Space 路径不对（rc=${ra2_rc}）"; cat "$STUBLOG"; }
+
+# —— S3 失败路径：根 pane 上 agent start 失败 → not-sent 原位撤销，无 tab close（根 tab 与 Space 保留）
+cat > "$GP/tasks/2099-01-17-rpfail.md" <<'EOF'
+# rpfail
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given git 项目
+When  默认隔离派发
+Then  工人落在根 pane
+### user_失败
+Given 根 pane 启动失败
+When  派发
+Then  不关根 tab 且 dispatch 原位撤销
+EOF
+: > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
+rf_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:rf HERDR_FAIL=start bash "$TMP/qwbuddy/bin/qwb-run.sh" --task rpfail --worker codex 2>&1 )"; rf_rc=$?
+rf_space="wQ$(printf '%s' "$(cd "$GP/.worktrees/rpfail" && pwd)" | shasum | cut -c1-8)"   # 同 qwb-run 的 DIR 形态
+{ [[ "$rf_rc" -ne 0 ]] && printf '%s' "$rf_out" | grep -q 'agent start 失败' \
+  && grep -q "agent start qwb-rpfail --kind codex --pane ${rf_space}:p1" "$STUBLOG" \
+  && ! grep -q 'tab close' "$STUBLOG" && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'workspace close' "$STUBLOG" \
+  && [[ "$(grep -c '^dispatch:' "$GP/tasks/2099-01-17-rpfail.md")" -eq 0 ]] \
+  && [[ "$(grep -c '^not-sent:' "$GP/tasks/2099-01-17-rpfail.md")" -eq 1 ]] \
+  && grep -q '^blocked: .*派发投递失败 step=herdr agent start' "$GP/tasks/2099-01-17-rpfail.md"; } \
+  && ok "S3 根 pane 启动失败：not-sent 原位撤销、无 tab close（根 tab 与 Space 保留供重派）" \
+  || { bad "S3 根 pane 启动失败回滚不对（rc=${rf_rc}）"; printf '%s\n' "$rf_out"; cat "$STUBLOG"; }
+
+# —— S4–S7 场记：方案A 布局的 finish Space 场景（独立 DYN 片场）
+FD="$TMP/finish-dyn"; mkdir -p "$FD"
+fs_wsan() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9'; }
+fs_mkticket() { # $1=id $2=space $3=root_tab $4=worker_tab $5=worker_pane；stdout=worktree 物理路径
+  local id="$1" sp="$2" tf="$GP/tasks/2099-01-17-$1.md" phys
+  printf '# %s\nstate: running\n' "$id" > "$tf"
+  git -C "$GP" worktree add -q -b "$id" "$GP/.worktrees/$id"
+  phys="$(cd "$GP/.worktrees/$id" && pwd -P)"
+  printf 'worktree-space: id=%s root-tab=%s path=%s\n' "$sp" "$3" "$phys" >> "$tf"
+  printf 'dispatch: 2026-01-01T00:00:00Z worker=pi agent=qwb-%s pane=%s dir=%s\n' "$id" "$5" "$phys" >> "$tf"
+  printf '%s\t%s\t%s\n' "$sp" "$GP" "$phys" >> "$FD/spaces.tsv"
+  printf '%s' "$phys"
+}
+fs_get() { # $1=pane $2=tab $3=space $4=agent_status
+  printf '{"id":"x","result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","agent":"pi","agent_status":"%s"}}}\n' \
+    "$1" "$2" "$3" "${4:-idle}" > "$FD/get-$(fs_wsan "$1").json"
+}
+fs_tabs() { local js="[" t first=1
+  for t in "$@"; do [[ $first -eq 1 ]] || js+=","; first=0; js+="{\"tab_id\":\"$t\"}"; done
+  printf '{"id":"x","result":{"tabs":%s]}}\n' "$js" > "$FD/tab-list.json"; }
+fs_panes() { # $1=pane $2=agent_status
+  printf '{"id":"x","result":{"panes":[{"pane_id":"%s","agent_status":"%s"}]}}\n' "$1" "$2" > "$FD/pane-list.json"; }
+
+# —— S4 根 tab 缺失：不带参数拒绝；带 --root-tab-missing 兑底收尾并留痕
+fs_mkticket wtmiss wFm wFm:t1 wFm:t2 wFm:p2 >/dev/null
+fs_get wFm:p2 wFm:t2 wFm idle; fs_tabs wFm:t2; fs_panes wFm:p2 idle
+: > "$STUBLOG"
+if HERDR_DYN_DIR="$FD" qwb_finish wtmiss --archive --project "$GP" >/dev/null 2>&1; then
+  bad "S4 根 tab 缺失：不带参数竟放行"
+else
+  ok "S4 根 tab 缺失：不带参数被拒（本票根 tab 已不存在）"
+fi
+{ [[ -d "$GP/.worktrees/wtmiss" ]] && ! grep -q 'workspace close' "$STUBLOG" \
+  && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtmiss" \
+  && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtmiss.md"; } \
+  && ok "S4 拒绝后 Git 与 Space 均未动、无 root-tab-missing 留痕" || bad "S4 拒绝路径动了不该动的"
+: > "$STUBLOG"
+HERDR_DYN_DIR="$FD" qwb_finish wtmiss --archive --root-tab-missing --project "$GP" >/dev/null 2>&1; fm_rc=$?
+{ [[ "$fm_rc" -eq 0 ]] && grep -q 'workspace close wFm' "$STUBLOG" \
+  && [[ ! -d "$GP/.worktrees/wtmiss" ]] \
+  && ! git -C "$GP" show-ref --verify --quiet "refs/heads/wtmiss" \
+  && grep -q '^worktree: archive branch=wtmiss tag=archive/wtmiss root-tab-missing=1$' "$GP/tasks/2099-01-17-wtmiss.md"; } \
+  && ok "S4 带 --root-tab-missing：Space 关、worktree 删、分支删、worktree: 行留痕 root-tab-missing=1" \
+  || { bad "S4 兑底收尾不对（rc=${fm_rc}）"; cat "$STUBLOG"; tail -3 "$GP/tasks/2099-01-17-wtmiss.md"; }
+
+# —— S5 根 tab 缺失但 Space 有外来 tab → 即使带参数仍拒绝
+fs_mkticket wtforeign wFn wFn:t1 wFn:t2 wFn:p2 >/dev/null
+fs_get wFn:p2 wFn:t2 wFn idle; fs_tabs wFn:t2 wFn:t9; fs_panes wFn:p2 idle
+: > "$STUBLOG"
+if HERDR_DYN_DIR="$FD" qwb_finish wtforeign --archive --root-tab-missing --project "$GP" >/dev/null 2>&1; then
+  bad "S5 外来 tab 竞被 --root-tab-missing 放行"
+else
+  ok "S5 根 tab 缺失但有外来 tab：带参数仍拒绝（非本票 tab）"
+fi
+{ [[ -d "$GP/.worktrees/wtforeign" ]] && ! grep -q 'workspace close' "$STUBLOG" \
+  && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtforeign" \
+  && git -C "$GP" show-ref --verify --quiet "refs/heads/wtforeign" \
+  && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtforeign.md"; } \
+  && ok "S5 外来 tab 拒绝后 Git/Space 未动、无留痕" || bad "S5 外来 tab 路径有副作用"
+
+# —— S6 根 tab 缺失但工人 pane 仍在 working → 即使带参数仍拒绝
+fs_mkticket wtrunning wFo wFo:t1 wFo:t2 wFo:p2 >/dev/null
+fs_get wFo:p2 wFo:t2 wFo working; fs_tabs wFo:t2; fs_panes wFo:p2 working
+: > "$STUBLOG"
+fo_out="$(HERDR_DYN_DIR="$FD" qwb_finish wtrunning --archive --root-tab-missing --project "$GP" 2>&1)"; fo_rc=$?
+{ [[ "$fo_rc" -ne 0 ]] && printf '%s' "$fo_out" | grep -q '仍在 working' \
+  && [[ -d "$GP/.worktrees/wtrunning" ]] && ! grep -q 'workspace close' "$STUBLOG" \
+  && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtrunning" \
+  && git -C "$GP" show-ref --verify --quiet "refs/heads/wtrunning" \
+  && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtrunning.md"; } \
+  && ok "S6 根 tab 缺失但工人 working：带参数仍拒绝、Git/Space 未动、无留痕" \
+  || { bad "S6 working 拒绝路径不对（rc=${fo_rc}）"; printf '%s\n' "$fo_out"; }
+
+# —— S7 根 tab 在位（方案A：工人 pane 即根 pane）：不带参数正常收尾，无 root-tab-missing 字段
+fs_mkticket wtnormal wFp wFp:t1 wFp:t1 wFp:p1 >/dev/null
+fs_get wFp:p1 wFp:t1 wFp idle; fs_tabs wFp:t1; fs_panes wFp:p1 idle
+: > "$STUBLOG"
+HERDR_DYN_DIR="$FD" qwb_finish wtnormal --archive --project "$GP" >/dev/null 2>&1; fn_rc=$?
+{ [[ "$fn_rc" -eq 0 ]] && grep -q 'workspace close wFp' "$STUBLOG" \
+  && [[ ! -d "$GP/.worktrees/wtnormal" ]] \
+  && grep -q '^worktree: archive branch=wtnormal tag=archive/wtnormal$' "$GP/tasks/2099-01-17-wtnormal.md" \
+  && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtnormal.md"; } \
+  && ok "S7 根 tab 在位（工人 pane 即根 pane）：不带参数正常收尾且无 root-tab-missing 字段" \
+  || { bad "S7 根 tab 在位收尾不对（rc=${fn_rc}）"; cat "$STUBLOG"; }
+
+# —— S8 参数误用：list 带该参数 / finish 缺动作 → 按既有规则报错；--keep 同传不报错不留痕
+if bash "$WTB" list --root-tab-missing --project "$GP" >/dev/null 2>&1; then
+  bad "S8 list --root-tab-missing 竞被吞掉"
+else
+  ok "S8 list 带 --root-tab-missing 按未知参数报错退出"
+fi
+fs_mkticket wtkeepmiss wFk wFk:t1 wFk:t2 wFk:p2 >/dev/null
+if bash "$WTB" finish wtkeepmiss --root-tab-missing --project "$GP" 2>"$TMP/s8.err"; then
+  bad "S8 finish 缺动作竟被吞掉"
+else
+  grep -q '需要动作' "$TMP/s8.err" && [[ -d "$GP/.worktrees/wtkeepmiss" ]] \
+    && ok "S8 finish 只带 --root-tab-missing 不带动作用按既有缺动作规则报错（用仍存在的票，非假通过）" \
+    || bad "S8 缺动作报错内容不对：$(cat "$TMP/s8.err")"
+fi
+: > "$STUBLOG"
+HERDR_DYN_DIR="$FD" qwb_finish wtkeepmiss --keep=待裁决 --root-tab-missing --project "$GP" >/dev/null 2>&1; fk_rc=$?
+{ [[ "$fk_rc" -eq 0 ]] && [[ -d "$GP/.worktrees/wtkeepmiss" ]] && ! grep -q 'workspace close' "$STUBLOG" \
+  && grep -q '^worktree: keep branch=wtkeepmiss tag=- reason=待裁决$' "$GP/tasks/2099-01-17-wtkeepmiss.md" \
+  && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtkeepmiss.md"; } \
+  && ok "S8 --keep 与 --root-tab-missing 同传：不报错、行为与单独 --keep 一致、不产留痕" \
+  || { bad "S8 --keep 同传行为不对（rc=${fk_rc}）"; tail -3 "$GP/tasks/2099-01-17-wtkeepmiss.md"; }
+
+# —— S9 新行为负例：worktree open 响应缺 root_pane.pane_id → 拒派并关闭新建 Space 回滚
+FD2="$TMP/finish-dyn2"; mkdir -p "$FD2"
+cat > "$GP/tasks/2099-01-17-wtnopane.md" <<'EOF'
+# wtnopane
+state: running
+
+## 1. 验收场景
+
+### user_正常
+Given git 项目
+When  默认隔离派发
+Then  工人落在根 pane
+### user_失败
+Given 响应缺根 pane
+When  派发
+Then  拒绝并回滚 Space
+EOF
+printf '%s\n' '{"result":{"already_open":false,"workspace":{"workspace_id":"wQnopane"},"root_pane":{"tab_id":"wQnopane:t1"}}}' > "$FD2/worktree-open.json"
+: > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
+wn_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wn HERDR_DYN_DIR="$FD2" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnopane --worker codex 2>&1 )"; wn_rc=$?
+{ [[ "$wn_rc" -ne 0 ]] && printf '%s' "$wn_out" | grep -q 'root_pane.pane_id' \
+  && grep -q 'workspace close wQnopane' "$STUBLOG" && ! grep -q 'tab create' "$STUBLOG" \
+  && ! grep -q '^dispatch:' "$GP/tasks/2099-01-17-wtnopane.md" \
+  && ! grep -q '^worktree-space:' "$GP/tasks/2099-01-17-wtnopane.md" \
+  && [[ -d "$GP/.worktrees/wtnopane" ]]; } \
+  && ok "S9 响应缺 root_pane.pane_id：拒派并 workspace close 回滚新建 Space，无 dispatch/worktree-space 行" \
+  || { bad "S9 缺根 pane 回滚不对（rc=${wn_rc}）"; printf '%s\n' "$wn_out"; cat "$STUBLOG"; }
+
+# —— S10 partial 留痕续收：worktree remove 失败的 partial 收据已带留痕、Space 已关（spaces.tsv 不登记）→ 重跑不丢字段
+printf '{"id":"x","result":{"tabs":[]}}\n' > "$FD/tab-list.json"   # 按指令给空列表：Space 已关时 finish 根本不会查
+printf '{"id":"x","result":{"panes":[]}}\n' > "$FD/pane-list.json"
+SPF="$GP/tasks/2099-01-17-wtpartial.md"
+printf '# wtpartial\nstate: running\n' > "$SPF"
+git -C "$GP" worktree add -q -b wtpartial "$GP/.worktrees/wtpartial"
+SP_PHYS="$(cd "$GP/.worktrees/wtpartial" && pwd -P)"
+SP_OID="$(git -C "$GP/.worktrees/wtpartial" rev-parse HEAD)"
+printf 'worktree: partial action=archive branch=wtpartial tag=archive/wtpartial stage=worktree-remove space=wFr oid=%s root-tab-missing=1\n' "$SP_OID" >> "$SPF"
+: > "$STUBLOG"
+HERDR_DYN_DIR="$FD" qwb_finish wtpartial --archive --project "$GP" >/dev/null 2>&1; sp_rc=$?
+{ [[ "$sp_rc" -eq 0 ]] && [[ ! -d "$GP/.worktrees/wtpartial" ]] \
+  && grep -q '^worktree: archive branch=wtpartial tag=archive/wtpartial root-tab-missing=1$' "$SPF"; } \
+  && ok "S10 partial 留痕收据（Space 已关重跑）：收尾成功且最终行保留 root-tab-missing=1" \
+  || { bad "S10 partial 留痕续收不对（rc=${sp_rc}）"; tail -3 "$SPF"; }
 
 echo "== 18. G1：detached HEAD 下归档/落地以实际 HEAD OID 为准 =="
 # 场景：分支 wtdet 在 A；checkout --detach 后提交 B（分支仍指 A）
@@ -928,7 +1148,7 @@ fx_paths() {
     pane-list.json)          printf 'result.panes:array' ;;
     workspace-list.json)     printf 'result.type:string result.workspaces:array' ;;
     worktree-open.json|worktree-open-already.json)
-                             printf 'result.workspace.workspace_id:string result.workspace.worktree.checkout_path:string result.root_pane.tab_id:string' ;;
+                             printf 'result.workspace.workspace_id:string result.workspace.worktree.checkout_path:string result.root_pane.tab_id:string result.root_pane.pane_id:string' ;;
     worktree-open-error.json) printf 'error.code:string' ;;
     proc-shell.json)         printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;
     proc-wake.json)          printf 'result.process_info.foreground_processes:array result.process_info.shell_pid:any' ;;

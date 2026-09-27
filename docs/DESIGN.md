@@ -39,11 +39,11 @@
 ### 3.2 规矩
 - **施工单**：主控把需求写成任务书文件（`tasks/YYYY-MM-DD-<主题>.md`），工人读文件干活。
   **所有任务都经文件派发，无隐性依赖**——换会话、换 AI、重启都不丢。
-- **隔离干活**：`qwb-run.sh` 建 Git worktree 并在 Herdr Spaces 登记独立 worktree workspace，代码改动只在副本里。
+- **隔离干活**：`qwb-run.sh` 建 Git worktree 并在 Herdr Spaces 登记独立 worktree workspace，代码改动只在副本里；新建 Space 时工人直接在其根 pane 启动，不另开工人 tab（复用既有 Space 才开新 tab）。
   **worktree 规范（四步 + 两条补充）**：
   - **开**：`<项目>/.worktrees/<任务id>/`，一任务一个；开之前**先清点**——有已完成任务的残留就先收掉。**默认就开**：`qwb-run.sh` 不给 worktree 参数时**自动创建隔离副本**（与「工人代码一律留在副本」直接对齐）；确实要往项目根派发时必须显式 `--here`，且提示词会写明这是**非隔离**目录。
-  - **收·成功**：验收通过 → 合并 / 推送 → 核对并关闭本票空闲 Herdr Space → `git worktree remove` + 按已核实 OID 原子删分支 → 记账。
-  - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Herdr Space → `git tag archive/<任务id>` → `git worktree remove` + 按已归档 OID 原子删分支 → 记账。
+  - **收·成功**：验收通过 → 合并 / 推送 → 核对并关闭本票空闲 Herdr Space（根 tab 缺失时须显式 `--root-tab-missing` 兑底留痕）→ `git worktree remove` + 按已核实 OID 原子删分支 → 记账。
+  - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Herdr Space（根 tab 缺失时同上兑底）→ `git tag archive/<任务id>` → `git worktree remove` + 按已归档 OID 原子删分支 → 记账。
     **为什么**：这样废弃的工作不会丢（一个标签就能找回），也不再占目录和分支——比「一律不许删」更实用。
   - **留·例外**：只允许两种——① 等使用者裁决的；② 有冲突待解的。且必须**点名**（账本一行），不得默默留下。
   - **归属**：谁派生谁收尾——主控收尾它派给工人的 worktree。
@@ -230,8 +230,8 @@ qwbuddy/roles/
    ↓
 【主控】写任务书 tasks/<日期>-<主题>.md
         git worktree add + herdr worktree open（隔离副本在 Spaces 可见）
-        herdr tab create + rename（中文标签）
-        herdr agent start（工人）
+        工人直接在 worktree open 返回的根 pane 启动（新建 Space 不另开 tab；
+        复用既有 Space 时才 herdr tab create + rename）
         herdr agent prompt（送任务书 + 主账本绝对路径）
         账本记：任务、窗口、派发时间、状态=running
    ↓

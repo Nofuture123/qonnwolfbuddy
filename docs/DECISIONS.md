@@ -518,7 +518,7 @@ Pi 每个扩展会话生成实例 ID，写入 `.watch` 并传给子进程。宿�
 
 ## 三十八、生产接入前的 worktree Space 与写入边界（2026-09-23）
 
-**worktree**：默认隔离副本仍由 Git 创建；`qwb-run.sh` 在任何信任预置和账本写入前用 `herdr worktree open` 登记，并核对唯一的 linked Space。工人 tab 进入该 Space，主控/值守的项目根解析排除 linked Space。`worktree-space:` 单独记 Space 所有权和根 tab，不改变 `dispatch:` 格式或场景指纹。收尾只关闭本票登记且无活动工人/外来 tab 的 Space；查询不明即保留，不能用会直接删 checkout 的 `herdr worktree remove` 绕过 Git 安全检查。旧 worktree 没有 Space 时沿原 Git 路径收尾。
+**worktree**：默认隔离副本仍由 Git 创建；`qwb-run.sh` 在任何信任预置和账本写入前用 `herdr worktree open` 登记，并核对唯一的 linked Space。工人 tab 进入该 Space，主控/值守的项目根解析排除 linked Space。`worktree-space:` 单独记 Space 所有权和根 tab，不改变 `dispatch:` 格式或场景指纹。收尾只关闭本票登记且无活动工人/外来 tab 的 Space；查询不明即保留，不能用会直接删 checkout 的 `herdr worktree remove` 绕过 Git 安全检查。旧 worktree 没有 Space 时沿原 Git 路径收尾。**更新（2026-09-27）**：新建 Space（`already_open=false`）时工人直接在响应的 `result.root_pane.pane_id` 启动，不再 `tab create`——旧流程每个工人窗口多一个空根 tab，且根 tab 被 finish 当作单点身份证据，手工关掉即死锁；工人 pane 即根 tab 后 `worktree-space:` 格式不变。根 tab 缺失的遗留票由 `finish --root-tab-missing` 显式兑底：Space id/路径吻合、无外来 tab、全 pane 空闲逐项核对通过才放行，最终 `worktree:` 行追加 `root-tab-missing=1` 留痕，不静默放行。
 
 **安全写入**：安装器在第一笔写入前检查目标及父目录；覆盖文件拒绝符号链接，保留型配置只读有效链接、拒绝断链，追加式文件拒绝链接。普通文件用同目录独占临时文件替换，以免改写外部硬链接。主控锁的同 owner 重入须在 `flock` 内确认；锁命令其余非零结果不再靠 owner 文本放行。
 

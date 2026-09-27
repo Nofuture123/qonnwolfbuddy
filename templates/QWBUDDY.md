@@ -70,7 +70,8 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
        （--worker auto = JEV 自动派工：qwb-dispatch.sh 按 qwbuddy/dispatch-rules.json 选工人，
         off/error/ambiguous 落默认工人不阻塞派发；默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本并登记 Herdr worktree Space；--here 是显式声明在项目根派发；
         它负责：验收场景门校验、查主控锁、开窗口、记账（state: running + scenarios-fp + dispatch）、
-        起工人、发提示词；锁被他人持有会拒绝派发——那是另一个主控在动，别强行放锁；
+        起工人、发提示词；新建 Space 时工人直接在其根 pane 启动（不另开工人 tab），
+        复用既有 Space 才开新 tab；
         没有验收场景块或缺失败路径场景会直接拒绝派发）
   → 提示词里必须含：任务书绝对路径 + 主账本绝对路径 + 「写完状态行再收工」
 ```
@@ -100,7 +101,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ## 7. worktree 四步规范
 
 - **开**：只在派工时开；`<项目>/.worktrees/<任务id>/`，一任务一个，在 Herdr Spaces 中以 worktree 形式显示；开之前先清点——有已完成任务的残留就先收掉。
-- **收·成功**：验收通过 → 合并/推送 → 核对并关闭本票空闲 Space → 安全删除 worktree 与已落地分支 → 记账。
+- **收·成功**：验收通过 → 合并/推送 → 核对并关闭本票空闲 Space（根 tab 已被手工关闭时，用 `finish --root-tab-missing` 显式兑底并留痕，其余身份证据照核）→ 安全删除 worktree 与已落地分支 → 记账。
 - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Space → `git tag archive/<任务id>` → 安全删除 worktree 与分支 → 记账（写明标签名）。
 - **留·例外**：只允许两种——等使用者裁决的、有冲突待解的；且必须在账本**点名**。
 - 补充：谁派生谁收尾；`git worktree prune` 清元数据残留。

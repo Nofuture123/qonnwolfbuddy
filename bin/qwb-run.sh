@@ -636,6 +636,7 @@ fi
 
 # 任务副本必须作为独立 worktree 显示在 Herdr Spaces；登记早于信任预置和账本写入。
 TASK_SPACE=""
+SPACE_ROOT_PANE=""   # 方案 A：本次新建 Space 的根 pane id（仅 already_open=false 时非空）
 wt_kind_rc=0
 qwb_is_project_worktree "$PROJECT_ROOT" "$DIR" || wt_kind_rc=$?
 [[ "$wt_kind_rc" -ne 2 ]] || { echo "错误：无法确认目标的 Git worktree 身份，拒绝派发" >&2; exit 1; }
@@ -645,7 +646,7 @@ if [[ "$wt_kind_rc" -eq 0 ]]; then
   if [[ -z "$TASK_SPACE" ]]; then
     space_out="$(herdr worktree open --cwd "$PROJECT_ROOT" --path "$DIR" --label "$TASK_ID" --no-focus 2>&1)" \
       || { echo "错误：worktree 已保留但 Herdr Space 登记失败，未派发：$space_out" >&2; exit 1; }
-    opened_id=""; opened_tab=""; already_open=""
+    opened_id=""; opened_tab=""; already_open=""; SPACE_ROOT_PANE=""
     abort_opened_space() {
       echo "错误：$1；副本保留，未派发" >&2
       if [[ "$already_open" == 0 && -n "$opened_id" ]]; then
@@ -657,19 +658,30 @@ if [[ "$wt_kind_rc" -eq 0 ]]; then
       fi
       exit 1
     }
-    space_meta="$(printf '%s' "$space_out" | perl -MJSON::PP=decode_json -0777 -e '
+    space_meta="$(printf '%s' "$space_out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
       my $j=eval{decode_json(<STDIN>)}; my $r=$j->{result};
       exit 1 unless ref $r eq "HASH" && ref $r->{workspace} eq "HASH" && exists $r->{already_open};
       my $id=$r->{workspace}{workspace_id};
       exit 1 unless defined $id && !ref $id && $id ne "";
-      my $tab=(ref $r->{root_pane} eq "HASH") ? ($r->{root_pane}{tab_id}//"") : "";
-      printf "%s\t%s\t%s", $id,$tab,($r->{already_open} ? 1 : 0);' || true)"
+      my $rp=(ref $r->{root_pane} eq "HASH") ? $r->{root_pane} : undef;
+      my $tab=$rp ? ($rp->{tab_id}//"") : "";
+      my $rpane="";
+      if ($rp) { my $v=$rp->{pane_id};
+        $rpane=(defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : ""; }
+      printf "%s\t%s\t%s\t%s", $id,$tab,($r->{already_open} ? 1 : 0),$rpane;' || true)"
     [[ -n "$space_meta" ]] \
       || abort_opened_space "herdr worktree open 响应无 Space 身份：$space_out"
     opened_id="$(printf '%s' "$space_meta" | cut -f1)"
     opened_tab="$(printf '%s' "$space_meta" | cut -f2)"
     already_open="$(printf '%s' "$space_meta" | cut -f3)"
     [[ -n "$opened_tab" ]] || abort_opened_space "herdr worktree open 响应无 root tab 身份：$space_out"
+    # 方案 A：本次新建 Space 时工人直接落根 pane，不再 tab create；响应缺 root_pane.pane_id
+    # 按契约拒绝（走 abort_opened_space：本次新建的 Space 关闭回滚）。复用既有 Space 不占用根 pane。
+    if [[ "$already_open" == 0 ]]; then
+      SPACE_ROOT_PANE="$(printf '%s' "$space_meta" | cut -f4)"
+      [[ -n "$SPACE_ROOT_PANE" ]] \
+        || abort_opened_space "herdr worktree open 响应缺 root_pane.pane_id（无法落根 pane）：$space_out"
+    fi
     TASK_SPACE="$(qwb_worktree_space "$PROJECT_ROOT" "$DIR")" \
       || abort_opened_space "herdr worktree open 后 Space 查询失败"
     [[ -n "$TASK_SPACE" && "$TASK_SPACE" == "$opened_id" ]] \
@@ -779,6 +791,10 @@ fi
 # 窗口：复用既有工人 pane / 复用 --pane / 新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
 if [[ -n "$REUSE_PANE" ]]; then
   PANE="$REUSE_PANE"
+elif [[ -z "$PANE" && -n "$SPACE_ROOT_PANE" ]]; then
+  # 方案 A：本次新建 Space，工人直接在其根 pane 启动（工人 tab 即根 tab，不另开 tab）。
+  # TAB_ID 保持空：启动失败回滚不得 tab close 根 tab——Space 连同根 tab 保留供重派。
+  PANE="$SPACE_ROOT_PANE"
 elif [[ -z "$PANE" ]]; then
   if [[ -n "$TAB_WS" ]]; then
     out="$(herdr tab create --workspace "$TAB_WS" --cwd "$DIR" --label "$TASK_ID" --no-focus)"

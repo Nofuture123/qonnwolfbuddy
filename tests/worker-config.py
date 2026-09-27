@@ -65,7 +65,7 @@ elif args[:2]==["worktree","open"]:
     path=args[args.index("--path")+1]
     space_file.write_text(path)
     print(json.dumps({"result":{"already_open":False,"workspace":{"workspace_id":"wTask"},
-        "root_pane":{"tab_id":"wTask:t1"}}}))
+        "root_pane":{"tab_id":"wTask:t1","pane_id":"wTask:p1"}}}))
 elif args[:2]==["agent","get"] and args[2].startswith("qwb-"):
     print(json.dumps({"error":{"code":"agent_not_found"}}),file=sys.stderr); sys.exit(1)
 elif args[:2]==["tab","create"]:
@@ -286,8 +286,10 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
           and f"dir={worktree}" in first.read_text() and "worktree-space: id=wTask" in first.read_text(),
           f"git fixture create-worktree failed: {p.stdout} {p.stderr}")
     calls = [json.loads(x) for x in log.read_text().splitlines()]
-    check(any(x[:2] == ["tab", "create"] and "wTask" in x for x in calls),
-          "linked worktree worker tab did not enter its Space")
+    check(any(x[:2] == ["agent", "start"] and "--pane" in x
+              and x[x.index("--pane") + 1] == "wTask:p1" for x in calls)
+          and not any(x[:2] == ["tab", "create"] for x in calls),
+          "new-Space dispatch must start the worker in the root pane (wTask:p1), not tab create")
     second = git_project / "tasks/2099-01-02-gitreuse.md"
     second.write_text(TASK)
     p = call(["bash", str(git_project / "qwbuddy/bin/qwb-run.sh"), "--project", str(git_project),

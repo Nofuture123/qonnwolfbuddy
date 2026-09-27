@@ -55,7 +55,7 @@ elif args[:2] == ["worktree", "open"]:
     already = state.exists()
     state.write_text(path)
     out({"already_open": already, "workspace": {"workspace_id": "wTask"},
-         "root_pane": {} if mode == "open-missing-root-tab" else {"tab_id": "wTask:t1"}})
+         "root_pane": {} if mode == "open-missing-root-tab" else {"tab_id": "wTask:t1", "pane_id": "wTask:p1"}})
 elif args[:2] == ["agent", "get"]:
     err("agent_not_found")
 elif args[:2] == ["tab", "create"]:

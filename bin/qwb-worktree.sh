@@ -21,6 +21,11 @@ usage() {
                     → 安全关闭本票 Space、git worktree remove、按旧 OID 原子删分支；detached HEAD 时只打 tag、
                     删 worktree，不删同名分支（它指向别的东西，不指向本工作区）。
     --keep[=原因]   不动 git，只在任务书点名保留及原因（不做脏检查——规范允许留冲突待解的）。
+    --root-tab-missing  根 tab 已不在 Space 里时的显式兑底：仅与 --merged|--archive 同用；
+                    其余身份证据（Space id 与 worktree-space: 记录吻合、路径吻合、无外来 tab、
+                    全 pane 空闲）仍逐项核对，全部通过才放行，最终 worktree: 行追加
+                    root-tab-missing=1 留痕。无该参数时根 tab 缺失仍拒绝。与 --keep 同传
+                    时不报错也不留痕（行为与单独 --keep 一致）。
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
   先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
   worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
@@ -42,7 +47,7 @@ case "${1:-}" in
   *) echo "错误：需要子命令 list|finish" >&2; usage >&2; exit 2 ;;
 esac
 
-PROJECT_ROOT="$(pwd)"; TASK_ID=""; ACTION=""; REASON=""
+PROJECT_ROOT="$(pwd)"; TASK_ID=""; ACTION=""; REASON=""; ROOT_TAB_MISSING=0; ROOT_TAB_MISSING_APPLIED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -50,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --merged|--archive) ACTION="${1#--}"; shift ;;
     --keep) ACTION="keep"; shift ;;
     --keep=*) ACTION="keep"; REASON="${1#--keep=}"; shift ;;
+    --root-tab-missing) ROOT_TAB_MISSING=1; shift ;;
     -*) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
     *) if [[ -z "$TASK_ID" ]]; then TASK_ID="$1"; else echo "错误：多余参数 $1" >&2; exit 2; fi; shift ;;
   esac
@@ -94,6 +100,8 @@ unique_task_for() {
 }
 
 if [[ "$CMD" == "list" ]]; then
+  [[ "$ROOT_TAB_MISSING" -eq 0 ]] \
+    || { echo "错误：未知参数 --root-tab-missing（仅 finish 的 --merged|--archive 支持）" >&2; usage >&2; exit 2; }
   found=0
   for d in "$WT_BASE"/*; do
     [[ -d "$d" ]] || continue
@@ -147,9 +155,10 @@ if [[ ! -d "$WT_DIR" ]]; then
   [[ "$ACTION" != keep && ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
     || { echo "错误：worktree 不存在或任务书是符号链接：${WT_DIR}" >&2; exit 1; }
   partial="$(grep '^worktree:' "$TASK_FILE" | tail -1 || true)"
-  if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})$ ]]; then
+  if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})( root-tab-missing=1)?$ ]]; then
     echo "错误：worktree 不存在且没有可续做的 branch-delete 记录：${WT_DIR}" >&2; exit 1
   fi
+  partial_rtm=""; [[ "$partial" == *" root-tab-missing=1" ]] && partial_rtm=" root-tab-missing=1"
   [[ "${BASH_REMATCH[1]}" == "$ACTION" ]] \
     || { echo "拒绝：续做动作与 partial 记录不符" >&2; exit 1; }
   BRANCH="${BASH_REMATCH[2]}"; TAG="${BASH_REMATCH[3]}"; HEAD_OID="${BASH_REMATCH[5]}"
@@ -171,7 +180,7 @@ if [[ ! -d "$WT_DIR" ]]; then
   git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
     || { echo "错误：按 partial OID 续删分支失败，原记录保留" >&2; exit 1; }
   cleanup_branch_config
-  printf 'worktree: %s branch=%s tag=%s\n' "$ACTION" "$BRANCH" "$TAG" >> "$TASK_FILE" \
+  printf 'worktree: %s branch=%s tag=%s%s\n' "$ACTION" "$BRANCH" "$TAG" "$partial_rtm" >> "$TASK_FILE" \
     || { echo "错误：分支已删但最终记账失败，请手工核对：$TASK_FILE" >&2; exit 1; }
   echo "已续做：按 partial OID ${HEAD_OID} 删除分支 ${BRANCH}，并记账 worktree: ${ACTION}"
   exit 0
@@ -265,8 +274,9 @@ race_note() {
 SPACE_ID=""
 partial_fail() {
   local stage="$1" recovery="" script_path
-  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s oid=%s\n' \
-    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" "$HEAD_OID" >> "$TASK_FILE" \
+  partial_rtm=""; [[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && partial_rtm=" root-tab-missing=1"
+  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s oid=%s%s\n' \
+    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" "$HEAD_OID" "$partial_rtm" >> "$TASK_FILE" \
     || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
   echo "错误：收尾停在 ${stage}（OID ${HEAD_OID}）；核对 Git worktree/分支与 Herdr Space 后再恢复" >&2
   if [[ "$stage" == "branch-delete" && "$DETACHED" -eq 0 ]]; then
@@ -335,7 +345,15 @@ prepare_space_close() {
       || { echo "拒绝：Space 中有非本票 tab ${tab_id}" >&2; return 1; }
   done <<< "$tab_ids"
   printf '%s\n' "$tab_ids" | grep -Fxq "$root_tab" \
-    || { echo "拒绝：本票根 tab 已不存在" >&2; return 1; }
+    || {
+         if [[ "$ROOT_TAB_MISSING" -eq 1 ]]; then
+           ROOT_TAB_MISSING_APPLIED=1
+           echo "提示：本票根 tab ${root_tab} 已不在 Space；--root-tab-missing 兑底放行（其余身份证据已逐项核对，收尾将留痕 root-tab-missing=1）" >&2
+         else
+           echo "拒绝：本票根 tab 已不存在（Space 与工人 tab 仍在；确认无需恢复后可用 --root-tab-missing 兑底收尾）" >&2
+           return 1
+         fi
+       }
   panes_out="$(herdr pane list --workspace "$SPACE_ID" 2>&1)" \
     || { echo "拒绝：Space pane 查询失败：$panes_out" >&2; return 1; }
   pane_rows="$(printf '%s' "$panes_out" | perl -MJSON::PP=decode_json -0777 -e '
@@ -460,5 +478,11 @@ esac
 
 line="worktree: ${ACTION} branch=${BL} tag=${TAG}"
 [[ -n "$REASON" ]] && line="${line} reason=${REASON}"
+# partial（如 worktree-remove 失败）已带留痕、Space 已关后重跑：沿用收据留痕；
+# 防陈旧 partial 污染：收据 oid 必须等于本次实际 HEAD_OID 才认。
+if [[ "$ROOT_TAB_MISSING_APPLIED" -eq 0 ]] && grep -q "^worktree: partial action=${ACTION} .* oid=${HEAD_OID} root-tab-missing=1$" "$TASK_FILE"; then
+  ROOT_TAB_MISSING_APPLIED=1
+fi
+[[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && line="${line} root-tab-missing=1"
 printf '%s\n' "$line" >> "$TASK_FILE"
 echo "已记账：$(basename "$TASK_FILE") ← ${line}"
