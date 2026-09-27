@@ -30,6 +30,15 @@ TPL="$SRC/../templates"
 
 [[ -d "$TPL" ]] || { echo "错误：找不到模板目录 ${TPL}——本脚本只在 QW buddy 母本仓运行（安装副本里的同名文件属历史残留，请改用母本仓 bin/qwb-init.sh 的绝对路径）" >&2; exit 1; }
 
+quote_worker_arg() { # 把一个值写成 workers.sh 里的单引号 Bash 实参（内嵌单引号也保真）
+  local rest="$1" quoted="'"
+  while [[ "$rest" == *"'"* ]]; do
+    quoted="${quoted}${rest%%\'*}'\\''"
+    rest="${rest#*\'}"
+  done
+  printf "%s%s'" "$quoted" "$rest"
+}
+
 if [[ "$MIGRATE" -eq 1 ]]; then
   conf="$ROOT/qwbuddy/config.sh"; workers="$ROOT/qwbuddy/workers.sh"
   [[ ! -L "$ROOT/qwbuddy" && -d "$ROOT/qwbuddy" && ! -L "$conf" && ! -L "$workers" ]] \
@@ -95,14 +104,6 @@ PYEOF
   tmp_workers="$(mktemp "$ROOT/qwbuddy/.workers.XXXXXX")"
   tmp_conf="$(mktemp "$ROOT/qwbuddy/.config.XXXXXX")"
   trap 'rm -f "$tmp_workers" "$tmp_conf"' EXIT
-  quote_worker_arg() {
-    local rest="$1" quoted="'"
-    while [[ "$rest" == *"'"* ]]; do
-      quoted="${quoted}${rest%%\'*}'\\''"
-      rest="${rest#*\'}"
-    done
-    printf "%s%s'" "$quoted" "$rest"
-  }
   printf '%s\n' '# 由 qwb-init.sh 显式迁移；每个参数是一个 Bash 实参。' > "$tmp_workers"
   for worker in $QWB_WORKERS; do
     mode=herdr; launch=""; launch_seen=0; args=""
@@ -234,6 +235,46 @@ else
     echo "提示：已有 config.sh 但缺少 workers.sh；未读取/执行用户配置，也未写入可能不匹配的默认工人表，当前不可派发。请手动创建 qwbuddy/workers.sh，为 QWB_WORKERS 的每个工人写一条 qwb_worker 声明（见母本仓 templates/workers.sh）；原配置未改动。" >&2
   fi
 fi
+
+# claude 工人加 --add-dir <项目根物理路径>：Claude Code 2.1.257 起，工作目录外的文件读取会弹一次性
+# 确认，答 Block 会持久化 permissions.blockReadsOutsideWorkingDirectories，此后 bypass 也拒读。
+# 工人 cwd 在 worktree，开工先读项目根 tasks/ 的任务书正是目录外读取。装机时把项目根写进
+# workers.sh 的 claude herdr 行（qwb-run 派发时自己加 `--`，此处不写 `--`，否则第二个 `--` 会被
+# claude 当成位置参数），运行时不再解析。窄改写：只动 claude herdr 行、不重排、不吞注释；已带
+# --add-dir 则不再追加（幂等）；无 claude herdr 行（定制工人表）不动。
+upgrade_claude_add_dir() {
+  local workers="$ROOT/qwbuddy/workers.sh" root_p tmp rc=0
+  [[ -f "$workers" ]] || return 0
+  if [[ -L "$workers" ]]; then
+    echo "提示：qwbuddy/workers.sh 是符号链接，未改写 claude 行；请手动给 claude 行加 --add-dir <项目根>" >&2
+    return 0
+  fi
+  root_p="$(cd "$ROOT" && pwd -P)"
+  tmp="$(mktemp "$ROOT/qwbuddy/.workers.XXXXXXXX")" || return 1
+  cp -p "$workers" "$tmp" || { rm -f "$tmp"; return 1; }
+  # perl 逐行：claude herdr 行且无 --add-dir → 在 herdr 后插入 --add-dir '<根>'；其余行原样（含无尾换行）。
+  # 退出码：0 改写了；1 已有 --add-dir；2 无 claude herdr 行。
+  perl -e '
+    my ($quoted) = @ARGV; my $state = 2;
+    while (<STDIN>) {
+      if (/^(\s*qwb_worker\s+["\x27]?claude["\x27]?\s+["\x27]?herdr["\x27]?)(\s.*|)$/s) {
+        if (/(^|\s)["\x27]?--add-dir(["\x27]|=|\s|$)/) { $state = 1 if $state == 2; }
+        else { $_ = "$1 --add-dir $quoted$2"; $state = 0; }
+      }
+      print;
+    }
+    exit $state;
+  ' "$(quote_worker_arg "$root_p")" < "$workers" > "$tmp" || rc=$?
+  case "$rc" in
+    0) bash -n "$tmp" || { rm -f "$tmp"; echo "错误：改写后的 workers.sh 语法无效，原文件未动" >&2; return 1; }
+       mv -f "$tmp" "$workers" || { rm -f "$tmp"; return 1; }
+       echo "写入：qwbuddy/workers.sh claude 行加 --add-dir ${root_p}" ;;
+    1) rm -f "$tmp"; echo "跳过：qwbuddy/workers.sh claude 行已有 --add-dir（幂等）" ;;
+    2) rm -f "$tmp" ;;
+    *) rm -f "$tmp"; echo "错误：改写 workers.sh claude 行失败（perl 退出码 ${rc}），原文件未动" >&2; return 1 ;;
+  esac
+}
+upgrade_claude_add_dir || exit 1
 
 # 常驻附页模板：目标已有则不覆盖（可能已被项目主人改成自己的常驻规则），幂等
 if [[ -f "$ROOT/qwbuddy/brief-include.md" ]]; then

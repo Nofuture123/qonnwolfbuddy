@@ -160,6 +160,8 @@ case "\${1:-} \${2:-}" in
   "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
                 printf '{"id":"cli:tab:close","result":{"type":"ok"}}\n' ;;
   "agent start") if [[ "\${HERDR_FAIL:-}" == *start* ]]; then fix agent-start-name-taken.json >&2; exit 1; fi
+                # 逐项 JSON 记录（\$* 行丢参数边界；含空格/引号的实参只能在这里实证是单元素）
+                perl -MJSON::PP=encode_json -e 'print encode_json({cmd => "agent start", argv => [@ARGV]}), "\n"' -- "\${@:3}" >> "$STUBLOG"
                 fix agent-start.json ;;
   "agent prompt") if [[ "\${HERDR_FAIL:-}" == *prompt* ]]; then failjson inject_failed "mocked prompt failure"; fi
                 fix agent-prompt.json ;;
@@ -711,6 +713,159 @@ HERDR_DYN_DIR="$FD" qwb_finish wtpartial --archive --project "$GP" >/dev/null 2>
   && grep -q '^worktree: archive branch=wtpartial tag=archive/wtpartial root-tab-missing=1$' "$SPF"; } \
   && ok "S10 partial 留痕收据（Space 已关重跑）：收尾成功且最终行保留 root-tab-missing=1" \
   || { bad "S10 partial 留痕续收不对（rc=${sp_rc}）"; tail -3 "$SPF"; }
+
+echo "== 17c. claude 工人 --add-dir 项目根（Claude Code 2.1.257 目录外读取坑，本票 5 场景）=="
+# 场景（票 §1）：新装 workers.sh claude 行带 --add-dir 且值恰为项目根物理路径，其余工人行与模板字节一致｜
+#   旧装机窄升级：只动 claude 行，注释/空行/重排/自定义 codex argv/无尾换行字节不变；再跑一次文件不变｜
+#   已带 --add-dir（用户自定值）或 claude 为 pane-run 的行不动｜派发透传：stub 日志 agent start 含
+#   `-- --add-dir P`（`--` 由 qwb-run 加，workers.sh 不写 `--`，否则第二个 `--` 会被 claude 当位置参数）｜
+#   路径含空格：值为一个 Bash 实参｜未升级旧 claude 行（无 argv）派发行为与升前一致（无 `--`）。
+AD="$TMP/adddir"; mkdir -p "$AD"; git -C "$AD" init -q
+bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init.out" 2>&1 || bad "17c init 失败"
+AD_P="$(cd "$AD" && pwd -P)"
+ad_argv() { # $1=workers.sh $2=工人名 → 该工人声明的启动方式与逐项 argv（每项一行）
+  ( AD_W="$2"; qwb_worker() { local n="$1"; shift; [[ "$n" == "$AD_W" ]] || return 0; printf '%s\n' "$@"; }
+    # shellcheck source=/dev/null
+    . "$1" )
+}
+ad_expect=$'herdr\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions'
+# S1 新装：claude 行 argv 恰为 --add-dir <物理路径> + 模板权限参数；其余 4 行与模板字节一致；--add-dir 恰一处
+{ [[ "$(ad_argv "$AD/qwbuddy/workers.sh" claude)" == "$ad_expect" ]] \
+   && grep -q '^写入：qwbuddy/workers.sh claude 行加 --add-dir ' "$TMP/ad-init.out" \
+   && [[ "$(grep -c -- '--add-dir' "$AD/qwbuddy/workers.sh")" == "1" ]]; } \
+  && ok "S1 新装 workers.sh：claude 行 --add-dir 值恰为项目根物理路径，且只出现一次" \
+  || { bad "S1 新装 claude 行不对："; grep claude "$AD/qwbuddy/workers.sh"; cat "$TMP/ad-init.out"; }
+ad_same=1
+for w in codex pi devin omp; do
+  grep -qxF "$(grep "^qwb_worker $w " "$ROOT/templates/workers.sh")" "$AD/qwbuddy/workers.sh" || ad_same=0
+done
+{ [[ "$ad_same" -eq 1 ]] && [[ "$(grep -c '^qwb_worker ' "$AD/qwbuddy/workers.sh")" == "5" ]] \
+   && [[ "$(grep -v '^qwb_worker claude ' "$AD/qwbuddy/workers.sh")" == "$(grep -v '^qwb_worker claude ' "$ROOT/templates/workers.sh")" ]]; } \
+  && ok "S1 其余工人行与模板字节一致（只有 claude 行不同）" \
+  || bad "S1 非 claude 行被改动"
+# 对照：模板本身不带 --add-dir（值是装机时算的，不是写死在模板里）
+grep -q -- '--add-dir' "$ROOT/templates/workers.sh" \
+  && bad "S1 模板 workers.sh 带了 --add-dir（应装机时写入）" || ok "S1 模板 workers.sh 不带 --add-dir"
+
+# S2 旧装机窄升级：注释/空行/重排/自定义 codex argv/缩进 claude 行/末行无换行 → 只动 claude 行；再跑不变
+AD_W="$AD/qwbuddy/workers.sh"; AD_ORIG="$TMP/ad-orig.sh"
+printf '# top comment\nqwb_worker pi herdr --approve\n\n  qwb_worker   claude   herdr\nqwb_worker codex herdr --custom "a b" # trailing\nqwb_worker devin herdr\n' > "$AD_W"
+printf 'qwb_worker omp herdr' >> "$AD_W"   # 末行故意无换行
+cp "$AD_W" "$AD_ORIG"
+bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init2.out" 2>&1 || bad "S2 升级 init 失败"
+{ [[ "$(ad_argv "$AD_W" claude)" == $'herdr\n--add-dir\n'"$AD_P" ]] \
+   && cmp -s <(grep -v 'claude' "$AD_ORIG") <(grep -v 'claude' "$AD_W") \
+   && [[ "$(tail -c1 "$AD_W" | od -An -c | tr -d ' ')" == "r" ]] \
+   && grep -q '^  qwb_worker   claude   herdr --add-dir ' "$AD_W" \
+   && [[ "$(grep -c -- '--add-dir' "$AD_W")" == "1" ]] \
+   && [[ "$(wc -l < "$AD_W" | tr -d ' ')" == "$(wc -l < "$AD_ORIG" | tr -d ' ')" ]]; } \
+  && ok "S2 旧装机窄升级：只 claude 行加 --add-dir，注释/空行/顺序/codex 自定义 argv/无尾换行字节不变" \
+  || { bad "S2 窄升级不对："; diff "$AD_ORIG" "$AD_W"; cat "$TMP/ad-init2.out"; }
+cp "$AD_W" "$TMP/ad-once.sh"
+bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init3.out" 2>&1 || bad "S2 二次 init 失败"
+{ cmp -s "$TMP/ad-once.sh" "$AD_W" && grep -q '^跳过：qwbuddy/workers.sh claude 行已有 --add-dir' "$TMP/ad-init3.out"; } \
+  && ok "S2 幂等：再跑一次 workers.sh 字节不变、stdout 报跳过" \
+  || { bad "S2 二次运行改了文件或未报跳过"; diff "$TMP/ad-once.sh" "$AD_W"; cat "$TMP/ad-init3.out"; }
+# 负例：用户已自定 --add-dir 值 / claude 是 pane-run / 表里没 claude → 一个字节不动，init 仍退出 0
+for ad_case in "qwb_worker claude herdr --add-dir '/user/own' --dangerously-skip-permissions" \
+               "qwb_worker 'claude' 'herdr' '--add-dir=/user/own'" \
+               "qwb_worker claude pane-run claude --dangerously-skip-permissions" \
+               "qwb_worker codex herdr"; do
+  printf '%s\n' "$ad_case" > "$AD_W"; cp "$AD_W" "$AD_ORIG"
+  bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init4.out" 2>&1; rc=$?
+  { [[ "$rc" -eq 0 ]] && cmp -s "$AD_ORIG" "$AD_W" && ! grep -q '^写入：qwbuddy/workers.sh claude' "$TMP/ad-init4.out"; } \
+    && ok "S2 不动：「${ad_case}」" \
+    || { bad "S2 该行被改写或 init 非 0（rc=${rc}）：${ad_case}"; cat "$AD_W"; }
+done
+# 负例：workers.sh 是符号链接 → 不穿透改写、不替换链接、stderr 提示、init 仍退出 0
+printf 'qwb_worker claude herdr\n' > "$TMP/ad-link-target.sh"; rm -f "$AD_W"; ln -s "$TMP/ad-link-target.sh" "$AD_W"
+bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init5.out" 2>&1; rc=$?
+{ [[ "$rc" -eq 0 && -L "$AD_W" ]] && [[ "$(cat "$TMP/ad-link-target.sh")" == 'qwb_worker claude herdr' ]] \
+   && grep -q '符号链接，未改写 claude 行' "$TMP/ad-init5.out"; } \
+  && ok "S2 符号链接 workers.sh：不改写、不替换、stderr 提示" \
+  || { bad "S2 符号链接处理不对（rc=${rc}）"; cat "$TMP/ad-init5.out"; }
+rm -f "$AD_W"; cp "$ROOT/templates/workers.sh" "$AD_W"   # 复原：装回模板行再跑 init（已有 config.sh 时 init 不补装 workers.sh）
+bash "$ROOT/bin/qwb-init.sh" "$AD" >/dev/null 2>&1 || bad "17c 复原 init 失败"
+
+# S3 派发透传：stub 日志 agent start 以 `-- --add-dir <P> --dangerously-skip-permissions` 结尾（`--` 由 qwb-run 加）
+printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' >> "$AD/qwbuddy/config.sh"
+ad_task() { # $1=项目根 $2=任务 id
+  cat > "$1/tasks/2099-05-01-$2.md" <<EOF
+# $2
+state: blocked
+
+## 1. 验收场景
+
+### user_正常
+Given claude 行带 --add-dir 项目根
+When  主控派发
+Then  agent start 透传该参数
+
+### user_失败
+Given 旧 claude 行无 argv
+When  主控派发
+Then  agent start 不带多余 --
+EOF
+}
+ad_run() { ( cd "$1" && shift && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ad HERDR_WORKSPACE_ID=wtestW bash qwbuddy/bin/qwb-run.sh "$@" ); }
+ad_task "$AD" adtask; rm -rf "$AD/qwbuddy/.controller.lock"; : > "$STUBLOG"
+out="$(ad_run "$AD" --task adtask --worker claude --here 2>&1)"; rc=$?
+ad_json_tail() { # $1=项目根物理路径 → stub JSON 行的 argv 末 4 项恰为 ["--","--add-dir",P,"--dangerously-skip-permissions"]（P 单元素），且 -- 恰一个
+  grep '^{.*"cmd":"agent start"' "$STUBLOG" | perl -MJSON::PP=decode_json -e '
+    my $p = shift @ARGV; my @lines = <STDIN>; exit 1 unless @lines == 1;
+    my $a = decode_json($lines[0])->{argv}; exit 1 unless @$a >= 4;
+    my @tail = @$a[-4 .. -1];
+    my $dashes = grep { $_ eq "--" } @$a;
+    exit(($tail[0] eq "--" && $tail[1] eq "--add-dir" && $tail[2] eq $p && $tail[3] eq "--dangerously-skip-permissions" && $dashes == 1) ? 0 : 1)' "$1"
+}
+{ [[ "$rc" -eq 0 ]] \
+   && grep -qxF "herdr agent start qwb-adtask --kind claude --pane w93:p7 --timeout 300 -- --add-dir ${AD_P} --dangerously-skip-permissions" "$STUBLOG" \
+   && [[ "$(grep -c '^herdr agent start' "$STUBLOG")" == "1" ]] \
+   && ad_json_tail "$AD_P"; } \
+  && ok "S3 派发：JSON argv 以 [\"--\",\"--add-dir\",P,\"--dangerously-skip-permissions\"] 结尾，P 单元素、-- 恰一个" \
+  || { bad "S3 透传不对（rc=${rc}）"; printf '%s\n' "$out"; grep 'agent start' "$STUBLOG"; }
+
+# S4 路径含空格：--add-dir 值是一个 Bash 实参（不裂开、不丢引号），派发照常透传
+ADS="$TMP/my project"; mkdir -p "$ADS"
+bash "$ROOT/bin/qwb-init.sh" "$ADS" >/dev/null 2>&1 || bad "S4 含空格路径 init 失败"
+ADS_P="$(cd "$ADS" && pwd -P)"
+{ [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude)" == $'herdr\n--add-dir\n'"$ADS_P"$'\n--dangerously-skip-permissions' ]] \
+   && [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude | wc -l | tr -d ' ')" == "4" ]] \
+   && [[ "$ADS_P" == *" "* ]]; } \
+  && ok "S4 含空格项目根：--add-dir 值为一个实参、恰 4 项 argv" \
+  || { bad "S4 含空格路径实参裂开或丢失："; grep claude "$ADS/qwbuddy/workers.sh"; }
+printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' >> "$ADS/qwbuddy/config.sh"
+ad_task "$ADS" adspace; : > "$STUBLOG"
+out="$(ad_run "$ADS" --task adspace --worker claude --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && ad_json_tail "$ADS_P"; } \
+  && ok "S4 含空格路径派发：JSON argv 里 --add-dir 值是单元素（边界保真，非 \$* 日志的字面拼接）" \
+  || { bad "S4 含空格路径派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep 'agent start' "$STUBLOG"; }
+# S4b 内嵌单引号路径：quote_worker_arg 转义后 qwb_worker 解析仍得原路径，派发 JSON argv 单元素
+ADQ="$TMP/it's proj"; mkdir -p "$ADQ"
+bash "$ROOT/bin/qwb-init.sh" "$ADQ" >/dev/null 2>&1 || bad "S4b 含单引号路径 init 失败"
+ADQ_P="$(cd "$ADQ" && pwd -P)"
+{ [[ "$(ad_argv "$ADQ/qwbuddy/workers.sh" claude)" == $'herdr\n--add-dir\n'"$ADQ_P"$'\n--dangerously-skip-permissions' ]] \
+   && grep -q -- "--add-dir '.*it'\\\\''s proj' " "$ADQ/qwbuddy/workers.sh" \
+   && bash -n "$ADQ/qwbuddy/workers.sh"; } \
+  && ok "S4b 含单引号项目根：workers.sh 用 '\\'' 转义、bash -n 过、解析回原路径为一个实参" \
+  || { bad "S4b 含单引号路径转义/解析不对："; grep claude "$ADQ/qwbuddy/workers.sh"; }
+printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' >> "$ADQ/qwbuddy/config.sh"
+ad_task "$ADQ" adquote; : > "$STUBLOG"
+out="$(ad_run "$ADQ" --task adquote --worker claude --here 2>&1)"; rc=$?
+{ [[ "$rc" -eq 0 ]] && ad_json_tail "$ADQ_P"; } \
+  && ok "S4b 含单引号路径派发：JSON argv 里 --add-dir 值单元素且等于物理路径" \
+  || { bad "S4b 含单引号路径派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep 'agent start' "$STUBLOG"; }
+
+# S5 向后兼容：未升级的旧 claude 行（无任何 argv）→ agent start 不带 `--`，与升级前字节一致
+sed -i '' 's/^qwb_worker claude herdr .*$/qwb_worker claude herdr/' "$AD/qwbuddy/workers.sh"
+grep -qxF 'qwb_worker claude herdr' "$AD/qwbuddy/workers.sh" || bad "S5 夹具：旧 claude 行未就位"
+ad_task "$AD" adold; rm -rf "$AD/qwbuddy/.controller.lock"; : > "$STUBLOG"
+out="$(ad_run "$AD" --task adold --worker claude --here 2>&1)"; rc=$?
+ad_sl="$(grep '^herdr agent start' "$STUBLOG")"
+{ [[ "$rc" -eq 0 ]] && [[ "$ad_sl" == "herdr agent start qwb-adold --kind claude --pane w93:p7 --timeout 300" ]]; } \
+  && ok "S5 旧 claude 行无 argv：agent start 无 --、行为与升级前一致" \
+  || { bad "S5 无 argv 派发变了（rc=${rc}）：${ad_sl}"; printf '%s\n' "$out"; }
+rm -rf "$AD" "$ADS" "$ADQ"
 
 echo "== 18. G1：detached HEAD 下归档/落地以实际 HEAD OID 为准 =="
 # 场景：分支 wtdet 在 A；checkout --detach 后提交 B（分支仍指 A）

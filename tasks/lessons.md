@@ -20,3 +20,4 @@
 - [门结果不能预写进被测提交](lessons/门结果不能预写进被测提交.md) —— 主控 2026-09-24：r3 任务书要求把最终 SHA 的门退出码写进同属最终 SHA 的执行记录，执行者先写「0」后跑门；任务书只能要求后验运行、结果单独交付。
 - [worktree根tab别当单点身份证据](lessons/worktree根tab别当单点身份证据.md) —— qonnwolf-sites 反馈 2026-09-27：隔离派发另开工人 tab 留空根 tab 且 finish 被根 tab 单点卡死；改为工人直落根 pane + `--root-tab-missing` 显式兑底留痕。
 - [herdr worktree open 自带根 tab](lessons/herdr-worktree-open-自带根tab.md) —— 2026-09-27：方案A 新建 Space 工人直落根 pane 不再 tab create；根 tab 曾是 finish 单点身份证据，缺失时 --root-tab-missing 显式兜底（其余证据齐全+留痕），不静默放行也不死锁。
+- [claude217目录外读取装机时授权](lessons/claude217目录外读取装机时授权.md) —— 2026-09-27：Claude Code 2.1.257+ 目录外读取弹框、答 Block 持久化连 bypass 也拒；init 装机时给 claude 行窄写 --add-dir 项目根，qwb-run 的 `--` 不重复。
