@@ -239,9 +239,9 @@ fi
 # claude 工人加 --add-dir <项目根物理路径>：Claude Code 2.1.257 起，工作目录外的文件读取会弹一次性
 # 确认，答 Block 会持久化 permissions.blockReadsOutsideWorkingDirectories，此后 bypass 也拒读。
 # 工人 cwd 在 worktree，开工先读项目根 tasks/ 的任务书正是目录外读取。装机时把项目根写进
-# workers.sh 的 claude herdr 行（qwb-run 派发时自己加 `--`，此处不写 `--`，否则第二个 `--` 会被
-# claude 当成位置参数），运行时不再解析。窄改写：只动 claude herdr 行、不重排、不吞注释；已带
-# --add-dir 则不再追加（幂等）；无 claude herdr 行（定制工人表）不动。
+# workers.sh 的 Claude harness 行。新式 <名> herdr claude -- 的分隔符由 qwb-run 消费，
+# 参数插入该分隔符后；旧式 claude herdr 则仍插入 herdr 后。只动匹配行、不重排、不吞注释；
+# 已带 --add-dir 则不再追加（幂等），其他 harness 与 pane-run 不动。
 upgrade_claude_add_dir() {
   local workers="$ROOT/qwbuddy/workers.sh" root_p tmp rc=0
   [[ -f "$workers" ]] || return 0
@@ -252,14 +252,21 @@ upgrade_claude_add_dir() {
   root_p="$(cd "$ROOT" && pwd -P)"
   tmp="$(mktemp "$ROOT/qwbuddy/.workers.XXXXXXXX")" || return 1
   cp -p "$workers" "$tmp" || { rm -f "$tmp"; return 1; }
-  # perl 逐行：claude herdr 行且无 --add-dir → 在 herdr 后插入 --add-dir '<根>'；其余行原样（含无尾换行）。
+  # perl 逐行：先匹配显式 harness，再处理旧式 claude 行；其余行原样（含无尾换行）。
   # 退出码：0 改写了；1 已有 --add-dir；2 无 claude herdr 行。
   perl -e '
     my ($quoted) = @ARGV; my $state = 2;
     while (<STDIN>) {
-      if (/^(\s*qwb_worker\s+["\x27]?claude["\x27]?\s+["\x27]?herdr["\x27]?)(\s.*|)$/s) {
+      my ($head, $tail);
+      if (/^(\s*qwb_worker\s+\S+\s+["\x27]?herdr["\x27]?\s+["\x27]?claude["\x27]?\s+--)(\s.*|)$/s) {
+        ($head, $tail) = ($1, $2);
+      } elsif (/^(\s*qwb_worker\s+["\x27]?claude["\x27]?\s+["\x27]?herdr["\x27]?)(\s.*|)$/s
+               && $2 !~ /^\s+[^-\s]\S*\s+--(?:\s|$)/) {
+        ($head, $tail) = ($1, $2);
+      }
+      if (defined $head) {
         if (/(^|\s)["\x27]?--add-dir(["\x27]|=|\s|$)/) { $state = 1 if $state == 2; }
-        else { $_ = "$1 --add-dir $quoted$2"; $state = 0; }
+        else { $_ = "$head --add-dir $quoted$tail"; $state = 0; }
       }
       print;
     }

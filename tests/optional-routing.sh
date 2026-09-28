@@ -95,8 +95,10 @@ SH
 cat > "$T/fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HERDR_LOG"
+python3 -c 'import json,os,sys; open(os.environ["HERDR_LOG"]+".jsonl","a").write(json.dumps(sys.argv[1:])+"\n")' "$@"
 case "$1 $2" in
-  'agent get') echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1;;
+  'agent get') if [[ -n "${FAKE_REUSE_AGENT:-}" ]]; then cat "$FAKE_REUSE_AGENT"; exit 0; fi; echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1;;
+  'pane get') cat "$FAKE_REUSE_PANE";;
   'workspace list') echo '{"result":{"workspaces":[{"workspace_id":"wtest","focused":true}]}}';;
   'tab create') echo '{"result":{"root_pane":{"pane_id":"ptest","tab_id":"ttest"}}}';;
   'agent start'|'agent prompt') echo '{"result":{}}';;
@@ -221,3 +223,96 @@ printf '%s\n' '{"rules":[{"when":"build","worker":"ghost"}],"default":{"worker":
 jq '.answers.rule.confidence=0.9 | .answers.rule.probabilities={rule_1:0.9,default:0.1}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
 TYPESAFE_API_KEY=fake-key reject_unchanged ghost 1 '合法工人'
 echo 'PASS auto unknown worker before side effects'
+
+# Named agent identity is distinct from the Herdr harness; argv remains an array.
+printf "QWB_WORKERS='codex pi sol-high fable-high'\n" >> "$T/project/qwbuddy/config.sh"
+cat >> "$T/project/qwbuddy/workers.sh" <<'SH'
+qwb_worker sol-high herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high --example 'a b' ''
+qwb_worker fable-high herdr claude -- --model claude-fable-5 --effort high
+SH
+cp "$T/project/qwbuddy/workers.sh" "$T/named-workers"
+task named
+run named sol-high
+test "$(worker named)" = sol-high
+jq -se '[.[] | select(.[0:2] == ["agent","start"])] | last |
+  .[3:5] == ["--kind","codex"] and
+  .[9:] == ["--","--model","gpt-6-sol","-c","model_reasoning_effort=high","--example","a b",""]' "$HERDR_LOG.jsonl" >/dev/null
+echo 'PASS named agent starts explicit harness with exact model/effort argv'
+# Even herdr has a fixed kind list; invalid explicit syntax must fail before side effects.
+for definition in 'qwb_worker sol-high herdr -bad -- --model gpt-6-sol' \
+                  'qwb_worker sol-high herdr "bad harness" -- --model gpt-6-sol' \
+                  'qwb_worker sol-high herdr "" --'; do
+  sed '/^qwb_worker sol-high /d' "$T/named-workers" > "$T/project/qwbuddy/workers.sh"
+  printf '%s\n' "$definition" >> "$T/project/qwbuddy/workers.sh"
+  task badharness
+  reject_unchanged badharness 1 'harness'
+  echo 'PASS malformed explicit harness rejected before side effects'
+done
+cp "$T/named-workers" "$T/project/qwbuddy/workers.sh"
+# Explicit harness must also drive trust preseed, not the alias.
+printf '{"projects":{}}' > "$HOME/.claude.json"
+task namedclaude
+run namedclaude fable-high
+jq -e --arg dir "$T/project" '.projects[$dir].hasTrustDialogAccepted == true' "$HOME/.claude.json" >/dev/null
+grep -q 'agent start qwb-namedclaude --kind claude' "$HERDR_LOG"
+echo 'PASS named Claude harness drives start and trust preseed'
+
+# Reuse compares the runtime harness while the receipt still binds the named agent.
+export FAKE_REUSE_AGENT="$T/reuse-agent.json" FAKE_REUSE_PANE="$T/reuse-pane.json"
+jq -cn --arg dir "$T/project" '{result:{agent:{name:"qwb-named",agent_status:"idle",pane_id:"ptest",agent:"codex",cwd:$dir,workspace_id:"wtest"}}}' > "$FAKE_REUSE_AGENT"
+jq -cn --arg dir "$T/project" '{result:{pane:{pane_id:"ptest",agent:"codex",cwd:$dir,workspace_id:"wtest"}}}' > "$FAKE_REUSE_PANE"
+: > "$HERDR_LOG"
+run named sol-high
+grep -q 'agent prompt qwb-named' "$HERDR_LOG"
+! grep -q 'agent start' "$HERDR_LOG"
+echo 'PASS named agent reuse matches explicit harness and receipt'
+jq '.result.pane.agent="claude"' "$FAKE_REUSE_PANE" > "$T/next" && mv "$T/next" "$FAKE_REUSE_PANE"
+before=$(shasum "$T/project/tasks/2099-01-01-named.md")
+: > "$HERDR_LOG"
+if run named sol-high; then echo 'FAIL wrong harness reused' >&2; exit 1; fi
+grep -q '拒绝复用' "$T/err"
+test "$(shasum "$T/project/tasks/2099-01-01-named.md")" = "$before"
+! grep -q 'agent prompt\|agent start' "$HERDR_LOG"
+echo 'PASS named agent refuses a different runtime harness'
+jq '.result.pane.agent="codex"' "$FAKE_REUSE_PANE" > "$T/next" && mv "$T/next" "$FAKE_REUSE_PANE"
+printf "QWB_WORKERS='codex pi sol-high fable-high sol-medium'\n" >> "$T/project/qwbuddy/config.sh"
+printf 'qwb_worker sol-medium herdr codex -- --model gpt-6-sol -c model_reasoning_effort=medium\n' >> "$T/project/qwbuddy/workers.sh"
+: > "$HERDR_LOG"
+if run named sol-medium; then echo 'FAIL different named triplet reused' >&2; exit 1; fi
+grep -q '没有匹配本票的既有 dispatch 身份' "$T/err"
+test "$(shasum "$T/project/tasks/2099-01-01-named.md")" = "$before"
+! grep -q 'agent prompt\|agent start' "$HERDR_LOG"
+echo 'PASS same harness cannot reuse a different named triplet'
+unset FAKE_REUSE_AGENT FAKE_REUSE_PANE
+
+# Install the actual templates, then verify each named candidate at the process boundary.
+cp "$ROOT/templates/config.sh" "$T/project/qwbuddy/config.sh"
+printf 'QWB_WORKSPACE="wtest"\n' >> "$T/project/qwbuddy/config.sh"
+cp "$ROOT/templates/workers.sh" "$T/project/qwbuddy/workers.sh"
+bash "$ROOT/bin/qwb-init.sh" "$T/project" > "$T/init.out"
+cp "$T/project/qwbuddy/workers.sh" "$T/installed-workers"
+bash "$ROOT/bin/qwb-init.sh" "$T/project" > "$T/init-again.out"
+cmp -s "$T/installed-workers" "$T/project/qwbuddy/workers.sh"
+echo 'PASS named template installation is idempotent'
+for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
+            'claude-fable-high claude claude-fable-5 high' \
+            'pi-glm-high pi zai-coding-cn/glm-5.3 high' \
+            'devin devin swe-2-high swe-2-high' \
+            'omp-gemini omp google-antigravity/gemini-3.1-pro high'; do
+  read -r agent harness model effort <<< "$spec"
+  id="template-$agent"
+  task "$id"
+  run "$id" "$agent"
+  test "$(worker "$id")" = "$agent"
+  jq -se --arg harness "$harness" --arg model "$model" --arg effort "$effort" '
+    [.[] | select(.[0:2] == ["agent","start"])] | last |
+    .[3:5] == ["--kind",$harness] and
+    ([.[] | select(. == "--")] | length) == 1 and
+    (index($model) != null) and (index($effort) != null)' "$HERDR_LOG.jsonl" >/dev/null
+  if [[ "$harness" == claude ]]; then
+    jq -se --arg root "$(cd "$T/project" && pwd -P)" '
+      [.[] | select(.[0:2] == ["agent","start"])] | last |
+      (index("--add-dir")) as $i | $i != null and .[$i+1] == $root' "$HERDR_LOG.jsonl" >/dev/null
+  fi
+  echo "PASS installed $agent uses $harness and fixed model/effort"
+done

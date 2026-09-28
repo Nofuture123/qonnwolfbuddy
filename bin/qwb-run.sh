@@ -30,7 +30,9 @@ usage() {
 
 默认：不给 --worktree/--create-worktree/--here 时自动开隔离副本 .worktrees/<任务id>。
 启动方式与 argv：qwbuddy/workers.sh 每工人一条 qwb_worker 声明；herdr 和 pane-run
-    参数均逐项保真。旧配置须先运行母本仓 qwb-init.sh
+    新式 herdr 行为 qwb_worker <名> herdr <harness> -- <argv...>；旧式 herdr 行
+    仍以工人名作为 harness。pane-run 参数不变；模型/effort argv 均逐项保真。
+    旧长串配置须先运行母本仓 qwb-init.sh
     --migrate-worker-config <项目根>；检查在锁/worktree/tab/账本写之前完成。
 新建隔离副本后、开 tab / 记账之前，config.sh 的 QWB_WORKTREE_SETUP 非空时会在副本目录里
 bash -c 执行一次（如 pnpm install --offline --frozen-lockfile && cp ../../.env .env），供
@@ -123,10 +125,11 @@ if [[ ${QWB_WORKER_LAUNCH+x} || ${QWB_WORKER_ARGS+x} ]]; then
 fi
 WORKERS_CONF="$PROJECT_ROOT/qwbuddy/workers.sh"
 [[ -f "$WORKERS_CONF" ]] || { echo "错误：缺少 ${WORKERS_CONF}；若 QWB_WORKERS 是定制表，请按 templates/workers.sh 手动创建逐工人声明；旧长串配置须显式迁移，默认配置可重跑母本仓 bin/qwb-init.sh" >&2; exit 1; }
-QWB_CONFIG_NAMES=(); QWB_CONFIG_MODES=(); QWB_CONFIG_OFFSETS=(); QWB_CONFIG_COUNTS=(); QWB_CONFIG_ARGV=()
+QWB_CONFIG_NAMES=(); QWB_CONFIG_MODES=(); QWB_CONFIG_HARNESSES=(); QWB_CONFIG_OFFSETS=(); QWB_CONFIG_COUNTS=(); QWB_CONFIG_ARGV=()
 has_headless_arg() { [[ "$1" == -p || "$1" == --print || "$1" == --exec || "$1" == exec || "$1" == -p=* || "$1" == --print=* || "$1" == --exec=* || "$1" == exec=* ]]; }
 qwb_worker() {
-  local name="${1:-}" mode="${2:-}" known seen
+  local name="${1:-}" mode="${2:-}" known seen harness
+  harness=$name
   shift 2 || { echo "错误：workers.sh 声明缺少工人名或启动方式" >&2; return 1; }
   known=0
   for seen in $QWB_WORKERS; do [[ "$seen" == "$name" ]] && known=1; done
@@ -135,11 +138,19 @@ qwb_worker() {
     [[ "$seen" == "$name" ]] && { echo "错误：workers.sh 工人 '${name}' 重复启动定义" >&2; return 1; }
   done
   case "$mode" in
-    herdr) ;;
+    herdr)
+      # 仅以分隔符识别新式行，旧式位置实参仍按 argv 原样透传。
+      if [[ "${2:-}" == -- ]]; then
+        [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ && "${2:-}" == -- ]] \
+          || { echo "错误：工人 '${name}' 的显式 harness 须为合法名字且后接 --" >&2; return 1; }
+        harness=$1; shift 2
+      fi
+      ;;
     pane-run) [[ $# -ge 1 && -n "$1" ]] || { echo "错误：工人 '${name}' 的 pane-run 须有非空可执行文件" >&2; return 1; } ;;
     *) echo "错误：工人 '${name}' 启动方式 '${mode}' 非法（herdr / pane-run）" >&2; return 1 ;;
   esac
   QWB_CONFIG_NAMES+=("$name"); QWB_CONFIG_MODES+=("$mode")
+  QWB_CONFIG_HARNESSES+=("$harness")
   QWB_CONFIG_OFFSETS+=("${#QWB_CONFIG_ARGV[@]}"); QWB_CONFIG_COUNTS+=("$#")
   QWB_CONFIG_ARGV+=("$@")
 }
@@ -210,6 +221,7 @@ WORKER_ARGV=(); PANE_COMMAND=""
 for i in "${!QWB_CONFIG_NAMES[@]}"; do
   [[ "${QWB_CONFIG_NAMES[i]}" == "$WORKER" ]] || continue
   LAUNCH_MODE="${QWB_CONFIG_MODES[i]}"
+  WORKER_HARNESS="${QWB_CONFIG_HARNESSES[i]}"
   offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
   for ((j=0; j<count; j++)); do WORKER_ARGV+=("${QWB_CONFIG_ARGV[offset+j]}"); done
   break
@@ -433,7 +445,7 @@ validate_reuse() {
   pane_ws="$(printf '%s' "$pane_meta" | cut -f4)"
   pane_dir="$(cd "$pane_cwd" 2>/dev/null && pwd -P)" \
     || { echo "错误：复用 pane cwd 无法确认：$pane_cwd" >&2; return 1; }
-  [[ "$ag_kind" == "$WORKER" && "$pane_kind" == "$WORKER" \
+  [[ "$ag_kind" == "$WORKER_HARNESS" && "$pane_kind" == "$WORKER_HARNESS" \
      && "$ag_pane" == "$pane_id" && "$actual_dir" == "$expected_dir" \
      && "$pane_dir" == "$expected_dir" && "$ag_ws" == "$expected_ws" \
      && "$pane_ws" == "$expected_ws" ]] \
@@ -705,7 +717,7 @@ fi
 # 预先标成受信任。只对实际派的这一个工人做；文件缺失/非法 → stderr 一行警告并跳过，
 # 信任框照弹、人来按，不阻塞派发。devin 的信任走 workers.sh 启动参数。
 # 已受信任则完全不动文件（幂等：再派一次字节一致）。
-case "$WORKER" in
+case "$WORKER_HARNESS" in
   claude)
     cj="${HOME:-}/.claude.json"
     if [[ ! -f "$cj" ]]; then
@@ -902,7 +914,7 @@ case "$LAUNCH_MODE" in
       [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
       printf '%s\n' "$prompt_out"
     else
-      start_argv=(agent start "$NAME" --kind "$WORKER" --pane "$PANE" --timeout "$START_MS")
+      start_argv=(agent start "$NAME" --kind "$WORKER_HARNESS" --pane "$PANE" --timeout "$START_MS")
       if [[ ${#WORKER_ARGV[@]} -gt 0 ]]; then
         start_argv+=(--)
         start_argv+=("${WORKER_ARGV[@]}")

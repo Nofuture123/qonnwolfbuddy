@@ -180,11 +180,21 @@ qwbuddy/roles/
 - 审核、挑错 → **必须换一个模型家族**（不能自己审自己）
 - 实时信息、联网 → 按能力表挑
 
-### 7.3 额度判定
+### 7.3 JEV 分类与候选解析
+
+Rocky 2026-09-27 定：**分类稳定、agent 易变**。JEV 只按 `when` 判定复杂架构、跨模块、高风险、纯规划、常规实现五类；代码审核仍由主控人工指定，不进自动规则表。`rules[].worker` / `default.worker` 引用 `agents` 的角色 key；`agents` 将角色映射为有序工人候选列表，换人只改该列表。不是 key 的名字按字面工人兼容旧配置，由 `qwb-run` 的整词校验拒绝未注册工人；不设保留角色名、不递归解析。
+
+角色依次选择已在 `QWB_WORKERS` 列名且在 `workers.sh` 有唯一启动定义、不在 `agents_disabled`、额度达标的第一个工人。工人身份是 harness × 模型 × 推理级，模型和档位由启动 argv 固定，不让 JEV 选择。新式 `qwb_worker <名> herdr <harness> -- <argv...>` 显式分开 agent 名和 harness；旧式行兼容 harness=名。文本与 JSON 的 `worker` 为最终工人，`role` 为命中的角色（字面工人为 `-`），`default_worker` 同样解析。default 或高置信度命中角色耗尽时 `exit 2`，stderr 逐候选说明原因，使既有 auto 链路拒绝派发；网络/API/响应错误仍 `status:error`、`exit 0`，保留原有回退。
+
+注册方式、CLI 核实与测试边界见 [JEV 角色层配置](jev-agent-roles.md)。
+
+### 7.4 额度判定
 
 派工前查一次本机额度（`quota-axi`，覆盖本机已登录渠道）。**模型判定 = 智力档（活需要多聪明）× 额度现状（谁还有余量）**。
 
-额度只是**派发时的参考**，不保证执行一定成功。
+JEV 自动路由在有 key 时每次读取一次 `quota-axi --json`，兼容 schema 5/6；取 `windows` 中 `kind=weekly` 的最小 `percentRemaining`，没有 weekly 时取 session。余量须 ≥ `QWB_QUOTA_FLOOR`（默认 10，范围 0–100）。未装/调用失败/坏快照/无匹配 provider 或账户/无有效窗口时，stderr 说明降级为注册+禁名单筛选。无 key 时不查额度、不请求 JEV，仍解析 default 并输出原有 off 结果。
+
+`QWB_TYPESAFE_BASE` 仅供测试覆盖 API 根地址，默认仍为 `https://api.typesafe.ai`。额度只是**派发时的快照**，不保证执行一定成功。
 
 ## 8. 布局
 

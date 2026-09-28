@@ -1,8 +1,18 @@
 {
+  "agents": {
+    "architect": ["codex-sol-high", "claude-fable-high", "pi-glm-high"],
+    "cross_module": ["codex-sol-high", "claude-fable-high", "pi-glm-high"],
+    "high_risk": ["codex-sol-high", "pi-glm-high"],
+    "planning": ["pi-glm-high", "codex-sol-high"],
+    "implement": ["pi-glm-high", "codex-sol-high", "devin", "omp-gemini"]
+  },
+  "agents_disabled": [],
   "rules": [
-    {"when": "复杂架构、跨模块重构、高风险改动", "worker": "codex"},
-    {"when": "常规实现、机械改动、调研", "worker": "pi"},
-    {"when": "代码审核、对抗性审查", "worker": "claude"}
+    {"when": "复杂架构：架构设计、核心抽象、跨仓协议", "worker": "architect"},
+    {"when": "跨模块改动：一次改动同时穿过多个模块或层", "worker": "cross_module"},
+    {"when": "高风险改动：资金、安全、数据删除、生产环境", "worker": "high_risk"},
+    {"when": "纯规划：拆解、写规格、调研、不落代码", "worker": "planning"},
+    {"when": "常规实现：单模块内的实现、修复、机械改动", "worker": "implement"}
   ],
-  "default": {"worker": "pi"}
+  "default": {"worker": "implement"}
 }
