@@ -4,6 +4,12 @@ set -euo pipefail
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   cat <<'EOF'
 用法: qwb-ledger.sh <read|metrics|append|prepare|revise|revise-scenarios|state|claim|release|recover-claim|wake-check|wake|dispatch|not-sent|question|answer|resume|migrate> --project <根> --task <路径> [--expect <rev>] [--event-id <id>] [--legacy] -- <参数...>
+gate-assign: 现主控授权已登记门禁actor + JSON（candidate/base/attempt/policy/environment/required/workers），冻结命名场景。
+gate-context: 本人claim op；gate-diff: op [精确reviewed head] [直接上下文路径...]，只读差异包。
+gate-review: op JSON（context/implementer/reviewer/standards/spec/covered/findings）；保原意见，当前仅Pi原生JSONL身份。
+gate-verdict: op accepted，或op rework 根因 新证据；accepted仍待land/cleanup，同根因3轮无新证据转技术重诊。
+gate-candidate: op 新attempt 原候选目录 base；gate-receipt: op 候选外JSON，由qwb-test生成，不自动验收。
+gate-dispatch: op child review|rework 主控已授权工人；长门在独立命令/op下运行，不持writer锁等待。
 handoff-* 为03兼容扩展，请用 qwb-send.sh --help 查看投递/received/accept/activity/prepared/handled/reconcile；仅合法主控通道，不迁旧票。
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
@@ -35,7 +41,17 @@ done
 [[ -n "$CMD" && -n "$ROOT" && -n "$TASK" ]] || { echo '错误：需要命令/project/task' >&2; exit 2; }
 ACTOR="${HERDR_PANE_ID:-pid:$PPID}"
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$@" <<'PERL'
+IDENTITY='{}'
+if [[ "$CMD" != read && "$CMD" != metrics ]]; then
+  # shellcheck source=/dev/null
+  . "$BINDIR/qwb-lib.sh"
+  if [[ "$CMD" == gate-assign ]]; then
+    IDENTITY="$(qwb_gate_identity "$ROOT" "${1:-}")" || exit 1
+  elif [[ -d "$ROOT/qwbuddy/.roles" ]]; then
+    IDENTITY="$(qwb_gate_identity "$ROOT")" || exit 1
+  fi
+fi
+exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$@" <<'PERL'
 use strict;
 use warnings;
 use utf8;
@@ -51,7 +67,7 @@ use IO::Handle;
 use Time::HiRes qw(time);
 use Errno qw(ESRCH);
 binmode STDERR, ':encoding(UTF-8)';
-my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,@args)=@ARGV;
+my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,$identity_raw,@args)=@ARGV;
 sub fail { die "账本拒绝：$_[0]\n" }
 sub text { my $v=shift; return decode('UTF-8',$v,FB_CROAK) }
 @args=map { text($_) } @args;
@@ -144,7 +160,7 @@ sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : ());
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : ());
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -170,6 +186,21 @@ sub validate {
       for (qw(transport_count transport_at activity_at wait_until prepared handled)) { fail('handoff数值非法') unless defined($h->{$_}) && !ref($h->{$_}) && $h->{$_} =~ /\A[0-9]+\z/ }
       fail('handoff状态非法') unless $h->{transport_count}<=3 && $h->{prepared}<=1 && $h->{handled}<=1 && ($h->{op_id} eq '' || id_ok($h->{op_id})) && ($h->{accepted} eq '' ? $h->{op_id} eq '' && $h->{owner_fp} eq '' && !$h->{prepared} && !$h->{handled} : $h->{received} ne '' && $h->{op_id} ne '' && $h->{owner_fp}=~/\A[0-9a-f]{64}\z/) && (!$h->{handled} || $h->{prepared} && $h->{result_ref} ne '' && $h->{result_sha256}=~/\A[0-9a-f]{64}\z/);
     }
+  }
+  if (exists $data->{gate}) {
+    keys_only($data->{gate},qw(identity binding receipts reviews findings verdict rounds dispatches));
+    my $g=$data->{gate};
+    fail('gate集合非法') unless ref($g->{receipts}) eq 'ARRAY' && ref($g->{reviews}) eq 'ARRAY' && ref($g->{findings}) eq 'HASH' && ref($g->{dispatches}) eq 'HASH' && ref($g->{rounds}) eq 'ARRAY';
+    keys_only($g->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+    fail('gate身份非法') unless id_ok($g->{identity}{actor}) && string_ok($g->{identity}{pane}) && $g->{identity}{pane} ne '' && $g->{identity}{incarnation}=~/\A[1-9][0-9]*\z/ && $g->{identity}{owner_fp}=~/\A[0-9a-f]{64}\z/;
+    my $b=$g->{binding}; keys_only($b,qw(candidate base attempt policy environment required workers spec_rev scenarios_fp spec_sha256 head tree workers_sha256 worker_profiles));
+    fail('gate绑定非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && $b->{candidate}=~m{\A/} && $b->{environment}=~m{\A/} && $b->{spec_rev}=~/\A[0-9]+\z/ && $b->{scenarios_fp}=~/\A[0-9a-f]{40}\z/ && $b->{spec_sha256}=~/\A[0-9a-f]{64}\z/ && ref($b->{required}) eq 'HASH' && exists($b->{required}{full});
+    fail('gate候选OID非法') for grep { !defined($_) || !/\A[0-9a-f]{40,64}\z/ } @{$b}{qw(base head tree)};
+    for my $name (keys %{$b->{required}}) { fail('gate场景映射非法') unless $name=~/\A(fast|full)\z/ && ref($b->{required}{$name}) eq 'ARRAY' && @{$b->{required}{$name}} }
+    keys_only($b->{workers},qw(review rework)); keys_only($b->{worker_profiles},qw(review rework));
+    for my $p (values %{$b->{worker_profiles}}) { keys_only($p,qw(model provider effort)); fail('gate型号配置非法') if grep { !string_ok($_) || $_ eq '' } values %$p }
+    for my $id (keys %{$g->{dispatches}}) { fail('gate child op非法') unless exists($data->{ops}{$id}) && $g->{dispatches}{$id}=~/\A(review|rework)\z/ }
+    fail('gate verdict非法') unless $data->{gate}{verdict}=~/\A(pending|rework|rediagnose|accepted)\z/;
   }
   keys_only($data->{migration},qw(task_sha256 confirm installed));
   fail('migration摘要非法') unless $data->{migration}{task_sha256}=~/\A[0-9a-f]{64}\z/;
@@ -218,6 +249,8 @@ if (-e "$dir/.controller.lock/owner") {
 }
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
+my $identity=strict_json($identity_raw);
+my $gate=$data && $data->{gate} && $identity->{pane} && $identity->{pane} eq $actor && $json->encode($identity) eq $json->encode($data->{gate}{identity}) && $identity->{owner_fp} eq sha256_hex($owner_raw);
 sub native_reply {
   # Herdr失败JSON在stderr；合并后严格解析整份回复，混入诊断/第二份JSON仍拒绝。
   my $pid=open(my $probe,'-|'); defined($pid) or fail('原生身份探针无法启动');
@@ -232,7 +265,7 @@ sub native_reply {
 my $wake_cmd=$cmd eq 'wake' || $cmd eq 'wake-check';
 my $handoff_watch=$cmd eq 'handoff-pending' || $cmd eq 'handoff-transport';
 my $watcher=0;
-if ($data && ($wake_cmd || $handoff_watch) && !$controller) {
+if ($data && ($wake_cmd || $handoff_watch) && !$controller && !$gate) {
   # .watch由主控ensure在同一目录锁内登记，绑定原owner文件代次；换主控自动失效。
   my $w=safe_open("$dir/.watch",O_RDONLY); my $s=<$w> // ''; close $w;
   my ($pane,$target,$generation)=$s =~ /\Apane=(\S+) workspace=\S+ pid=\S* started=\S+ controller=(\S+) owner-fp=([0-9a-f]{64}) cmd=/;
@@ -261,7 +294,8 @@ if (!$data && $legacy && $cmd ne 'migrate') {
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
-fail('角色未授权（仅现有主控/已绑定工人）') unless $controller || $watcher || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
+my $gate_allowed=$cmd =~ /\A(claim|release|check|dispatch|not-sent|gate-context|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
+fail('角色未授权（仅现有主控/已绑定工人/本代获授权门禁）') unless $controller || $watcher || ($gate && $gate_allowed) || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
 exit 0 if $cmd eq 'check';
 if ($wake_cmd) {
   fail('wake参数非法') unless @args==3 && string_ok($args[0]) && $args[0] ne '' && $args[1]=~/\A(running|blocked|needs-decision)\z/ && $args[2]=~/\A[0-9a-f]{40}\z/;
@@ -272,6 +306,7 @@ fail('expect版本不是整数') if $expect ne '' && $expect !~ /\A[0-9]+\z/;
 fail('期望版本冲突') if $data && $expect ne '' && $expect != $data->{rev};
 fail('event_id非法') if $event ne '' && !id_ok($event);
 if ($event ne '' && $data && grep { $_->{event_id} eq $event } @{$data->{events}}) { fail('event_id已存在，拒绝重放') }
+fail('门禁只能处理本人持久claim的票') if $gate && $cmd ne 'claim' && (!$data->{claim} || $data->{claim}{owner} ne $actor);
 my ($kind,$line,$op)=($cmd,'','');
 my $now=int(time()*1000);
 my $pending_output;
@@ -299,9 +334,235 @@ sub field {
 }
 sub require_claim {
   my $id=shift; fail('op_id非法') unless id_ok($id);
-  if ($data) { fail('无本人持久claim/op') unless $data->{claim} && $data->{claim}{owner} eq $actor && $data->{claim}{op_id} eq $id }
+  if ($data) {
+    fail('无本人持久claim/op') unless $data->{claim} && $data->{claim}{owner} eq $actor && ($data->{claim}{op_id} eq $id || ($gate && exists($data->{gate}{dispatches}{$id}) && $data->{ops}{$id}{owner} eq $actor));
+  }
 }
-if ($cmd =~ /\Ahandoff-/) {
+sub capture {
+  my @cmd=@_; my $pid=open(my $fh,'-|'); defined($pid) or fail('无法启动对象探针');
+  if (!$pid) { exec @cmd or exit 255 }
+  my $s=do { local $/; <$fh> } // ''; close $fh or fail('对象探针失败: '.join(' ',@cmd[0..1]));
+  $s=~s/\n\z//; return $s;
+}
+sub json_file {
+  my $fh=safe_open(encode('UTF-8',$_[0]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  return (strict_json($s),sha256_hex($s));
+}
+sub gate_context {
+  my $observe=shift // 0;
+  my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
+  fail('规格/场景已变；原收据失效，交主控重授权') unless $observe || $data->{spec_rev}==$b->{spec_rev} && scen_fp($body) eq $b->{scenarios_fp};
+  my $spec=$body; $spec=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
+  fail('规格正文已变') unless $observe || sha256_hex(encode('UTF-8',$spec)) eq $b->{spec_sha256};
+  my $c=encode('UTF-8',$b->{candidate});
+  fail('候选路径变化') unless (realpath($c) // '') eq $c && capture('git','-C',$c,'rev-parse','--show-toplevel') eq $c;
+  fail('候选非本项目副本') unless capture('git','-C',$c,'rev-parse','--path-format=absolute','--git-common-dir') eq capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
+  my $conf=-f "$c/qwbuddy/config.sh" ? "$c/qwbuddy/config.sh" : "$c/qwb.config.sh";
+  my $fh=safe_open($conf,O_RDONLY); my $cfg=do { local $/; <$fh> }; close $fh;
+  my $workers=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $worker_config=do { local $/; <$workers> }; close $workers;
+  fail('工人型号/effort配置已变，交主控重授权') unless $observe || sha256_hex($worker_config) eq $b->{workers_sha256};
+  my $envfh=safe_open(encode('UTF-8',$b->{environment}),O_RDONLY); my $envbody=do { local $/; <$envfh> }; close $envfh;
+  my %commands;
+  for my $name (keys %{$b->{required}}) {
+    my $cmd=capture('bash','-c','. "$1" >&2; v="QWB_GATE_${2}"; printf "%s" "${!v}"','gate',$conf,uc($name));
+    fail('必需门未配置') if $cmd eq '';
+    $commands{$name}=sha256_hex($cmd);
+  }
+  my %environment=map { $_=>($ENV{$_} // '') } qw(PATH LANG LC_ALL LC_CTYPE CI NODE_ENV BASH_ENV SHELLOPTS);
+  $environment{dependency}=sha256_hex($envbody);
+  fail('相关工具环境无法绑定相对/空PATH目录') if grep { !m{\A/} } split /:/,($ENV{PATH} // ''),-1;
+  for my $tool (qw(git bash perl python3 shellcheck herdr date ps shasum)) {
+    my ($path)=grep { -f $_ && -x $_ } map { "$_/$tool" } split /:/,($ENV{PATH} // '');
+    if (defined $path) {
+      $path=realpath($path) // fail("环境工具路径未知: $tool");
+      open my $binary,'<',$path or fail("环境工具不可读: $tool"); binmode $binary;
+      my $digest=Digest::SHA->new(256); $digest->addfile($binary); close $binary;
+      $environment{"tool:$tool"}=$digest->hexdigest;
+    } else { $environment{"tool:$tool"}='missing' }
+  }
+  $environment{git}=capture('git','--version');
+  $environment{bash}=capture('bash','--version'); $environment{system}=capture('uname','-sm');
+  # 配置是可信shell，但采样放在source之后，不能把配置副作用之前的HEAD冒充当前对象。
+  my $head=capture('git','-C',$c,'rev-parse','HEAD'); my $tree=capture('git','-C',$c,'rev-parse','HEAD^{tree}');
+  fail('候选已变但未登记新attempt') unless $observe || ($head eq $b->{head} && $tree eq $b->{tree});
+  my $dirty=capture('git','-C',$c,'status','--porcelain=v1','--untracked-files=all');
+  capture('git','-C',$c,'merge-base','--is-ancestor',$b->{base},$head);
+  return {task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
+}
+if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
+  require_claim($args[0]);
+  fail('context参数非法') if $cmd eq 'gate-context' && (@args>2 || (@args==2 && $args[1] ne 'observe'));
+  my $c=gate_context($cmd eq 'gate-context' && ($args[1] // '') eq 'observe');
+  if ($cmd eq 'gate-diff') {
+    my $reviewed=$args[1] // '';
+    if (@{$data->{gate}{reviews}}) {
+      my $previous=$data->{gate}{reviews}[-1]{review}{context}{head};
+      fail('上轮reviewed head与原收据不符') if $reviewed ne '' && $reviewed ne $previous;
+      $reviewed=$previous;
+    }
+    fail('上轮reviewed head必须精确OID') unless $reviewed eq '' || $reviewed=~/\A[0-9a-f]{40,64}\z/;
+    my %contexts;
+    for my $path (@args[2..$#args]) {
+      fail('上下文路径非法') unless string_ok($path) && $path !~ m{\A/|(?:\A|/)\.\.(?:/|\z)};
+      $contexts{$path}=text(capture('git','-C',encode('UTF-8',$c->{candidate}),'show',"$c->{head}:$path"));
+    }
+    $c->{reviewed_head}=$reviewed;
+    $c->{diff}=text(capture('git','-C',encode('UTF-8',$c->{candidate}),'diff',$c->{base},$c->{head},'--'));
+    $c->{reviewed_diff}=$reviewed eq '' ? '' : text(capture('git','-C',encode('UTF-8',$c->{candidate}),'diff',$reviewed,$c->{head},'--'));
+    $c->{contexts}=\%contexts;
+  }
+  print $json->encode($c),"\n"; exit;
+} elsif ($cmd eq 'gate-receipt') {
+  fail('receipt参数非法') unless @args==2; require_claim($args[0]);
+  my ($r,$sha)=json_file($args[1]); keys_only($r,qw(schema before after gate command_sha256 rc started_at ended_at elapsed_seconds executor));
+  my $c=gate_context();
+  my $resolved=realpath(encode('UTF-8',$args[1])) // fail('报告不存在');
+  fail('报告必须在候选之外') if $resolved eq encode('UTF-8',$c->{candidate}) || index($resolved,encode('UTF-8',$c->{candidate}).'/')==0;
+  fail('收据对象/规格/策略/命令/配置/环境不匹配') unless $r->{schema} eq 'qwb-candidate-receipt-v1' && $json->encode($r->{before}) eq $json->encode($c) && $json->encode($r->{after}) eq $json->encode($c) && exists($c->{commands}{$r->{gate}}) && $r->{command_sha256} eq $c->{commands}{$r->{gate}} && $r->{executor} eq $actor && $r->{rc}=~/\A[0-9]+\z/ && $r->{elapsed_seconds}>=0;
+  fail('dirty候选不能记可信收据') unless $c->{status} eq 'clean';
+  # 复制精确结果到同票协议；外部报告可读回，后续改写不改变已登记收据。
+  push @{$data->{gate}{receipts}},{receipt=>$r,sha256=>$sha,ref=>text($resolved)};
+  $data->{gate}{verdict}='pending';
+  $line="working: gate-receipt attempt=$c->{attempt} head=$c->{head} gate=$r->{gate} rc=$r->{rc} elapsed=$r->{elapsed_seconds} tokens=unknown"; append_body($line);
+} elsif ($cmd eq 'gate-review') {
+  fail('review参数非法') unless @args==2; require_claim($args[0]);
+  my ($r,$sha)=json_file($args[1]); keys_only($r,qw(context implementer reviewer standards spec covered findings));
+  my $c=gate_context();
+  fail('审核不是当前精确对象') unless $c->{status} eq 'clean' && $json->encode($r->{context}) eq $json->encode($c);
+  for my $kind (qw(implementer reviewer)) {
+    my $id=$r->{$kind}; keys_only($id,qw(model family session evidence));
+    fail('审核身份unknown/字段不全') if grep { !string_ok($_) || $_ eq '' || lc($_) eq 'unknown' } values %$id;
+    my $fh=safe_open(encode('UTF-8',$id->{evidence}),O_RDONLY); my @records;
+    while (my $s=<$fh>) { push @records,strict_json($s) } close $fh;
+    my $profile=$c->{worker_profiles}{$kind eq 'reviewer' ? 'review' : 'rework'};
+    fail('审核/实现型号不是主控准确授权配置') unless $id->{model} eq $profile->{model};
+    my $header=$records[0]; my @models=grep { ($_->{type} // '') eq 'model_change' } @records;
+    my @efforts=grep { ($_->{type} // '') eq 'thinking_level_change' } @records;
+    fail('原生session/model证据不匹配（当前仅Pi JSONL）') unless $header && $header->{type} eq 'session' && $header->{id} eq $id->{session} && @models && $models[-1]{modelId} eq $id->{model} && $models[-1]{provider} eq $profile->{provider} && @efforts && $efforts[-1]{thinkingLevel} eq $profile->{effort};
+    fail('会话目录不是候选/本项目') unless ($header->{cwd} // '') eq $c->{candidate} || ($header->{cwd} // '') eq $c->{project};
+    # 仅本切片已知固定原生provider/model；不从昵称、CLI或model前缀猜family。
+    my %known_family=('openai-codex/gpt-6.1-sol'=>'gpt','openai-codex/gpt-6-astra'=>'gpt','anthropic/claude-opus-4-6'=>'claude');
+    my $family=$known_family{"$models[-1]{provider}/$models[-1]{modelId}"} // 'unknown';
+    fail('原生模型family未可靠确认') unless $family ne 'unknown' && $id->{family} eq $family;
+    $id->{evidence_sha256}=sha256_hex(join('',map { $json->encode($_) } @records));
+  }
+  fail('同原生会话/同family审核冲突；保留现有身份门') if $r->{implementer}{session} eq $r->{reviewer}{session} || $r->{implementer}{family} eq $r->{reviewer}{family} || $r->{reviewer}{session} eq $data->{gate}{identity}{session_id};
+  fail('审核两轴/场景/意见非法') unless $r->{standards}=~/\A(pass|fail)\z/ && $r->{spec}=~/\A(pass|fail)\z/ && ref($r->{covered}) eq 'ARRAY' && ref($r->{findings}) eq 'ARRAY';
+  my %seen;
+  for my $f (@{$r->{findings}}) {
+    keys_only($f,qw(id original classification root evidence));
+    fail('finding字段/分类非法') unless id_ok($f->{id}) && !$seen{$f->{id}}++ && id_ok($f->{root}) && string_ok($f->{original}) && $f->{original} ne '' && string_ok($f->{evidence}) && $f->{evidence} ne '' && $f->{classification}=~/\A(must-fix|suggestion|not-founded|unresolved)\z/;
+    my $old=$data->{gate}{findings}{$f->{id}};
+    fail('不能覆盖原意见/根因') if $old && ($old->{original} ne $f->{original} || $old->{root} ne $f->{root});
+    fail('成立缺陷/安全未决不能降成偏好；须修复复核或附反证') if $old && $old->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ && $f->{classification} eq 'suggestion';
+    $old //= $data->{gate}{findings}{$f->{id}}={original=>$f->{original},root=>$f->{root},history=>[]};
+    push @{$old->{history}},{classification=>$f->{classification},evidence=>$f->{evidence},attempt=>$c->{attempt},head=>$c->{head},review_sha256=>$sha};
+  }
+  push @{$data->{gate}{reviews}},{review=>$r,sha256=>$sha,at=>$now}; $data->{gate}{verdict}='pending';
+  $line="working: gate-review attempt=$c->{attempt} head=$c->{head} standards=$r->{standards} spec=$r->{spec} evidence_sha256=$sha"; append_body($line);
+} elsif ($cmd eq 'gate-verdict') {
+  my ($id,$verdict,$rootcause,$evidence)=@args; require_claim($id);
+  fail('verdict非法') unless $verdict=~/\A(accepted|rework)\z/;
+  my $g=$data->{gate}; my $c=gate_context();
+  if ($verdict eq 'accepted') {
+    fail('accepted参数非法') unless @args==2;
+    fail('dirty或无独立审核') unless $c->{status} eq 'clean' && @{$g->{reviews}};
+    for my $id (keys %{$g->{dispatches}}) {
+      my $status=$data->{ops}{$id}{status};
+      fail('派出的审核/返修仍在途，不能ready') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+    }
+    my $r=$g->{reviews}[-1]{review};
+    fail('缺当前两轴通过审核') unless $json->encode($r->{context}) eq $json->encode($c) && $r->{standards} eq 'pass' && $r->{spec} eq 'pass';
+    my %covered=map { $_=>1 } @{$r->{covered}};
+    for my $name (keys %{$c->{required}}) {
+      fail("关键场景未覆盖: $name") if grep { !$covered{$_} } @{$c->{required}{$name}};
+      my @matching=grep { $_->{receipt}{gate} eq $name && $json->encode($_->{receipt}{after}) eq $json->encode($c) } @{$g->{receipts}};
+      fail("无同对象/条件最新可信成功收据: $name") unless @matching && $matching[-1]{receipt}{rc}==0;
+    }
+    for my $f (values %{$g->{findings}}) { fail('成立缺陷/安全意见未决') if $f->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ }
+    for my $q (values %{$data->{questions}}) { fail('用户专属问题尚未恢复') unless $q->{resumed} ne '' }
+    my $spev=''; while ($body =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+    fail('规格疑点未决') if $spev =~ /^blocked:/;
+    # accepted只记verdict，保留claim/待land/cleanup，不扩五值state。
+  } else {
+    fail('返修需当前对象独立复核') unless @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
+    fail('原范围返修需要成立意见/根因/证据') unless @args==4 && id_ok($rootcause) && string_ok($evidence) && $evidence ne '' && grep { $_->{root} eq $rootcause && $_->{history}[-1]{classification} eq 'must-fix' } values %{$g->{findings}};
+    my @proof=sort map { $_->{history}[-1]{evidence} } grep { $_->{root} eq $rootcause } values %{$g->{findings}};
+    my $evidence_sha=sha256_hex($json->encode([$evidence,@proof]));
+    if (@{$g->{rounds}} && $g->{rounds}[-1]{attempt} eq $c->{attempt}) {
+      fail('同attempt返修结论冲突；新轮须新attempt') unless $g->{rounds}[-1]{root} eq $rootcause && $g->{rounds}[-1]{evidence_sha256} eq $evidence_sha;
+      if ($g->{verdict}=~/\A(rework|rediagnose)\z/) { print "$g->{verdict}\n"; exit }
+    } else {
+      push @{$g->{rounds}},{root=>$rootcause,evidence_sha256=>$evidence_sha,attempt=>$c->{attempt},at=>$now};
+    }
+    my @r=@{$g->{rounds}};
+    $verdict='rediagnose' if @r>=3 && $r[-1]{root} eq $r[-2]{root} && $r[-1]{root} eq $r[-3]{root} && $r[-1]{evidence_sha256} eq $r[-2]{evidence_sha256} && $r[-1]{evidence_sha256} eq $r[-3]{evidence_sha256};
+  }
+  $g->{verdict}=$verdict;
+  $line="working: gate-verdict verdict=$verdict attempt=$c->{attempt} head=$c->{head} tokens=unknown";
+  $line.=' technical-owner=controller no-user-question' if $verdict eq 'rediagnose'; append_body($line);
+} elsif ($cmd eq 'gate-candidate') {
+  fail('candidate参数非法') unless @args==4; require_claim($args[0]);
+  my ($id,$attempt,$candidate,$base)=@args; my $g=$data->{gate};
+  fail('只能在原票rework后提交新attempt') unless $g->{verdict} eq 'rework' && id_ok($attempt) && $attempt ne $g->{binding}{attempt} && $base eq $g->{binding}{base};
+  fail('不能切到未授权副本') unless $candidate eq $g->{binding}{candidate};
+  for my $id (grep { $g->{dispatches}{$_} eq 'rework' } keys %{$g->{dispatches}}) {
+    my $status=$data->{ops}{$id}{status};
+    fail('返修工人尚未交回，不能切candidate') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+  }
+  $g->{binding}{attempt}=$attempt; $g->{binding}{base}=$base;
+  $g->{binding}{head}=capture('git','-C',encode('UTF-8',$candidate),'rev-parse','HEAD');
+  $g->{binding}{tree}=capture('git','-C',encode('UTF-8',$candidate),'rev-parse','HEAD^{tree}');
+  $g->{verdict}='pending';
+  my $c=gate_context(); fail('新候选dirty') unless $c->{status} eq 'clean';
+  $line="working: gate-candidate attempt=$attempt head=$c->{head} previous-evidence-retained"; append_body($line);
+} elsif ($cmd eq 'gate-dispatch') {
+  fail('dispatch参数非法') unless @args==4; require_claim($args[0]);
+  my ($claim,$child,$purpose,$workername)=@args; my $g=$data->{gate};
+  fail('不在主控授权工人配置内') unless ($g->{binding}{workers}{$purpose} // '') eq $workername;
+  fail('只能派独立review或原范围rework') unless $purpose=~/\A(review|rework)\z/ && id_ok($child) && !exists($data->{ops}{$child}) && !grep { $_->{op_id} eq $child } values %{$data->{handoffs} // {}};
+  fail('返修无成立意见或已触发技术重诊') if $purpose eq 'rework' && $g->{verdict} ne 'rework';
+  fail('已有同类在途派工') if grep {
+    my $id=$_;
+    $g->{dispatches}{$id} eq $purpose && ($data->{ops}{$id}{status}=~/\A(claimed|dispatch)\z/ || ($data->{ops}{$id}{status} eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}}))
+  } keys %{$g->{dispatches}};
+  $g->{dispatches}{$child}=$purpose; $data->{ops}{$child}={owner=>$actor,pane=>'',status=>'claimed'};
+  $op=$child; $line="working: gate-dispatch purpose=$purpose acceptance-op=$claim child=$child original-scope"; append_body($line);
+} elsif ($cmd eq 'gate-assign') {
+  fail('授权仅现主控且票必须已迁/无在途claim') unless $controller && $data && !$data->{claim};
+  fail('门禁身份未证实或已授权（不覆盖历史）') unless @args==2 && $identity->{actor} eq $args[0] && !$data->{gate};
+  my $fh=safe_open(encode('UTF-8',$args[1]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $b=strict_json($s); keys_only($b,qw(candidate base attempt policy environment required workers));
+  keys_only($b->{workers},qw(review rework));
+  fail('工人授权须显式配置名，不用auto') if grep { !id_ok($_) || $_ eq 'auto' } values %{$b->{workers}};
+  fail('候选/attempt/policy/环境非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && string_ok($b->{candidate}) && string_ok($b->{environment}) && $b->{base}=~/\A[0-9a-f]{40,64}\z/ && ref($b->{required}) eq 'HASH' && keys(%{$b->{required}});
+  my $scenarios=scenario($body);
+  my @scenarios=$scenarios =~ /^###\s+(user_[^\s]+)\s*$/mg;
+  fail('需要冻结的命名场景') unless @scenarios;
+  my %covered;
+  for my $g (keys %{$b->{required}}) {
+    fail('门/场景映射非法') unless $g=~/\A(fast|full)\z/ && ref($b->{required}{$g}) eq 'ARRAY' && @{$b->{required}{$g}};
+    for my $s (@{$b->{required}{$g}}) { fail('范围外场景') unless grep { $_ eq $s } @scenarios; $covered{$s}=1 }
+  }
+  fail('关键场景缺失或降低full策略') unless exists($b->{required}{full}) && !grep { !$covered{$_} } @scenarios;
+  $b->{candidate}=text(realpath(encode('UTF-8',$b->{candidate})) // fail('候选不存在'));
+  $b->{environment}=text(realpath(encode('UTF-8',$b->{environment})) // fail('环境证据不存在'));
+  $b->{spec_rev}=$data->{spec_rev}; $b->{scenarios_fp}=scen_fp($body);
+  # 绑定规格正文，不绑定会不断增长的运行时账本正文。
+  my $spec=$body; $spec=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
+  $b->{spec_sha256}=sha256_hex(encode('UTF-8',$spec));
+  my $workers=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $worker_config=do { local $/; <$workers> }; close $workers;
+  $b->{workers_sha256}=sha256_hex($worker_config);
+  $b->{worker_profiles}={};
+  for my $purpose (qw(review rework)) {
+    $b->{worker_profiles}{$purpose}=strict_json(capture('bash','-c','. "$1"; qwb_gate_profile "$2" "$3"','gate',"$bindir/qwb-lib.sh",$root,$b->{workers}{$purpose}));
+  }
+  $b->{head}=capture('git','-C',encode('UTF-8',$b->{candidate}),'rev-parse','HEAD');
+  $b->{tree}=capture('git','-C',encode('UTF-8',$b->{candidate}),'rev-parse','HEAD^{tree}');
+  $data->{gate}={identity=>$identity,binding=>$b,receipts=>[],reviews=>[],findings=>{},verdict=>'pending',rounds=>[],dispatches=>{}};
+  my $c=gate_context(); fail('授权候选必须clean') unless $c->{status} eq 'clean';
+  $line="working: gate-authorized actor=$identity->{actor} candidate=$b->{candidate} attempt=$b->{attempt}"; append_body($line);
+} elsif ($cmd =~ /\Ahandoff-/) {
   fail('交接仅支持已迁票') unless $data;
   $data->{handoffs} //= {};
   if ($handoff_watch) {
@@ -314,7 +575,7 @@ if ($cmd =~ /\Ahandoff-/) {
     my $added=0;
     for my $e (@{$data->{events}}) {
       # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
-      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\Ahandoff-/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\A(?:handoff-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
       my $id=source_id($e->{event_id});
       next if exists $data->{handoffs}{$id};
       my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{line};
@@ -346,7 +607,8 @@ if ($cmd =~ /\Ahandoff-/) {
       if ($h->{transport_count}>=3) { print "$id\n"; exit }
       $h->{transport_count}++; $h->{transport_at}=$now;
     } else {
-      fail('仅当前收件人能确认') unless $controller;
+      fail('仅当前收件人能确认') unless $controller || $gate;
+      require_claim($data->{claim}{op_id}) if $gate;
       if ($cmd eq 'handoff-received') {
         fail('received参数非法') unless @args==1;
         if ($h->{received} eq $actor) { print "$id\n"; exit }
@@ -503,12 +765,18 @@ if ($cmd =~ /\Ahandoff-/) {
   $data->{claim}{owner}=$actor; $data->{ops}{$op}{owner}=$actor;
   $line="working: claim-recovered: op_id=$op previous_owner=$old owner=$actor evidence_sha256=".sha256_hex($s)." reconciled=$e->{reconciled}"; append_body($line);
 } elsif ($cmd eq 'release') {
-  $op=$args[0]; require_claim($op); $data->{claim}=undef;
+  $op=$args[0]; require_claim($op);
+  $data->{claim}=undef if $data->{claim}{op_id} eq $op;
   my $status=$data->{ops}{$op}{status};
   $data->{ops}{$op}{status}=($status eq 'dispatch' ? 'sent' : $status eq 'claimed' ? 'released' : $status);
 } elsif ($cmd eq 'dispatch') {
   my $pane; ($op,$pane,$line)=@args; require_claim($op);
   fail('派发记录非法') unless string_ok($line) && string_ok($pane) && $pane ne '' && $line =~ /^dispatch:/ && index($line," pane=$pane dir=")>=0;
+  if ($gate) {
+    my $purpose=$data->{gate}{dispatches}{$op} // fail('门禁派工必须先保留child op');
+    my $b=$data->{gate}{binding};
+    fail('门禁不能换工人/目录/扩产品范围') unless $line =~ /\bworker=\Q$b->{workers}{$purpose}\E(?: |\z)/ && $line =~ /\bdir=\Q$b->{candidate}\E\z/;
+  }
   if ($data) {
     fail('同op重复派发或缺op_id收据') unless $data->{ops}{$op}{status} eq 'claimed' && $line =~ /\bop_id=\Q$op\E(?: |\z)/;
     $data->{workers}{$pane}=$op; $data->{ops}{$op}{pane}=$pane; $data->{ops}{$op}{status}='dispatch';

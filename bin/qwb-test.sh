@@ -20,11 +20,15 @@ usage() {
 选项:
   --project <根>    项目根（默认：当前目录）
   --report <新文件>  可选 Markdown 执行报告；目标必须尚不存在
+  --task <票> --ledger-project <主项目> --op <本人claim>
+                    按票检查，report必填且在候选之外，输出candidate-bound JSON收据
+                    --project必须是获授权候选；rc0不自动accepted/verified
   -h, --help        显示本帮助
 EOF
 }
 
 GATE=""; PROJECT_ROOT="$(pwd)"; REPORT=""; REPORT_SET=0
+TASK=""; LEDGER_PROJECT=""; OP=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -32,9 +36,13 @@ while [[ $# -gt 0 ]]; do
       [[ -z "$GATE" ]] || { echo "错误：门只能选一个（fast|full）" >&2; exit 2; }
       GATE="$1"; shift ;;
     --project) PROJECT_ROOT="${2:-}"; shift 2 ;;
+    --task|--ledger-project|--op)
+      [[ -n "${2:-}" && "$2" != --* ]] || { echo "错误：$1 缺值" >&2; exit 2; }
+      case "$1" in --task) TASK="$2" ;; --ledger-project) LEDGER_PROJECT="$2" ;; --op) OP="$2" ;; esac
+      shift 2 ;;
     --report)
       case "${2:-}" in
-        ''|--project|--report|--help|-h) echo "错误：--report 缺值或重复" >&2; exit 2 ;;
+        ''|--project|--report|--task|--ledger-project|--op|--help|-h) echo "错误：--report 缺值或重复" >&2; exit 2 ;;
       esac
       [[ "$REPORT_SET" -eq 0 ]] || { echo "错误：--report 缺值或重复" >&2; exit 2; }
       REPORT="$2"; REPORT_SET=1; shift 2 ;;
@@ -62,6 +70,58 @@ if [[ -z "$CMD" ]]; then
   QWB_GATE_FULL="bash tests/smoke.sh && bash bin/qwb-lint.sh"
 EOF
   exit 1
+fi
+
+# 按票薄封装：候选外JSON收据；门命令仍是上面同一配置命令，不另造测试策略。
+if [[ -n "$TASK$LEDGER_PROJECT$OP" ]]; then
+  [[ -n "$TASK" && -n "$LEDGER_PROJECT" && -n "$OP" && "$REPORT_SET" -eq 1 ]] || { echo '错误：按票检查需要task/ledger-project/op/report' >&2; exit 2; }
+  BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  context() { bash "$BINDIR/qwb-ledger.sh" gate-context --project "$LEDGER_PROJECT" --task "$TASK" -- "$OP" "$@"; }
+  BEFORE="$(context)" || exit 2
+  REPORT_PATH="$(python3 -B - "$PROJECT_ROOT" "$REPORT" "$BEFORE" "$GATE" "$CMD" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+root,report,raw,gate,cmd=sys.argv[1:]; c=json.loads(raw); p=Path(report).absolute()
+try:
+    assert p.parent.is_dir() and not p.exists() and not p.is_symlink(), '报告须新文件且父目录存在'
+    p=p.parent.resolve()/p.name; candidate=Path(c['candidate'])
+    assert candidate==Path(root).resolve() and c['status']=='clean', '实际候选不符或dirty'
+    assert p!=candidate and candidate not in p.parents, '报告必须位于候选之外'
+    assert c['commands'].get(gate)==hashlib.sha256(cmd.encode()).hexdigest(), '命令未授权或配置变化'
+    print(p)
+except AssertionError as e:
+    print('按票检查拒绝: '+str(e),file=sys.stderr); sys.exit(2)
+PY
+)" || exit 2
+  STARTED_AT="$(date +%s)" || { echo '错误：无法记录开始时间，门未执行' >&2; exit 2; }
+  rc=0; (cd "$PROJECT_ROOT" && bash -c "$CMD") || rc=$?
+  ENDED_AT="$(date +%s)" || {
+    echo '错误：结束时间元信息无法记录，不发布可信收据' >&2
+    [[ "$rc" -ne 0 ]] || rc=3
+    exit "$rc"
+  }
+  AFTER="$(context observe)" || AFTER='null'
+  report_rc=0
+  python3 -B - "$REPORT_PATH" "$BEFORE" "$AFTER" "$GATE" "$CMD" "$rc" "$STARTED_AT" "$ENDED_AT" "${HERDR_PANE_ID:-pid:$PPID}" <<'PY' || report_rc=$?
+import hashlib,json,os,sys,tempfile
+from pathlib import Path
+path,before,after,gate,cmd,rc,start,end,executor=sys.argv[1:]; path=Path(path)
+r=dict(schema='qwb-candidate-receipt-v1',before=json.loads(before),after=json.loads(after),gate=gate,command_sha256=hashlib.sha256(cmd.encode()).hexdigest(),rc=int(rc),started_at=int(start),ended_at=int(end),elapsed_seconds=int(end)-int(start),executor=executor)
+fd,tmp=tempfile.mkstemp(prefix='.qwb-receipt-',dir=path.parent)
+try:
+    with os.fdopen(fd,'w') as f: json.dump(r,f,ensure_ascii=False,sort_keys=True); f.write('\n'); f.flush(); os.fsync(f.fileno())
+    os.link(tmp,path)
+finally: os.unlink(tmp)
+PY
+  if [[ "$report_rc" -eq 0 ]]; then
+    bash "$BINDIR/qwb-ledger.sh" gate-receipt --project "$LEDGER_PROJECT" --task "$TASK" -- "$OP" "$REPORT_PATH" >/dev/null || report_rc=$?
+  fi
+  if [[ "$report_rc" -ne 0 ]]; then
+    echo '错误：收据发布/对象核验失败；不得采信本次成功文本' >&2
+    [[ "$rc" -ne 0 ]] || rc=3
+  fi
+  [[ "$rc" -eq 0 ]] || echo "门失败（${GATE}）：退出码=${rc}" >&2
+  exit "$rc"
 fi
 
 if [[ "$REPORT_SET" -eq 1 ]]; then

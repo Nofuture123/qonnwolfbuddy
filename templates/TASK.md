@@ -55,6 +55,12 @@ Then  <可见结果及不得发生的副作用>
 
 需要执行记录时，可为质量门加 `--report <尚不存在的文件>`（如 `bash qwbuddy/bin/qwb-test.sh fast --project <项目根> --report <报告路径>`）。先明确哪个命令对应哪个场景；报告记录本次命令与配置摘要、目录、版本、工作区和退出码，不能代替真实 UI、安装包或人工步骤的验收证据。
 
+已迁票可由主控显式`gate-assign`授权02登记门禁续接03成果：同票持久claim、按票candidate-bound收据、独立两轴审核与原范围返修，流程详见`roles/门禁.md`。授权JSON须冻结原base、candidate/attempt、policy、候选外环境依赖记录、required门→全部`user_`场景映射、review/rework具名Pi工人；不把已有full降成fast。按票质量门示例：
+
+`bash qwbuddy/bin/qwb-test.sh full --project <candidate> --ledger-project <主项目根> --task <原票> --op <门禁claim> --report <候选外新JSON>`
+
+审核JSON字段为context（`gate-context`精确输出）、implementer/reviewer（model/family/session/evidence原生Pi JSONL）、standards/spec（pass|fail）、covered（场景名数组）、findings（id/original/classification/root/evidence）。classification为must-fix/suggestion/not-founded/unresolved，原意见历史不能删除；修复复核须绑定当前候选。按票rc0仅记收据，accepted只记verdict，仍待land/cleanup、不自动verified/合并，五值state不扩。报告不写进候选。
+
 ## 4. 报告要求
 
 往主账本绝对路径报告 `working:` / `done:`（含跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。

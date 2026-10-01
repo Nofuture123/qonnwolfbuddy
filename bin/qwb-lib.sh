@@ -69,6 +69,77 @@ qwb_start_worker() {
   herdr "${argv[@]}"
 }
 
+# 复用02的原生身份核验；只在账本加锁前调用status（status会读票，不能倒锁）。
+# 指定actor供主控授权；否则还核调用者确为登记Pi的后代，而非仅环境pane声明。
+qwb_gate_identity() {
+  python3 -B - "$1" "${2:-}" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" <<'PY'
+import hashlib, json, os, subprocess, sys
+from pathlib import Path
+root, actor, bindir = sys.argv[1:]
+base = Path(root) / 'qwbuddy'; roles = base / '.roles'
+try:
+    matches = []
+    if roles.exists():
+        if roles.is_symlink(): raise ValueError('角色目录符号链接')
+        for path in roles.glob('*.json'):
+            if path.is_symlink(): raise ValueError('角色记录符号链接')
+            d = json.loads(path.read_text())
+            if (actor and d.get('actor') == actor) or (not actor and d.get('pane') == os.environ.get('HERDR_PANE_ID')): matches.append(d)
+    if not matches:
+        if actor: raise ValueError('门禁未登记')
+        print('{}'); sys.exit(0)
+    if len(matches) != 1: raise ValueError('角色归属不唯一')
+    d = matches[0]
+    r = subprocess.run(['bash',bindir+'/qwb-role.sh','status','--project',root,'--actor',d['actor']],capture_output=True,text=True)
+    if r.returncode: raise ValueError(r.stderr.strip())
+    d = json.loads(r.stdout)
+    owner = (base / '.controller.lock/owner').read_bytes()
+    if (d['role'] != '门禁' or d.get('pending') or d['phase'] == 'retired' or d['activity'] not in ('idle','done','working','blocked') or
+        d.get('owner_fp') != hashlib.sha256(owner).hexdigest() or not d.get('actual_model') or not d.get('actual_effort')): raise ValueError('门禁本代身份/模型未知或主控已换代')
+    if not actor:
+        pid = os.getpid(); ancestors = set()
+        for _ in range(64):
+            if pid <= 1 or pid in ancestors: break
+            ancestors.add(pid)
+            if pid == d['pid']: break
+            v = subprocess.check_output(['ps','-p',str(pid),'-o','ppid='],text=True).strip()
+            if not v.isdigit(): raise ValueError('调用者祖先未知')
+            pid = int(v)
+        if d['pid'] not in ancestors: raise ValueError('pane声明不是实际门禁调用者')
+    print(json.dumps({k:d[k] for k in ('actor','pane','incarnation','owner_fp','controller','session_id','actual_model','actual_effort')}))
+except (KeyError, ValueError, OSError, subprocess.SubprocessError) as e:
+    print('门禁身份拒绝: '+str(e),file=sys.stderr); sys.exit(1)
+PY
+}
+
+# 只读取已配置具名Pi工人，不替主控选择型号/effort；赋予门禁前冻结准确配置。
+qwb_gate_profile() (
+  local root="$1" selected="$2" i offset count
+  # shellcheck source=/dev/null
+  . "$root/qwbuddy/config.sh" >&2
+  qwb_load_workers "$root" || exit 1
+  for i in "${!QWB_CONFIG_NAMES[@]}"; do
+    [[ "${QWB_CONFIG_NAMES[i]}" == "$selected" ]] || continue
+    offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
+    python3 -B - "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}" <<'PY'
+import json,sys
+mode,harness,*args=sys.argv[1:]
+try:
+    assert mode=='herdr' and harness=='pi', '门禁当前仅接已配置可见Pi工人'
+    d={}
+    for flag,key in [('--model','model'),('--provider','provider'),('--thinking','effort')]:
+        assert args.count(flag)==1, '型号/effort必须准确固定'
+        d[key]=args[args.index(flag)+1]; assert d[key] and not d[key].startswith('-')
+    assert not any(x.split('=',1)[0] in ('--fast','--priority','--service-tier') for x in args), '不得开启fast/priority'
+    print(json.dumps(d))
+except (AssertionError,IndexError) as e:
+    print('工人身份拒绝: '+str(e),file=sys.stderr); sys.exit(1)
+PY
+    exit $?
+  done
+  echo '错误：主控授权工人未配置' >&2; exit 1
+)
+
 # 只提取首个 state 值；是否有 state 字段、值是否合法由调用方决定。
 qwb_task_state() {
   sed -n 's/^state:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'
@@ -138,12 +209,13 @@ qwb_task_obligations() {
   printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha256_hex -0777 -e '
     my $d=decode_json(<STDIN>);
     print "claim=$d->{claim}{op_id} " if $d->{claim};
+    print "gate=$d->{gate}{verdict} pending-land-cleanup " if $d->{gate};
     for my $k (sort keys %{$d->{questions}}) { print "key=$k " if $d->{questions}{$k}{resumed} eq "" }
     my $h=$d->{handoffs} // {};
     print "handoff=$_ " for sort grep { !$h->{$_}{handled} } keys %$h;
     for my $e (@{$d->{events}}) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^handoff-/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
+      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
     }
   '
 }

@@ -8,7 +8,7 @@ usage() {
 用法: qwb-wake.sh [选项]
 
 已迁票（qwb-collab-v1）：同票持久handoff，完整event_id集合确认；旧wake指纹不消费待办。
-  API交付只记transport，received/accepted/handled由接收方分别确认；当前仅controller。
+  API交付只记transport，received/accepted/handled由接收方分别确认；controller通道可按04授权claim直接门铃本代门禁。
   每event至多3次门铃，accepted有活动/合理wait不误催；预算耗尽仍保留pending/status。
   所有宿主共用内核监督owner锁，第二实例显式拒绝；旧票仍使用下述兼容指纹。
 
@@ -611,11 +611,78 @@ compose_msg() {
   done < "$1"
 }
 
+# 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
+# 不创建第二watcher，不替门禁确认received/handled；ready/重诊仍交主控。
+route_gate_due() {
+  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed
+  local targets=() batches=() grants=() actors=()
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/qwb-gate-routes.XXXXXX")" || return 3
+  keep="$dir/controller"; : > "$keep"
+  while IFS=$'\t' read -r f st fp last lostpane; do
+    info=""
+    if [[ "$last" == '[qwb-handoff] '* ]]; then
+      data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
+      info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
+        my $d=decode_json(<STDIN>); my $g=$d->{gate};
+        if ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
+          print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}";
+        }
+      ')"
+    fi
+    if [[ -n "$info" ]]; then
+      IFS=$'\t' read -r actor grant target <<< "$info"
+      idx=-1
+      for i in "${!targets[@]}"; do [[ "${targets[i]}" != "$target" ]] || idx="$i"; done
+      if (( idx < 0 )); then
+        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor")" || proof='{}'
+        proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+        if [[ "$proof" == "$grant" ]]; then
+          idx="${#targets[@]}"; targets+=("$target"); grants+=("$grant"); actors+=("$actor"); batches+=("$dir/$idx")
+          : > "${batches[idx]}"
+        fi
+      fi
+      if (( idx >= 0 )) && [[ "${grants[idx]}" == "$grant" ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "${batches[idx]}"
+        continue
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
+  done < "$duef"
+  for i in "${!targets[@]}"; do
+    # 投递前再核代次；失效只交主控，不把旧pane/session当新实例。
+    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}")" || proof='{}'
+    proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+    if [[ "$proof" != "${grants[i]}" ]]; then
+      cat "${batches[i]}" >> "$keep"; continue
+    fi
+    failed=0
+    while IFS=$'\t' read -r f st fp last lostpane; do
+      qwb_ledger "$PROJECT_ROOT" "$f" wake-check "$controller" "$st" "$fp" >/dev/null || { failed=1; break; }
+      record_transport "$f" "$last" || { failed=1; break; }
+    done < "${batches[i]}"
+    if (( failed )); then rm -rf "$dir"; return 3; fi
+    compose_msg "${batches[i]}"
+    if herdr pane run "${targets[i]}" "门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"; then
+      while IFS=$'\t' read -r f st fp last lostpane; do
+        qwb_ledger "$PROJECT_ROOT" "$f" wake "$controller" "$st" "$fp" >/dev/null || { rm -rf "$dir"; return 3; }
+      done < "${batches[i]}"
+      echo "已直接门铃门禁：${DUE_N} 张票 → pane ${targets[i]}"
+    else
+      echo "错误：门禁门铃失败（pane ${targets[i]}），03待办/有界重投预算保留" >&2
+    fi
+  done
+  cp "$keep" "$duef" || { rm -rf "$dir"; return 3; }
+  rm -rf "$dir"
+}
+
 check_round() {
   local duef
   duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
   : > "$duef"
   collect_due "$duef" || { rm -f "$duef"; return 3; }
+  if [[ "$DRY" -eq 0 && -s "$duef" && -n "$PANE" ]]; then
+    route_gate_due "$duef" "$PANE" || { rm -f "$duef"; return 3; }
+  fi
   if [[ ! -s "$duef" ]]; then
     (( OPEN_N == 0 )) && echo "账本无未结项"
     rm -f "$duef"
@@ -760,6 +827,10 @@ block_round() {
   : > "$duef"
   collect_due "$duef" || { rm -f "$duef"; return 3; }
   local any="$OPEN_N" f st fp last lostpane
+  if [[ -s "$duef" ]]; then
+    if ! block_owner_ok; then rm -f "$duef"; return 0; fi
+    route_gate_due "$duef" "${HERDR_PANE_ID:-pid:$PPID}" || { rm -f "$duef"; return 3; }
+  fi
   if [[ -s "$duef" ]]; then
     if ! block_owner_ok; then rm -f "$duef"; return 0; fi
     compose_msg "$duef"

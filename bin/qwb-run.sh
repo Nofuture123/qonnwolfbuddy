@@ -16,6 +16,8 @@ usage() {
 选项:
   --project <根>        项目根（默认：当前目录）
   --worktree <路径>     在既有 worktree 目录里派活（新窗口的 cwd）
+  --gate-op <claim> --gate-kind <review|rework>
+                        门禁只派授权工人到原票候选，保留验收claim，不获得首次派工权
   --create-worktree     先开 <根>/.worktrees/<任务id> 并在 Herdr Spaces 登记（与默认行为同义）
                         隔离副本的创建是幂等的：已是本任务的有效 worktree 则复用，不重建
   --here                显式声明就在项目根派发（非隔离目录，须使用者有意选择）
@@ -50,13 +52,15 @@ EOF
 }
 
 PROJECT_ROOT="$(pwd)"; TASK=""; WORKER=""; WORKTREE=""; CREATE_WT=0; HERE=0; PANE=""; NAME=""; ACCEPT_NEW=0
-REVISE=""; REVISE_GIVEN=0
+REVISE=""; REVISE_GIVEN=0; GATE_OP=""; GATE_KIND=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --task) TASK="$2"; shift 2 ;;
     --worker) WORKER="$2"; shift 2 ;;
     --project) PROJECT_ROOT="$2"; shift 2 ;;
+    --gate-op) GATE_OP="$2"; shift 2 ;;
+    --gate-kind) GATE_KIND="$2"; shift 2 ;;
     --worktree) WORKTREE="$2"; shift 2 ;;
     --create-worktree) CREATE_WT=1; shift ;;
     --here) HERE=1; shift ;;
@@ -111,6 +115,25 @@ if grep -q '^state:' "$TASK_FILE"; then
     running|blocked|needs-decision|done|verified) ;;
     *) echo "错误：任务书 state 非法（${task_state}），须主控查看，拒绝派发" >&2; exit 1 ;;
   esac
+fi
+
+# 门禁只续接主控已授权原票，不获取主控锁、不建副本、不修改规格/场景。
+GATE_CONTEXT=""
+if [[ -n "$GATE_OP$GATE_KIND" ]]; then
+  [[ -n "$GATE_OP" && ( "$GATE_KIND" == review || "$GATE_KIND" == rework ) && -n "$WORKTREE" && "$HERE" -eq 0 && "$CREATE_WT" -eq 0 && "$ACCEPT_NEW" -eq 0 && "$REVISE_GIVEN" -eq 0 && "$WORKER" != auto ]] \
+    || { echo '错误：门禁只允许review/rework、获授权既有候选，不改场景/产品范围' >&2; exit 2; }
+  GATE_CONTEXT="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-context "$GATE_OP")" || exit 1
+  python3 -B - "$GATE_CONTEXT" "$WORKTREE" "$WORKER" "$GATE_KIND" <<'PY' || exit 1
+import json,sys
+from pathlib import Path
+c=json.loads(sys.argv[1])
+if str(Path(sys.argv[2]).resolve())!=c['candidate'] or c['workers'][sys.argv[4]]!=sys.argv[3]:
+    print('错误：候选/工人超出主控授权',file=sys.stderr);sys.exit(1)
+PY
+else
+  # 登记门禁即便省略--gate-op也不能走普通首次派工/主控锁路径。
+  gate_identity="$(qwb_gate_identity "$PROJECT_ROOT")" || exit 1
+  [[ "$gate_identity" == '{}' ]] || { echo '错误：门禁必须提供本人gate-op及review/rework目的' >&2; exit 1; }
 fi
 
 # 工人须在 config.sh 的 QWB_WORKERS 里；启动定义另见 workers.sh。
@@ -500,12 +523,17 @@ fi
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
 SELF="${HERDR_PANE_ID:-pid:$$}"
 [[ -f "$LOCK_BIN" ]] || { echo "错误：找不到 ${LOCK_BIN}" >&2; exit 1; }
-lock_out="$(bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" 2>&1)" \
-  || { printf '错误：主控锁获取失败，拒绝派发：\n%s\n' "$lock_out" >&2; exit 1; }
+if [[ -z "$GATE_OP" ]]; then
+  lock_out="$(bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" 2>&1)" \
+    || { printf '错误：主控锁获取失败，拒绝派发：\n%s\n' "$lock_out" >&2; exit 1; }
+fi
 
 # 持久claim跨worktree/setup/投递保留；内核短锁只在writer调用内。
 RUN_OP="$(qwb_op_id)"
-if grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
+if [[ -n "$GATE_OP" ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-dispatch "$GATE_OP" "$RUN_OP" "$GATE_KIND" "$WORKER" >/dev/null
+  RUN_CLAIM=1
+elif grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$RUN_OP" >/dev/null
   RUN_CLAIM=1
 else
@@ -692,13 +720,24 @@ case "$WORKER_HARNESS" in
 esac
 
 # state/fp/附页在同一短锁内重新核对最新票并发布，不跨长工具保存快照。
-qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" prepare "$SCEN_FP" "$BRIEF_INC_BODY" >/dev/null
+if [[ -z "$GATE_OP" ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" prepare "$SCEN_FP" "$BRIEF_INC_BODY" >/dev/null
+fi
 if [[ "$REBUILD_FP" -eq 1 ]]; then
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）" >/dev/null
 fi
 DIR_NOTE=""
 [[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
 PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——不改别人的行，不改 state: 字段。已迁协议票只能用 bash ${PROJECT_ROOT}/qwbuddy/bin/qwb-ledger.sh append --project '${PROJECT_ROOT}' --task '${TASK_FILE}' -- 'working: 内容'（身份取本工人HERDR_PANE_ID，dispatch op_id=${RUN_OP}）；禁止裸追加或覆盖协作区。旧票按旧追加约定，未经主控停写确认不迁移。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
+
+if [[ -n "$GATE_OP" ]]; then
+  GATE_DIFF="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-diff "$GATE_OP" '')" || exit 1
+  if [[ "$GATE_KIND" == review ]]; then
+    PROMPT="你是独立审核者，不写实现、不自派代理。唯一原票=${TASK_FILE}。按Standards+Spec两轴、最多3审点，核对原finding和新diff、必要直接调用者；输出实际原生session/model/family与证据，unknown/同family不伪填。本票差异包（精确base/candidate/上轮reviewed head）：${GATE_DIFF}"
+  else
+    PROMPT="原票原范围返修，不新增产品或改变场景。先qwb-ledger read核对保留的原finding，成立项逐项修复并报告新attempt；三轮同根因无新证据由门禁转技术重诊。${PROMPT}"
+  fi
+fi
 
 # 窗口：复用既有工人 pane / 复用 --pane / 新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
 if [[ -n "$REUSE_PANE" ]]; then

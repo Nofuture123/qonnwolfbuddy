@@ -84,6 +84,11 @@ else
         printf '%s' "$collab" | perl -MJSON::PP -0777 -e '
           my $d=decode_json(<STDIN>);
           print "       claim未释放: $d->{claim}{op_id}\n" if $d->{claim};
+          if (my $g=$d->{gate}) {
+            print "       门禁: verdict=$g->{verdict} attempt=$g->{binding}{attempt} candidate=$g->{binding}{head} 待land/cleanup（不自动verified）\n";
+            my $elapsed=0; $elapsed+=$_->{receipt}{elapsed_seconds} for @{$g->{receipts}};
+            print "       核证据: receipts=".scalar(@{$g->{receipts}})." reviews=".scalar(@{$g->{reviews}})." validation_seconds=$elapsed tokens=unknown\n";
+          }
           for my $k (sort keys %{$d->{questions}}) {
             my $q=$d->{questions}{$k};
             print "       问题未结: key=$k ".($q->{answer} eq "" ? "未答" : "待恢复")."\n" if $q->{resumed} eq "";

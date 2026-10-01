@@ -10,4 +10,6 @@ CI 是交付门禁。每次 push 尽快给出真实结论，不放宽标准换�
 4. **先量再动**：CI／门禁改动前，用真实记录建立步骤／文件耗时基线，分清排队、执行和重跑时间。
 5. **共享机器**：不在共享或开发者机器加防火墙、改整机网络或动系统服务。确需改 runner 的真机步骤结束后亲自核残留为零，不采信执行者回执。
 
+已授权门禁的按票模式用`qwb-test.sh --task <票> --ledger-project <根> --op <claim> --project <candidate> --report <候选外新JSON>`复用同一配置门，记录前后commit/tree/dirty、task/attempt/spec/场景/policy、命令/配置/相关环境与rc。成功只产收据，未覆盖关键场景、旧对象/旧spec、dirty或独立审核未决不能ready。长验证在持久claim与03交接op下独立执行，activity记录有界wait，writer短锁不包测试；门禁继续处理其他票，不额外要求每票串行经过测试角色。
+
 门禁去重仅适用于同代码版本、同命令且有可信收据的重复执行。最终交付需验证实际合并版本；`qwb-test.sh --report` 仅证明报告中的一次执行，不能自动 `verified`。
