@@ -686,7 +686,7 @@ event_start() {
   trap 'exit 143' TERM
   local deadline=$(( $(now_ms) + 1000 ))
   [[ -z "${block_deadline:-}" ]] || (( deadline <= block_deadline )) || deadline="$block_deadline"
-  while [[ ! -s "$EVENT_DIR/notice" ]] && kill -0 "$EVENT_PID" 2>/dev/null && (( $(now_ms) < deadline )); do sleep_ms 50; done
+  while [[ ! -s "$EVENT_DIR/notice" ]] && kill -0 "$EVENT_PID" 2>/dev/null && (( $(now_ms) < deadline )); do sleep 0.05; done
   [[ -s "$EVENT_DIR/notice" ]] || echo 'Herdr subscription not yet established; bounded MD reconcile fallback' >&2
 }
 wait_round() {

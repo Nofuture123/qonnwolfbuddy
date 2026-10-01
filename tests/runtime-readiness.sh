@@ -131,10 +131,16 @@ case "$1 $2" in
       printf '{"result":{"pane":{"foreground_cwd":"%s","workspace_id":"wT","pane_id":"wT:p1"}}}\n' "$QWB_STUB_CWD"
     else
       printf '{"result":{"pane":{"agent":"%s","foreground_cwd":"%s","workspace_id":"%s","pane_id":"wT:p1"}}}\n' \
-        "${QWB_STUB_WORKER:-pi}" "$QWB_STUB_CWD" "${QWB_STUB_WS:-wT}"
+        "${QWB_STUB_WORKER:-pi}" "$QWB_STUB_CWD" "${QWB_STUB_WS:-wT}" |
+        jq --arg session "$QWB_STUB_SESSION" '.result.pane.agent_status="idle" | .result.pane.agent_session={source:"herdr:pi",kind:"path",value:$session}'
     fi ;;
   "pane process-info")
-    echo '{"result":{"process_info":{"foreground_process_group_id":42,"shell_pid":42}}}' ;;
+    if [[ "${QWB_STUB_SHELL:-0}" == 1 ]]; then
+      echo '{"result":{"process_info":{"pane_id":"wT:p1","foreground_process_group_id":42,"shell_pid":42,"foreground_processes":[{"pid":42,"argv0":"zsh"}]}}}'
+      exit 0
+    fi
+    jq -cn --arg dir "$QWB_STUB_CWD" --argjson pid "$QWB_STUB_PID" \
+      '{result:{process_info:{pane_id:"wT:p1",foreground_process_group_id:$pid,shell_pid:42,foreground_processes:[{pid:$pid,argv0:"pi",cwd:$dir}]}}}' ;;
   "pane run")
     if [[ "$4" == "'mock-agent'" ]] && {
       ! grep -q '^state: running$' "$QWB_STUB_TASK" ||
@@ -194,6 +200,12 @@ EOF
 }
 write_ticket
 export QWB_STUB_LOG="$TMP/herdr.log" QWB_STUB_CWD="$PROJECT" QWB_STUB_TASK="$TASK"
+export QWB_STUB_PID="$$" QWB_STUB_SESSION="$TMP/pi-session.jsonl"
+jq -cn --arg dir "$(cd "$PROJECT" && pwd -P)" '{type:"session",cwd:$dir}' > "$QWB_STUB_SESSION"
+reuse_proof() {
+  jq -cn --arg session "$QWB_STUB_SESSION" --arg start "$(ps -p "$$" -o lstart= | perl -pe 's/^\s+|\s+$//g')" --argjson pid "$$" \
+    '{pid:$pid,pid_start:$start,session:$session}' | sed 's/^/working: worker-activity op=fixture pane=wT:p1 evidence=/' >> "$TASK"
+}
 run_case() {
   (cd "$PROJECT" && PATH="$TMP/bin:$PATH" HERDR_PANE_ID=wT:ctl \
     bash "$ROOT/bin/qwb-run.sh" --task case --worker pi --here --accept-new-scenarios "$@")
@@ -221,8 +233,8 @@ if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \
   && grep -q '^scenarios-fp:' "$TASK" \
   && grep -q '^state: running$' "$TASK" \
   && grep -q 'agent prompt qwb-case ' "$QWB_STUB_LOG" \
-  && grep -q 'tab close wT:t1' "$QWB_STUB_LOG"; then
-  ok "新建工人提示词失败：非零、回滚 dispatch 与新 tab"
+  && grep -q '^not-sent:' "$TASK" && ! grep -q 'tab close' "$QWB_STUB_LOG"; then
+  ok "新建工人提示词失败：非零、撤销 dispatch；活进程/缺证的新 tab 保留"
 else
   bad "新建工人提示词失败：rc=$rc dispatch=$(grep -c '^dispatch:' "$TASK" || true)"
   printf '%s\n' "$out"; cat "$QWB_STUB_LOG"
@@ -288,6 +300,7 @@ else
 fi
 
 before="$(grep -c '^dispatch:' "$TASK")"
+reuse_proof
 : > "$QWB_STUB_LOG"
 out="$(QWB_STUB_REUSE=1 QWB_STUB_FAIL=prompt QWB_STUB_APPEND="$TASK" run_case 2>&1)"; rc=$?
 after="$(grep -c '^dispatch:' "$TASK")"
@@ -311,7 +324,7 @@ else
   bad "--pane 提示词失败：rc=$rc"; printf '%s\n' "$out"; cat "$QWB_STUB_LOG"
 fi
 
-# pane-run 使用 pane run 投递提示词；失败同样非零并关闭本次新 tab。
+# pane-run 使用 pane run 投递提示词；失败非零，未知退出的新 tab 保留。
 write_ticket
 printf '%s\n' 'qwb_worker pi pane-run mock-agent' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
 : > "$QWB_STUB_LOG"
@@ -319,8 +332,8 @@ out="$(QWB_STUB_REUSE=1 QWB_STUB_FAIL=pane-prompt run_case 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \
   && grep -q '^not-sent:' "$TASK" && grep -q 'agent rename wT:p1 qwb-case' "$QWB_STUB_LOG" \
   && grep -q 'pane run wT:p1 你是本任务' "$QWB_STUB_LOG" \
-  && grep -q 'tab close wT:t1' "$QWB_STUB_LOG"; then
-  ok "pane-run 提示词失败：非零、撤销 dispatch 与本次 tab"
+  && ! grep -q 'tab close' "$QWB_STUB_LOG"; then
+  ok "pane-run 提示词失败：非零、撤销 dispatch，未确认退出的新 tab 保留"
 else
   bad "pane-run 提示词失败：rc=$rc"; printf '%s\n' "$out"; cat "$QWB_STUB_LOG"
 fi

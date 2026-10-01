@@ -7,7 +7,7 @@ PROJECT="$(mktemp -d /tmp/qwb-wake-output.XXXXXXXX)"
 trap 'rm -rf "$PROJECT"' EXIT
 bash "$ROOT/bin/qwb-init.sh" "$PROJECT" >/dev/null
 if [[ -n "${QWB_TEST_WAKE_SOURCE:-}" ]]; then cp "$QWB_TEST_WAKE_SOURCE" "$PROJECT/qwbuddy/bin/qwb-wake.sh"; fi
-printf 'QWB_WAKE_INTERVAL_MS=10\nQWB_REWAKE_MS=60000\n' >> "$PROJECT/qwbuddy/config.sh"
+printf 'QWB_WAKE_INTERVAL_MS=100\nQWB_REWAKE_MS=60000\n' >> "$PROJECT/qwbuddy/config.sh"
 TICKET="$PROJECT/tasks/2099-01-01-output.md"
 FP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
 printf '# output\nstate: running\nwake: %s state=running fp=%s\n' \

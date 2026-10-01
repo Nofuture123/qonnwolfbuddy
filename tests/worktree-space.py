@@ -44,9 +44,11 @@ elif args[:2] == ["api", "snapshot"]:
     out({"snapshot": {
         "workspaces": [{"workspace_id": i} for i in ids],
         "tabs": [{"tab_id": "wTask:t1", "workspace_id": "wTask"}] +
-                ([{"tab_id": "wTask:t2", "workspace_id": "wTask"}] if mode == "worker-success" else []),
+                ([{"tab_id": "wTask:t2", "workspace_id": "wTask"}] if mode in ("worker-success", "worker-foreign-space") else []),
         "panes": [{"pane_id": "wRoot:p1", "workspace_id": "wRoot", "tab_id": "wRoot:t1"}] +
-                 ([{"pane_id": "wTask:p1", "workspace_id": "wTask", "tab_id": "wTask:t1"}] if wt else []),
+                 ([{"pane_id": "wTask:p1", "workspace_id": "wTask", "tab_id": "wTask:t1"}] if wt else []) +
+                 ([{"pane_id": "wTask:p2", "workspace_id": "wRoot" if mode == "worker-foreign-space" else "wTask", "tab_id": "wTask:t2"}]
+                  if wt and mode in ("worker-success", "worker-foreign-space") else []),
         "focused_workspace_id": "wRoot", "focused_tab_id": "wRoot:t1", "focused_pane_id": "wRoot:p1"}})
 elif args[:2] == ["workspace", "list"]:
     if mode == "query-fail" or (mode in ("query-fail-after-open", "close-fail-after-open") and wt): err("io_error")
@@ -294,9 +296,13 @@ for mode in ("worker-success", "worker-foreign-space"):
         wt = repo / ".worktrees/case"
         assert call("git", "-C", str(repo), "worktree", "add", "-qb", "case", str(wt), env=os.environ).returncode == 0
         state.write_text(str(wt))
+        child = subprocess.Popen(["sleep", "60"])
+        proof = {"pid": child.pid, "pid_start": call("ps", "-p", str(child.pid), "-o", "lstart=", env=env).stdout.strip()}
+        child.terminate(); child.wait()
+        assert proof["pid_start"], "fixture must bind an actual prior PID incarnation"
         ticket.write_text(f"state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n"
-                          f"dispatch: worker=pi pane=wTask:p2 dir={wt}\n"
-                          'working: worker-activity op=fixture pane=wTask:p2 evidence={"pid":99999999,"pid_start":"ended fixture"}\n')
+                          f"dispatch: op_id=fixture worker=pi pane=wTask:p2 dir={wt}\n"
+                          'working: worker-activity op=fixture pane=wTask:p2 evidence=' + json.dumps(proof) + '\n')
         git = base / "stub/git"
         git.write_text('#!/usr/bin/env bash\nif [[ "$*" == *"worktree remove"* ]]; then '
                        'printf \'["git", "worktree", "remove"]\\n\' >> "$QWB_TEST_HERDR_LOG"; fi\n'

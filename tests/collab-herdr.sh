@@ -2,6 +2,7 @@
 # Offline public-entry contract: real temporary Git/MD, fake Herdr CLI + Unix stream.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [[ "${1:-}" != not-sent ]]; then
 python3 -B - "$ROOT" <<'PY'
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
@@ -260,4 +261,52 @@ else: print(json.dumps({'result':{'type':'ok'}}))
     unchanged=json.loads(call('qwb-ledger.sh','read'))
     assert unchanged['questions']['budget']['answer']=='' and unchanged['questions']['budget']['resumed']==''
     print('PASS normal deadline remains 124 wait, no cancellation/death or unanswered-key consumption')
+PY
+fi
+python3 -B - "$ROOT" <<'PY'
+import json, os, subprocess, sys, tempfile
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+# Reuse the external Herdr contract double/project builder; exercise real writer and finish.
+source=(ROOT/'tests/worktree-space.py').read_text()
+prefix=source.split('with tempfile.TemporaryDirectory(prefix="qwb-space-dispatch-")')[0]
+prefix=prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()')
+exec(prefix)
+for mode in ['live','missing','dead','extra-pane','no-attempt']:
+    with tempfile.TemporaryDirectory(prefix='qwb-not-sent-'+mode+'-') as d:
+        repo,ticket,state,log,env=project(Path(d)); wt=repo/'.worktrees/case'
+        assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+        state.write_text(str(wt)); pid=os.getpid()
+        start=call('ps','-p',str(pid),'-o','lstart=',env=env).stdout.strip()
+        evidence=dict(pid=pid,pid_start=start)
+        if mode in ('dead','extra-pane'):
+            child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
+            evidence=dict(pid=child.pid,pid_start=call('ps','-p',str(child.pid),'-o','lstart=',env=env).stdout.strip())
+            child.terminate(); child.wait()
+        if mode=='missing': evidence=dict(activity='unknown')
+        pane='wTask:p2' if mode=='extra-pane' else 'wTask:p1'
+        text=f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'
+        if mode!='no-attempt':
+            dispatch=f'dispatch: now op_id=launch worker=pi agent=case pane={pane} dir={wt}'
+            text+=dispatch+'\n'+f'working: worker-activity op=launch pane={pane} evidence='+json.dumps(evidence)+'\n'
+            if mode=='extra-pane':
+                text+='working: worker-activity op=old-root pane=wTask:p1 evidence='+json.dumps(dict(pid=pid,pid_start=start))+'\n'
+                env={**env,'QWB_TEST_MODE':'worker-success'}
+        ticket.write_text(text)
+        if mode!='no-attempt':
+            compensation=call('bash',str(ROOT/'bin/qwb-ledger.sh'),'not-sent','--project',str(repo),'--task',str(ticket),'--legacy','--','launch','blocked: prompt failed',dispatch,env=env)
+            assert compensation.returncode==0,compensation.stderr
+            assert 'not-sent: now op_id=launch' in ticket.read_text() and '\ndispatch:' not in ticket.read_text()
+        result=call('bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--merged','--project',str(repo),env=env)
+        closes=[x for x in log.read_text().splitlines() if json.loads(x)==['workspace','close','wTask']]
+        if mode in ('live','missing','extra-pane'):
+            assert result.returncode!=0 and wt.exists() and state.exists() and not closes,(mode,result.returncode,result.stdout,result.stderr)
+            reason='old launch PID/start unknown' if mode=='missing' else 'old native PID still alive or death unknown'
+            assert reason in result.stderr,(mode,'must hit lifetime refusal, not an unrelated fixture error',result.stderr)
+            os.kill(pid,0)
+            assert call('git','-C',str(repo),'show-ref','--verify','--quiet','refs/heads/case',env=env).returncode==0
+            print('PASS not-sent '+mode+': original launch obligation retained, no Space/Git close')
+        else:
+            assert result.returncode==0 and not wt.exists() and not state.exists() and len(closes)==1,(mode,result.returncode,result.stdout,result.stderr)
+            print('PASS '+mode+': proven-ended/no-start safe finish remains usable')
 PY

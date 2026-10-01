@@ -172,10 +172,14 @@ def presentation():
     before,order,focus=snapshot(); require(a.space in order,'owned Space absent')
     path=socket_path(); index=a.index
     if a.command=='close':
-        lines=re.findall(r'^dispatch:.*$',text,re.M); allowed={tab}
-        if lines:
-            match=re.search(r'\spane=(\S+) dir=(.+)$',lines[-1]); require(match and str(Path(match[2]).resolve())==directory,'dispatch identity mismatch')
-            pane=herdr('pane','get',match[1]).get('pane',{}); require(pane.get('pane_id')==match[1] and pane.get('workspace_id')==a.space,'dispatch pane ownership mismatch'); allowed.add(pane.get('tab_id'))
+        lines=re.findall(r'^(?:dispatch|not-sent):.*$',text,re.M); allowed={tab}; attempts={}
+        current_panes={x.get('pane_id'):x for x in before.get('panes',[]) if x.get('workspace_id')==a.space}
+        for line in lines:
+            match=re.search(r'\spane=(\S+) dir=(.+)$',line); require(match,'launch receipt identity unknown')
+            if match[1] not in current_panes: continue  # Stable absent IDs are not panes this close will control.
+            require(str(Path(match[2]).resolve())==directory,'launch receipt directory mismatch')
+            op=re.search(r'\sop_id=(\S+)',line); require(op,'launch generation unknown; preserve pane')
+            attempts.setdefault(match[1],set()).add(op[1]); allowed.add(current_panes[match[1]].get('tab_id'))
         tabs=[x for x in before.get('tabs',[]) if x.get('workspace_id')==a.space]
         require(tabs and all(x.get('tab_id') in allowed for x in tabs),'foreign/unknown tab')
         panes=[x for x in before.get('panes',[]) if x.get('workspace_id')==a.space]
@@ -185,10 +189,11 @@ def presentation():
             require(observation['proof']=='foreground-shell','exit not confirmed; preserve Space: '+json.dumps(observation))
             # A foreground shell cannot prove that a delivered/backgrounded CLI has died.
             bound=re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',text,re.M)
-            bound=[json.loads(x[2]) for x in bound if x[1]==pane['pane_id']]
-            if lines and pane['pane_id']==match[1]:
-                require(bound,'dispatched launch has no death evidence; preserve pane')
-                ended(bound[-1].get('pid'),bound[-1].get('pid_start'))
+            by_op={op:json.loads(raw) for op,target,raw in bound if target==pane['pane_id']}
+            require(attempts.get(pane['pane_id'],set()).issubset(by_op),'launch attempt has no matching death evidence; preserve pane')
+            # Failed compensation changes transport permission, never native process lifetime.
+            # Every bound launch on every closing pane is an obligation, even without a dispatch row.
+            for evidence in by_op.values(): ended(evidence.get('pid'),evidence.get('pid_start'))
             for record in (root/'qwbuddy/.roles').glob('*.json'):
                 require(not record.is_symlink(),'role record symlink; close ownership unknown')
                 d=json.loads(record.read_text())
