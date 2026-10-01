@@ -73,6 +73,7 @@ export function createWatchCore(d: WatchCoreDeps) {
   let awaitingSettled = false; // exit 2 已投递 followUp，agent_settled 前不再产生唤醒
   let agentIdle = true; // session_start 在首次 agent_start 前；后续只由 agent_settled 重新置闲
   let pendingWakeText: string | null = null; // 投递失败时保留摘要，单飞重试同一条
+  let durableMonitoring = false; // 持久收据模式：代码监督不因模型忙碌退出；仅ledger决定有界投递
   let generation = 0; // 会话代际：被单飞替换的旧子进程的 exit 回调不作数
   let stopped = false;
   let retiring = false; // kill 已请求，close/管道排空前仍占住单飞位置
@@ -97,7 +98,7 @@ export function createWatchCore(d: WatchCoreDeps) {
   }
 
   function startChild(args: string[], isProbe: boolean, onStdout?: (text: string) => void) {
-    if (stopped || !agentIdle || !ownsLock() || child) return;
+    if (stopped || (!agentIdle && !durableMonitoring) || !ownsLock() || child) return;
     generation += 1;
     const gen = generation;
     idleAfterZero = false;
@@ -190,7 +191,8 @@ export function createWatchCore(d: WatchCoreDeps) {
     const accepted = () => {
       if (stopped || pendingWakeText !== text) return;
       pendingWakeText = null;
-      awaitingSettled = true;
+      awaitingSettled = !durableMonitoring;
+      if (durableMonitoring) startBlock(); // API成功只交付；绝不写received/accepted/handled
     };
     const retry = () => {
       if (stopped || pendingWakeText !== text) return;
@@ -217,6 +219,7 @@ export function createWatchCore(d: WatchCoreDeps) {
       failures = 0;
       warned = false;
       const summary = out.trim() || "（空摘要）";
+      durableMonitoring = summary.includes("[qwb-handoff]");
       pendingWakeText = `${WAKE_PREFIX} ${summary}`;
       deliverWake();
       return;
@@ -226,6 +229,11 @@ export function createWatchCore(d: WatchCoreDeps) {
       if (code === 124) startBlock();
       else if (code === 0) idleAfterZero = true;
       else fail(code);
+      return;
+    }
+    if (code === 124) {
+      // 正常周期到期，不记故障；close/管道排空后只接一个监督周期。
+      startBlock();
       return;
     }
     if (code === 0) {
@@ -257,6 +265,7 @@ export function createWatchCore(d: WatchCoreDeps) {
         idleAfterZero = false;
         awaitingSettled = false;
         pendingWakeText = null;
+        durableMonitoring = false;
         return;
       }
       if (child || restartTimer || pendingWakeText) return; // 值守在跑、待投递或退避等待中：不动
@@ -279,6 +288,7 @@ export function createWatchCore(d: WatchCoreDeps) {
       idleAfterZero = false;
       awaitingSettled = false;
       pendingWakeText = null;
+      durableMonitoring = false;
       childIsProbe = false;
     },
     // 测试观察用

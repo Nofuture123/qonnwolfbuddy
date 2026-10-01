@@ -7,6 +7,11 @@ usage() {
   cat <<'EOF'
 用法: qwb-wake.sh [选项]
 
+已迁票（qwb-collab-v1）：同票持久handoff，完整event_id集合确认；旧wake指纹不消费待办。
+  API交付只记transport，received/accepted/handled由接收方分别确认；当前仅controller。
+  每event至多3次门铃，accepted有活动/合理wait不误催；预算耗尽仍保留pending/status。
+  所有宿主共用内核监督owner锁，第二实例显式拒绝；旧票仍使用下述兼容指纹。
+
 循环：读账本列未结项 → 有未结项且进展指纹已变 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
 未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}；非法 state 或账本 UTF-8 损坏
          也按 needs-decision 叫主控查看（state 合法值仍只有五个）。
@@ -47,6 +52,7 @@ usage() {
 EOF
 }
 
+ORIGINAL_ARGS=("$@")
 PROJECT_ROOT="$(pwd)"; PANE="${QWB_CONTROLLER_PANE:-}"; INTERVAL=""; ONCE=0; DRY=0; ENSURE=0; CHECK=0; BLOCK=0; MAX_MS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -226,7 +232,7 @@ watch_check() {
   local hpid=""
   hpid="$(cat "$PROJECT_ROOT/qwbuddy/.hook.lock/pid" 2>/dev/null || true)"
   if [[ -n "$hpid" ]] && kill -0 "$hpid" 2>/dev/null; then
-    echo "值守：hook（pid ${hpid}）"
+    echo "值守：hook（pid ${hpid}）——仅进程存活；接班健康未验证，不据此启用"
     return 0
   fi
   # 形态二：pi 扩展（值守隐形化）——.watch 记 kind=pi-ext pid=<子进程 pid>，pid 活即值守在跑；
@@ -236,7 +242,7 @@ watch_check() {
     local wpid=""
     wpid="$(watch_field pid)"
     if [[ -n "$wpid" ]] && [[ "$wpid" != 0 ]] && kill -0 "$wpid" 2>/dev/null; then
-      echo "值守：pi-ext（pid ${wpid}）"
+      echo "值守：pi-ext（pid ${wpid}）——仅进程存活；须核对宿主、管道和接班，不据此启用"
     else
       echo "值守：未运行（pi-ext 子进程已退出）"
     fi
@@ -461,6 +467,23 @@ _ensure_body() {
 if [[ "$CHECK" -eq 1 ]]; then watch_check; exit 0; fi
 if [[ "$ENSURE" -eq 1 ]]; then watch_ensure; exit 0; fi
 
+# 所有适配器共用同一个代码监督owner。内核锁随进程死亡释放，不凭PID清锁。
+if [[ "$DRY" -eq 0 && -d "$PROJECT_ROOT/qwbuddy" && "${QWB_SUPERVISOR_GUARDED:-}" != "$PPID" ]]; then
+  exec perl -MFcntl=:DEFAULT,:flock,F_GETFD,F_SETFD,FD_CLOEXEC,O_NOFOLLOW -e '
+    my ($dir,@cmd)=@ARGV;
+    sysopen my $guard,"$dir/.supervisor.guard",O_RDWR|O_CREAT|O_NOFOLLOW,0600 or die "supervisor guard: $!\n";
+    my @s=stat($guard); die "supervisor guard unsafe\n" unless -f $guard && $s[3]==1 && $s[4]==$<;
+    flock($guard,LOCK_EX|LOCK_NB) or do { print STDERR "值守故障：已有代码监督owner，拒绝第二实例\n"; exit 75 };
+    my $flags=fcntl($guard,F_GETFD,0); defined($flags) && fcntl($guard,F_SETFD,$flags & ~FD_CLOEXEC) or die "guard inherit\n";
+    $ENV{QWB_SUPERVISOR_GUARDED}=$$;
+    my $pid=fork(); defined($pid) or die "supervisor fork: $!\n";
+    if (!$pid) { exec @cmd; die "supervisor exec: $!\n" }
+    $SIG{TERM}=sub { kill "TERM",$pid }; $SIG{INT}=sub { kill "INT",$pid };
+    while (waitpid($pid,0)<0) { next if $!{EINTR}; die "supervisor wait: $!\n" }
+    my $rc=$?; exit 128+($rc&127) if $rc&127; exit($rc>>8);
+  ' "$PROJECT_ROOT/qwbuddy" bash "$SELF_BIN" "${ORIGINAL_ARGS[@]}"
+fi
+
 # 未结项：输出「文件<TAB>state」。state 异常按 needs-decision 叫主控查看。
 # 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
 open_items() {
@@ -515,10 +538,24 @@ ts_epoch() {
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 OPEN_N=0
 collect_due() {
-  local out="$1" f st last fp lwf we lostpane="" lostrc=1
+  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry
   OPEN_N=0
   while IFS=$'\t' read -r f st; do
     OPEN_N=$((OPEN_N + 1))
+    if [[ "$DRY" -eq 0 ]] && grep -q '^<!-- qwb-collab-v1$' "$f"; then
+      retry="${QWB_REWAKE_MS:-$INTERVAL}"
+      [[ "$retry" =~ ^[1-9][0-9]*$ ]] || retry="$INTERVAL"
+      (( retry <= 86400000 )) || retry=86400000
+      pending="$(bash "$(dirname "$LIB")/qwb-send.sh" pending --project "$PROJECT_ROOT" --task "$f" --retry-ms "$retry" --due)" || return 3
+      [[ "$pending" != '[]' ]] || continue
+      # 同批完整event_id；旧wake指纹不是消费游标，摘要不把正文当系统指令。
+      last="[qwb-handoff] $(printf '%s' "$pending" | perl -MJSON::PP -0777 -e '
+        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile}} } @$p]);
+      ')"
+      fp="$(printf '%s' "$pending" | shasum | cut -d' ' -f1)"
+      printf '%s\t%s\t%s\t%s\t\n' "$f" "$st" "$fp" "$last" >> "$out"
+      continue
+    fi
     last="$(grep -E '^(working|done|blocked|needs-decision):' "$f" 2>/dev/null | tail -1 || true)"
     lostpane=""
     if [[ "$st" == "running" && "$DRY" -eq 0 ]]; then
@@ -578,7 +615,7 @@ check_round() {
   local duef
   duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
   : > "$duef"
-  collect_due "$duef"
+  collect_due "$duef" || { rm -f "$duef"; return 3; }
   if [[ ! -s "$duef" ]]; then
     (( OPEN_N == 0 )) && echo "账本无未结项"
     rm -f "$duef"
@@ -594,7 +631,12 @@ check_round() {
       || { echo "错误：值守写入未授权/协议非法，不投递：$f" >&2; write_failed=1; break; }
   done < "$duef"
   if (( write_failed )); then rm -f "$duef"; return 1; fi
-  # 一轮只发一条投递：全部要叫的票拼进同一条文本；投递成功才逐票写 wake 行，失败一行都不写
+  # 先持久记录传输尝试；即使API前崩溃也保留待办且重投有界。
+  while IFS=$'\t' read -r f st fp last lostpane; do
+    record_transport "$f" "$last" || { write_failed=1; break; }
+  done < "$duef"
+  if (( write_failed )); then rm -f "$duef"; return 3; fi
+  # 一轮只发一条投递，API成功不代表received或handled。
   if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
     while IFS=$'\t' read -r f st fp last lostpane; do
       qwb_ledger "$PROJECT_ROOT" "$f" wake "$PANE" "$st" "$fp" >/dev/null \
@@ -670,16 +712,24 @@ pi_orphan_clear() {
     my $current = <$old> // "";
     close $old;
     unlink $path if index($current, "kind=pi-ext pid=$pid instance=$instance ") == 0;
-  ' "$PROJECT_ROOT/qwbuddy" "$$" "$QWB_WATCH_INSTANCE" \
+  ' "$PROJECT_ROOT/qwbuddy" "${QWB_SUPERVISOR_GUARDED:-$$}" "$QWB_WATCH_INSTANCE" \
     || echo "警告：Pi 孤儿值守未能清理自己的 .watch 登记" >&2
 }
 
 block_owner_ok() {
+  if [[ -n "${QWB_SUPERVISOR_GUARDED:-}" && "$QWB_SUPERVISOR_GUARDED" != "$PPID" ]]; then
+    pi_orphan_clear
+    return 1
+  fi
   # Pi 以宿主 PID 绑定子进程；SIGKILL 后 PPID 改变，旧 pane 锁即使尚在也不能消费进展。
   if [[ -n "${QWB_WATCH_PARENT_PID:-}" ]]; then
     [[ "$QWB_WATCH_PARENT_PID" =~ ^[1-9][0-9]*$ ]] || return 1
     local actual_parent
-    actual_parent="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "${QWB_SUPERVISOR_GUARDED:-}" == "$PPID" ]]; then
+      actual_parent="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d '[:space:]')"
+    else
+      actual_parent="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+    fi
     if [[ "$actual_parent" != "$QWB_WATCH_PARENT_PID" ]]; then
       pi_orphan_clear
       return 1
@@ -693,11 +743,22 @@ block_owner_ok() {
   [[ "$owner" == "$HERDR_PANE_ID" ]]
 }
 
+record_transport() {
+  local f="$1" summary="$2" id
+  [[ "$summary" == '[qwb-handoff] '* ]] || return 0
+  # 确认严格绑定collect_due的旧批次；并发到达的新事件不得被这次传输消费。
+  while IFS= read -r id; do
+    bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" >/dev/null || return 1
+  done < <(printf '%s' "${summary#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
+    my $p=decode_json(<STDIN>); print "$_->{event_id}\n" for @$p;
+  ')
+}
+
 block_round() {
   local duef
   duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
   : > "$duef"
-  collect_due "$duef"
+  collect_due "$duef" || { rm -f "$duef"; return 3; }
   local any="$OPEN_N" f st fp last lostpane
   if [[ -s "$duef" ]]; then
     if ! block_owner_ok; then rm -f "$duef"; return 0; fi
@@ -707,6 +768,7 @@ block_round() {
       if ! block_owner_ok; then lost_host=1; break; fi
       # block由主控harness调用；空pane的旧票兼容入口仍沿用原runtime行。
       local target="${HERDR_PANE_ID:-pid:$PPID}"
+      record_transport "$f" "$last" || { write_failed=1; break; }
       qwb_ledger "$PROJECT_ROOT" "$f" wake "$target" "$st" "$fp" >/dev/null \
         || { echo "错误：wake 行写入失败：$f" >&2; write_failed=1; break; }
     done < "$duef"
@@ -746,6 +808,7 @@ if [[ "$BLOCK" -eq 1 ]]; then
 fi
 
 while :; do
+  [[ -z "${QWB_SUPERVISOR_GUARDED:-}" || "$QWB_SUPERVISOR_GUARDED" == "$PPID" ]] || { echo '值守故障：监督owner已退出，不交接新消息' >&2; exit 3; }
   roundrc=0; check_round || roundrc=$?
   if [[ "$ONCE" -eq 1 || "$DRY" -eq 1 ]]; then
     exit "$roundrc"

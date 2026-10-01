@@ -77,7 +77,7 @@ trap 'guard_lock --lock-release 2>/dev/null || true' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# 3) 前台阻塞值守：exit 2 = 有可动作变化（摘要交回模型）；0/124 = 安静退出；其他 = 错误不卡主控
+# 3) 前台阻塞值守：exit 2交回模型；124正常到期只有限接续一次，不能静默丢接班
 # shellcheck source=/dev/null
 if [[ -f "$QWB_DIR/config.sh" ]]; then . "$QWB_DIR/config.sh"; fi
 MAX_MS="${QWB_HOOK_MAX_MS:-7200000}"
@@ -86,6 +86,16 @@ MAX_MS="${QWB_HOOK_MAX_MS:-7200000}"
 set +e
 hook_out="$(bash "$QWB_DIR/bin/qwb-wake.sh" --project "$ROOT" --block --max-ms "$MAX_MS" 2>&1)"
 hook_rc=$?
+if [[ "$hook_rc" -eq 124 ]]; then
+  # 124是正常周期到期；旧进程及管道已排空后有限接班，不启动另一后台系统。
+  hook_out="$(bash "$QWB_DIR/bin/qwb-wake.sh" --project "$ROOT" --block --max-ms "$MAX_MS" 2>&1)"
+  hook_rc=$?
+  if [[ "$hook_rc" -eq 124 ]]; then
+    echo "qwb-hook：连续两周期到期；无健康接班证据，须主控前台核查" >> "$QWB_DIR/.hook.err"
+    printf '%s\n' '[qwb-wake] 值守接班未就绪：正常124接续一周期后仍到期；待办未消费，请核查唯一监督入口。' >&2
+    exit 2
+  fi
+fi
 set -u
 
 case "$hook_rc" in
