@@ -4,6 +4,7 @@ set -euo pipefail
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   cat <<'EOF'
 用法: qwb-ledger.sh <read|metrics|append|prepare|revise|revise-scenarios|state|claim|release|recover-claim|wake-check|wake|dispatch|not-sent|question|answer|resume|migrate> --project <根> --task <路径> [--expect <rev>] [--event-id <id>] [--legacy] -- <参数...>
+handoff-* 为03兼容扩展，请用 qwb-send.sh --help 查看投递/received/accept/activity/prepared/handled/reconcile；仅合法主控通道，不迁旧票。
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
 prepare: 场景指纹 [常驻附页正文]；revise: 旧指纹 新指纹 原因；state: 五值之一。
@@ -47,6 +48,7 @@ use JSON::PP;
 use Encode qw(decode encode FB_CROAK);
 use POSIX qw(strftime);
 use IO::Handle;
+use Time::HiRes qw(time);
 use Errno qw(ESRCH);
 binmode STDERR, ':encoding(UTF-8)';
 my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,@args)=@ARGV;
@@ -142,7 +144,7 @@ sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration));
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : ());
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -153,6 +155,21 @@ sub validate {
   for my $e (@{$data->{events}}) {
     keys_only($e,qw(event_id seq at kind actor op_id spec_rev line));
     fail('event非法/重复/乱序') unless id_ok($e->{event_id}) && !$seen{$e->{event_id}}++ && $e->{seq}==++$seq && string_ok($e->{actor}) && string_ok($e->{line}) && id_ok($e->{kind}) && ($e->{op_id} eq '' || id_ok($e->{op_id})) && $e->{spec_rev}=~/\A[0-9]+\z/ && $e->{spec_rev}<=$data->{spec_rev} && $e->{at}=~/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\z/;
+  }
+  if (exists $data->{handoffs}) {
+    fail('handoffs非法') unless ref($data->{handoffs}) eq 'HASH';
+    my %corr;
+    for my $id (keys %{$data->{handoffs}}) {
+      my $h=$data->{handoffs}{$id};
+      keys_only($h,qw(event_id corr attempt recipient source_event source_seq source_actor payload transport_count transport_at received accepted owner_fp op_id activity_at wait_until wait_reason prepared handled result_ref result_sha256));
+      fail('handoff身份非法') unless id_ok($id) && $id eq $h->{event_id} && id_ok($h->{corr}) && id_ok($h->{attempt}) && $h->{recipient} eq 'controller' && $seen{$h->{source_event}} && $h->{source_seq} > 0 && $h->{source_seq} <= $seq;
+      fail('handoff关联重复') if $corr{"$h->{corr}\0$h->{attempt}"}++;
+      my ($source)=grep { $_->{event_id} eq $h->{source_event} } @{$data->{events}};
+      fail('handoff来源不一致') unless $source->{seq} == $h->{source_seq} && $source->{actor} eq $h->{source_actor};
+      for (qw(source_actor payload received accepted owner_fp op_id wait_reason result_ref result_sha256)) { fail('handoff字段非法') unless string_ok($h->{$_}) }
+      for (qw(transport_count transport_at activity_at wait_until prepared handled)) { fail('handoff数值非法') unless defined($h->{$_}) && !ref($h->{$_}) && $h->{$_} =~ /\A[0-9]+\z/ }
+      fail('handoff状态非法') unless $h->{transport_count}<=3 && $h->{prepared}<=1 && $h->{handled}<=1 && ($h->{op_id} eq '' || id_ok($h->{op_id})) && ($h->{accepted} eq '' ? $h->{op_id} eq '' && $h->{owner_fp} eq '' && !$h->{prepared} && !$h->{handled} : $h->{received} ne '' && $h->{op_id} ne '' && $h->{owner_fp}=~/\A[0-9a-f]{64}\z/) && (!$h->{handled} || $h->{prepared} && $h->{result_ref} ne '' && $h->{result_sha256}=~/\A[0-9a-f]{64}\z/);
+    }
   }
   keys_only($data->{migration},qw(task_sha256 confirm installed));
   fail('migration摘要非法') unless $data->{migration}{task_sha256}=~/\A[0-9a-f]{64}\z/;
@@ -202,14 +219,20 @@ if (-e "$dir/.controller.lock/owner") {
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
 sub native_reply {
-  open my $probe,'-|','herdr',@_ or fail('原生身份探针无法启动');
+  # Herdr失败JSON在stderr；合并后严格解析整份回复，混入诊断/第二份JSON仍拒绝。
+  my $pid=open(my $probe,'-|'); defined($pid) or fail('原生身份探针无法启动');
+  if (!$pid) {
+    open STDERR,'>&',STDOUT or exit 255;
+    exec('herdr',@_) or exit 255;
+  }
   my $s=do { local $/; <$probe> } // ''; close $probe; my $rc=$?;
   my $j=strict_json($s); fail('原生身份回复不是对象') unless ref($j) eq 'HASH';
   return ($j,$rc);
 }
 my $wake_cmd=$cmd eq 'wake' || $cmd eq 'wake-check';
+my $handoff_watch=$cmd eq 'handoff-pending' || $cmd eq 'handoff-transport';
 my $watcher=0;
-if ($data && $wake_cmd && !$controller) {
+if ($data && ($wake_cmd || $handoff_watch) && !$controller) {
   # .watch由主控ensure在同一目录锁内登记，绑定原owner文件代次；换主控自动失效。
   my $w=safe_open("$dir/.watch",O_RDONLY); my $s=<$w> // ''; close $w;
   my ($pane,$target,$generation)=$s =~ /\Apane=(\S+) workspace=\S+ pid=\S* started=\S+ controller=(\S+) owner-fp=([0-9a-f]{64}) cmd=/;
@@ -238,7 +261,7 @@ if (!$data && $legacy && $cmd ne 'migrate') {
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
-fail('角色未授权（仅现有主控/已绑定工人）') unless $controller || $watcher || ($worker && $cmd =~ /\A(append|question)\z/) || (!$data && $legacy && $cmd ne 'migrate');
+fail('角色未授权（仅现有主控/已绑定工人）') unless $controller || $watcher || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
 exit 0 if $cmd eq 'check';
 if ($wake_cmd) {
   fail('wake参数非法') unless @args==3 && string_ok($args[0]) && $args[0] ne '' && $args[1]=~/\A(running|blocked|needs-decision)\z/ && $args[2]=~/\A[0-9a-f]{40}\z/;
@@ -250,6 +273,23 @@ fail('期望版本冲突') if $data && $expect ne '' && $expect != $data->{rev};
 fail('event_id非法') if $event ne '' && !id_ok($event);
 if ($event ne '' && $data && grep { $_->{event_id} eq $event } @{$data->{events}}) { fail('event_id已存在，拒绝重放') }
 my ($kind,$line,$op)=($cmd,'','');
+my $now=int(time()*1000);
+my $pending_output;
+my $handoff_return;
+sub source_id { my $id=shift; return 'source:'.(length($id)<=153 ? $id : sha256_hex($id)) }
+sub new_handoff {
+  my ($id,$corr,$attempt,$source,$payload)=@_;
+  return {event_id=>$id,corr=>$corr,attempt=>$attempt,recipient=>'controller',source_event=>$source->{event_id},source_seq=>$source->{seq},source_actor=>$source->{actor},payload=>$payload,transport_count=>0,transport_at=>0,received=>'',accepted=>'',owner_fp=>'',op_id=>'',activity_at=>0,wait_until=>0,wait_reason=>'',prepared=>0,handled=>0,result_ref=>'',result_sha256=>''};
+}
+sub handoff_due {
+  my ($h,$retry)=@_;
+  return 0 if $h->{handled} || $h->{transport_count}>=3;
+  # 回复迟到不是失活；工具活动或有界合理wait保住本代claim。
+  if ($h->{accepted} ne '' && $h->{owner_fp} eq sha256_hex($owner_raw)) {
+    return 0 if $now < $h->{wait_until} || $now-$h->{activity_at} < $retry;
+  }
+  return !$h->{transport_at} || $now-$h->{transport_at} >= $retry;
+}
 sub append_body { $body =~ s/\n?\z/\n/; $body.="$_[0]\n" }
 sub field {
   my ($key,$val)=@_;
@@ -261,7 +301,106 @@ sub require_claim {
   my $id=shift; fail('op_id非法') unless id_ok($id);
   if ($data) { fail('无本人持久claim/op') unless $data->{claim} && $data->{claim}{owner} eq $actor && $data->{claim}{op_id} eq $id }
 }
-if ($cmd eq 'migrate') {
+if ($cmd =~ /\Ahandoff-/) {
+  fail('交接仅支持已迁票') unless $data;
+  $data->{handoffs} //= {};
+  if ($handoff_watch) {
+    fail('交接目标不是现主控') unless ($args[0] // '') eq $owner;
+  }
+  if ($cmd eq 'handoff-pending') {
+    my ($target,$retry,$mode)=@args;
+    fail('pending参数非法') unless @args==3 && $retry=~/\A[1-9][0-9]*\z/ && $retry<=86400000 && $mode=~/\A(all|due)\z/;
+    # 接班扫描完整事件序列，不沿用旧wake指纹或有空洞的最后seq游标。
+    my $added=0;
+    for my $e (@{$data->{events}}) {
+      # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
+      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\Ahandoff-/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      my $id=source_id($e->{event_id});
+      next if exists $data->{handoffs}{$id};
+      my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{line};
+      $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$payload); $added++;
+    }
+    my @p=map { +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0} }
+      sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
+    $pending_output=$json->encode(\@p);
+    if (!$added) { print "$pending_output\n"; exit }
+  } elsif ($cmd eq 'handoff-send') {
+    my ($to,$corr,$attempt,$payload)=@args;
+    fail('收件人/corr/attempt/正文非法') unless @args==4 && $to eq 'controller' && id_ok($corr) && id_ok($attempt) && string_ok($payload) && $payload ne '' && length(encode('UTF-8',$payload))<=65536;
+    fail('corr的source:前缀保留给自动来源') if $corr =~ /\Asource:/;
+    if ($worker && !$controller) { fail('失败派发工人不能投递') if $data->{ops}{$data->{workers}{$actor}}{status} eq 'not-sent' }
+    my ($old)=grep { $_->{corr} eq $corr && $_->{attempt} eq $attempt } values %{$data->{handoffs}};
+    if ($old) {
+      fail('corr重投内容或来源冲突') unless $old->{payload} eq $payload && $old->{source_actor} eq $actor;
+      print "$old->{event_id}\n"; exit;
+    }
+    $event='send:'.sha256_hex(encode('UTF-8',"$corr\0$attempt"));
+    $line="working: handoff corr=$corr attempt=$attempt recipient=controller";
+    $handoff_return=[$corr,$attempt,$payload];
+  } else {
+    my $id=$cmd eq 'handoff-transport' ? $args[1] : $args[0];
+    my $h=$data->{handoffs}{$id // ''} // fail('handoff event不存在');
+    if ($cmd eq 'handoff-transport') {
+      fail('transport参数非法') unless @args==2;
+      # prepared先于传输；传输是否成功未知也不消费待办，有界重投同一event。
+      if ($h->{transport_count}>=3) { print "$id\n"; exit }
+      $h->{transport_count}++; $h->{transport_at}=$now;
+    } else {
+      fail('仅当前收件人能确认') unless $controller;
+      if ($cmd eq 'handoff-received') {
+        fail('received参数非法') unless @args==1;
+        if ($h->{received} eq $actor) { print "$id\n"; exit }
+        $h->{received}=$actor;
+      } elsif ($cmd eq 'handoff-accept') {
+        my $idop=$args[1]; fail('accept必须先received且op_id合法') unless @args==2 && $h->{received} eq $actor && id_ok($idop);
+        if ($h->{accepted} ne '') {
+          fail('claim已存在，须先对账接班') unless $h->{accepted} eq $actor && $h->{owner_fp} eq sha256_hex($owner_raw) && $h->{op_id} eq $idop;
+          print "$id\n"; exit;
+        }
+        fail('op_id已用于另一动作') if exists($data->{ops}{$idop}) || grep { $_->{op_id} eq $idop } values %{$data->{handoffs}};
+        $h->{accepted}=$actor; $h->{owner_fp}=sha256_hex($owner_raw); $h->{op_id}=$idop; $h->{activity_at}=$now;
+      } elsif ($cmd eq 'handoff-reconcile') {
+        fail('接班必须持版本和原claim') unless @args==2 && $expect ne '' && $h->{accepted} ne '' && !$h->{handled};
+        my $fh=safe_open(encode('UTF-8',$args[1]),O_RDONLY); my $proof=do { local $/; <$fh> }; close $fh;
+        my $p=strict_json($proof); keys_only($p,qw(task_sha256 op_id previous_owner reconciled));
+        fail('接班快照/claim/对账证据不一致') unless $p->{task_sha256} eq sha256_hex($raw) && $p->{op_id} eq $h->{op_id} && $p->{previous_owner} eq $h->{accepted} && string_ok($p->{reconciled}) && $p->{reconciled} ne '';
+        my $old=$h->{accepted};
+        fail('同pane新代际无法证明旧claim owner死亡，保留待办') if $old eq $actor && $h->{owner_fp} ne sha256_hex($owner_raw);
+        if ($old ne $actor) {
+          if ($old =~ /\Apid:([1-9][0-9]*)\z/) { fail('旧claim owner仍活或未知') unless !kill(0,$1) && $! == ESRCH }
+          else { my ($j,$rc)=native_reply('pane','get',$old); fail('旧claim owner仍活或未知') unless $rc && ($j->{error}{code} // '') eq 'pane_not_found' }
+        }
+        $h->{accepted}=$actor; $h->{received}=$actor; $h->{owner_fp}=sha256_hex($owner_raw); $h->{activity_at}=$now;
+        $h->{wait_until}=0; $h->{wait_reason}='';
+        # op/prepared保持原值；先读回结果，绝不因为重启而重放副作用。
+      } else {
+        fail('无本代accepted claim；接班先对账') unless $h->{accepted} eq $actor && $h->{owner_fp} eq sha256_hex($owner_raw);
+        if ($cmd eq 'handoff-activity') {
+          my ($id0,$wait,$reason)=@args;
+          fail('activity/wait非法') unless @args==3 && $wait=~/\A[0-9]+\z/ && $wait<=86400000 && string_ok($reason) && ($wait==0 || $reason ne '');
+          fail('handled不能续claim') if $h->{handled};
+          $h->{activity_at}=$now; $h->{wait_until}=$wait ? $now+$wait : 0; $h->{wait_reason}=$reason;
+        } elsif ($cmd eq 'handoff-prepared') {
+          fail('prepared op不一致') unless @args==2 && $args[1] eq $h->{op_id};
+          if ($h->{prepared}) { print "$id\n"; exit }
+          $h->{prepared}=1;
+        } elsif ($cmd eq 'handoff-handled') {
+          fail('handled必须先prepared且op一致') unless @args==3 && $h->{prepared} && $args[1] eq $h->{op_id};
+          my $ref=encode('UTF-8',$args[2]); $ref="$root/$ref" unless $ref=~m{^/};
+          my $resolved=realpath($ref) // fail('result_ref不存在');
+          fail('result_ref越项目或符号链接') unless index($resolved,"$root/")==0 && !-l $ref;
+          my $fh=safe_open($ref,O_RDONLY); my $proof=do { local $/; <$fh> }; close $fh;
+          my $p=strict_json($proof); keys_only($p,qw(event_id op_id outcome evidence));
+          fail('结果读回不匹配/未知') unless $p->{event_id} eq $id && $p->{op_id} eq $h->{op_id} && $p->{outcome}=~/\A(applied|not-applied)\z/ && string_ok($p->{evidence}) && $p->{evidence} ne '';
+          if ($h->{handled}) { fail('重复handled结果冲突') unless $h->{result_ref} eq text($resolved) && $h->{result_sha256} eq sha256_hex($proof); print "$id\n"; exit }
+          $h->{handled}=1; $h->{result_ref}=text($resolved); $h->{result_sha256}=sha256_hex($proof);
+          $h->{wait_until}=0;
+        } else { fail("未知交接命令 $cmd") }
+      }
+    }
+    $line="working: $cmd event_id=$id";
+  }
+} elsif ($cmd eq 'migrate') {
   fail('已迁入协议，不能重迁') if $data;
   fail('仅主控能迁移') unless $controller;
   my $mfh=safe_open(encode('UTF-8',$args[0] // ''),O_RDONLY);
@@ -341,6 +480,7 @@ if ($cmd eq 'migrate') {
   fail('state非法') unless $args[0] =~ /\A(running|blocked|needs-decision|done|verified)\z/; field('state',$args[0]);
 } elsif ($cmd eq 'claim') {
   $op=$args[0]; fail('op非法/已存在') unless id_ok($op) && !exists $data->{ops}{$op};
+  fail('op_id已用于交接动作') if grep { $_->{op_id} eq $op } values %{$data->{handoffs} // {}};
   fail('持久claim尚未释放') if $data->{claim};
   $data->{claim}={owner=>$actor,op_id=>$op}; $data->{ops}{$op}={owner=>$actor,pane=>'',status=>'claimed'};
 } elsif ($cmd eq 'wake') {
@@ -413,6 +553,9 @@ if ($data) {
     $event=unpack('H*',$bytes);
   }
   push @{$data->{events}},{event_id=>$event,seq=>$data->{seq},at=>strftime('%Y-%m-%dT%H:%M:%SZ',gmtime),kind=>$kind,actor=>$actor,op_id=>$op,spec_rev=>$data->{spec_rev},line=>$line};
+  if ($handoff_return) {
+    $data->{handoffs}{$event}=new_handoff($event,$handoff_return->[0],$handoff_return->[1],$data->{events}[-1],$handoff_return->[2]);
+  }
   validate();
   $body =~ s/\n*\z/\n/;
   $out=encode('UTF-8',$body)."\n<!-- qwb-collab-v1\n".$json->encode($data)."\n-->\n";
@@ -436,5 +579,5 @@ if (!$data) {
   };
   if (!$ok) { my $error=$@; close $w; unlink $tmp; die $error }
 }
-print "$event\n" if $data;
+print defined($pending_output) ? "$pending_output\n" : "$event\n" if $data;
 PERL

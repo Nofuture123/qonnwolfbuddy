@@ -88,6 +88,12 @@ else
             my $q=$d->{questions}{$k};
             print "       问题未结: key=$k ".($q->{answer} eq "" ? "未答" : "待恢复")."\n" if $q->{resumed} eq "";
           }
+          my $h=$d->{handoffs} // {};
+          for my $id (sort keys %$h) {
+            next if $h->{$id}{handled};
+            my $r=$h->{$id};
+            print "       交接待办: event_id=$id received=".($r->{received} ne "" ? "yes" : "no")." accepted=".($r->{accepted} ne "" ? "yes" : "no")." transport=$r->{transport_count}/3".($r->{prepared} ? " 先对账" : "").($r->{transport_count}>=3 ? " 重投预算耗尽，须显式核查" : "")."\n";
+          }
         '
       else
         printf '       [未结] 协作区损坏/未知，须主控对账\n'

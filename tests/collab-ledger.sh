@@ -30,7 +30,22 @@ case "$1 $2" in
     fi
     printf '{"result":{"type":"ok"}}\n' ;;
   'pane get')
-    [[ "$3" != test:unknown ]] || { printf '{"error":{"code":"unavailable"}}\n'; exit 1; }
+    [[ "$3" != test:unknown ]] || { printf '{"error":{"code":"unavailable"}}\n' >&2; exit 1; }
+    if [[ "$3" == test:oldpane && -e "$TEST_PROJECT/pane-gone" ]]; then
+      reply='{"error":{"code":"pane_not_found"}}'
+      case "${TEST_NATIVE_STREAM:-stderr}" in
+        stdout) printf '%s\n' "$reply" ;;
+        stderr) printf '%s\n' "$reply" >&2 ;;
+        bad-stdout) printf 'not-json\n'; printf '%s\n' "$reply" >&2 ;;
+        bad-stderr) printf '%s\n' "$reply"; printf 'not-json\n' >&2 ;;
+        both-json) printf '%s\n' "$reply"; printf '%s\n' "$reply" >&2 ;;
+        empty) : ;;
+        unknown) printf '{"error":{"code":"unavailable"}}\n' >&2 ;;
+        zero) printf '%s\n' "$reply" >&2; exit 0 ;;
+        *) exit 77 ;;
+      esac
+      exit 1
+    fi
     printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","workspace_id":"test","cwd":"%s"}}}\n' "$3" "$TEST_PROJECT" ;;
   'pane list') printf '{"result":{"panes":[{"pane_id":"test:watch","workspace_id":"test"}]}}\n' ;;
   'pane process-info')
@@ -101,6 +116,67 @@ wait_file() {
   for _ in {1..400}; do [[ -s "$1" ]] && return 0; sleep 0.01; done
   echo "FAIL: barrier未就绪 $1"; exit 1
 }
+native_reply_checks() {
+  local R="$P/tasks/2099-02-02-native-stream.md"
+  write_ticket "$R"; manifest "$R" "$TMP/native-manifest.json"
+  bash "$L" migrate --project "$P" --task "$R" -- "$TMP/native-manifest.json" >/dev/null
+  python3 - "$P" "$R" "$L" "$ROOT" "$TMP" <<'PY'
+import hashlib,json,os,subprocess,sys
+P,T,L,ROOT,TMP=sys.argv[1:]; failures=[]
+def run(cmd,actor,stream='stderr'):
+    return subprocess.run(cmd,env=dict(os.environ,HERDR_PANE_ID=actor,TEST_NATIVE_STREAM=stream),capture_output=True,text=True)
+def ledger(cmd,*args,actor='test:newctl',opts=(),stream='stderr'):
+    return run(['bash',L,cmd,'--project',P,'--task',T,*opts,'--',*args],actor,stream)
+def lock(cmd,actor): return run(['bash',ROOT+'/bin/qwb-lock.sh',cmd,'--project',P],actor)
+def content(): return open(T,'rb').read()
+def read():
+    r=ledger('read'); assert r.returncode==0,r.stderr; return json.loads(r.stdout)
+def require(ok,msg):
+    if not ok: failures.append(msg); print('FAIL native-reply:',msg)
+assert lock('release','test:ctl').returncode==0
+assert lock('acquire','test:oldpane').returncode==0
+assert ledger('claim','pane-op',actor='test:oldpane').returncode==0
+snapshot=content(); before=read()
+require(lock('acquire','test:newctl').returncode!=0 and content()==snapshot,'live pane blocks actual lock takeover')
+ep=TMP+'/pane-evidence.json'
+json.dump({'task_sha256':hashlib.sha256(snapshot).hexdigest(),'op_id':'pane-op','previous_owner':'test:oldpane','reconciled':'fake pane closed; no dispatch; retain original claim/history'},open(ep,'w'))
+opts=['--expect',str(before['rev'])]
+# 合法主动移交锁也不证明原pane已死：真实入口仍须拒绝接手claim。
+assert lock('release','test:oldpane').returncode==0
+assert lock('acquire','test:newctl').returncode==0
+r=ledger('recover-claim','pane-op',ep,opts=opts)
+require(r.returncode!=0 and content()==snapshot,'live pane recovery rejected')
+assert lock('release','test:newctl').returncode==0
+assert lock('acquire','test:oldpane').returncode==0
+# fake端点消失后由真实qwb-lock探针接手，错误JSON放stderr，与真实Herdr一致。
+open(P+'/pane-gone','w').close()
+assert lock('acquire','test:newctl').returncode==0
+for command,args,options in [('release',['pane-op'],()),('claim',['next-op'],()),('recover-claim',['pane-op',ep],['--expect',str(before['rev']-1)])]:
+    require(ledger(command,*args,opts=options).returncode!=0 and content()==snapshot,'no arbitrary release/claim/stale recovery '+command)
+for stream in ['bad-stdout','bad-stderr','both-json','empty','unknown','zero']:
+    open(T,'wb').write(snapshot)
+    r=ledger('recover-claim','pane-op',ep,opts=opts,stream=stream)
+    require(r.returncode!=0 and content()==snapshot,'invalid/unknown reply rejected '+stream)
+# 同一临时快照分别检查stdout兼容和真实stderr；不执行真实端点或其他返修请求。
+for stream in ['stdout','stderr']:
+    open(T,'wb').write(snapshot)
+    r=ledger('recover-claim','pane-op',ep,opts=opts,stream=stream)
+    require(r.returncode==0,'dead pane recovery '+stream+' rc='+str(r.returncode)+' '+r.stderr)
+    if r.returncode==0:
+        after=read()
+        require(after['claim']=={'op_id':'pane-op','owner':'test:newctl'} and after['ops']['pane-op']['owner']=='test:newctl' and after['events'][:-1]==before['events'] and after['events'][-1]['kind']=='recover-claim' and after['events'][-1]['op_id']=='pane-op','persistent original claim/op/history '+stream)
+        require(ledger('release','pane-op').returncode==0,'explicit release after recovery '+stream)
+        print('PASS native-reply: dead pane recovery '+stream)
+assert lock('release','test:newctl').returncode==0
+assert lock('acquire','test:ctl').returncode==0
+os.unlink(P+'/pane-gone')
+for path in [T,T+'.qwb-lock',T+'.qwb-original']: os.unlink(path)
+if failures: raise SystemExit(1)
+print('NATIVE REPLY PASS: stderr/stdout, live/unknown/malformed, persistent claim/history')
+PY
+}
+native_reply_checks
+[[ "${TEST_NATIVE_REPLY_ONLY:-0}" != 1 ]] || exit 0
 repair_checks() {
   local R="$P/tasks/2099-02-01-repair.md"
   write_ticket "$R"; manifest "$R" "$TMP/repair-manifest.json"

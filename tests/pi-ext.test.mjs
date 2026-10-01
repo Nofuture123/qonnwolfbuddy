@@ -428,5 +428,28 @@ function ok(name) {
   ok("异步投递失败：单飞重试原摘要，成功后下一回合恢复值守");
 }
 
+// 03：正常到期接一个周期，不把124当崩溃。
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart();
+  state.spawns[0].child.exit(124);
+  assert.equal(state.errLines.length, 0, "124不是故障");
+  assert.equal(state.spawns.length, 2, "正常到期后接班");
+  core.shutdown();
+  console.log("PASS  03 normal 124 handover");
+}
+// 03：持久消息API成功不是handled；主控忙时仍有单一代码owner继续监督。
+{
+  const { core, state } = makeHarness();
+  core.onSessionStart(); core.onAgentStart();
+  state.spawns[0].child.exit(2, '[qwb-handoff] [{"event_id":"E","payload":"正文"}]');
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.spawns.length, 2, "忙碌主控仍接监督周期");
+  assert.equal(state.spawns[0].child.killed, false, "不杀旧实例");
+  core.onAgentSettled();
+  assert.equal(state.spawns.length, 2, "settled不重复监督owner");
+  core.shutdown();
+  console.log("PASS  03 durable delivery keeps code supervision while busy");
+}
 console.log(`pi-ext tests: ${passed} passed`);
 rmSync(root, { recursive: true, force: true });

@@ -140,7 +140,14 @@ while [[ ! -e "$SLEEP_RELEASE" ]]; do sleep 0.01; done
     hooklock.mkdir()
     (hooklock / "pid").write_text("99999999\n")
     stub = qwb / "bin" / "qwb-wake.sh"
-    stub.write_text('#!/usr/bin/env bash\necho "$$" >> "' + str(project / 'entered') + '"\nsleep 0.6\nexit 124\n')
+    stub.write_text(f'''#!/usr/bin/env bash
+mkdir "{project / 'cycle-active'}" || exit 75
+trap 'rmdir "{project / 'cycle-active'}"' EXIT
+echo "$$" >> "{project / 'entered'}"
+sleep 0.4
+[[ $(wc -l < "{project / 'entered'}") -gt 1 ]] && exit 0
+exit 124
+''')
     racebin = project / "racebin"
     racebin.mkdir()
     race_rm = racebin / "rm"
@@ -169,12 +176,20 @@ exec /bin/rm "$@"
         (project / "release").write_text("go")
         for h in hooks: assert h.wait(timeout=3) == 0
         entered = project / "entered"
-        assert entered.exists() and len(entered.read_text().splitlines()) == 1, "并发 hook 启动了多个值守"
+        assert entered.exists() and len(entered.read_text().splitlines()) == 2, "正常124未接续一个周期或并发hook重复启动"
         assert not hooklock.exists(), "hook 正常退出后遗留锁"
-        print("PASS  A 判死回收暂停、B 竞争：单飞且正常释放")
+        print("PASS  A 判死回收暂停、B 竞争：单飞，正常124排空后接一个周期")
     finally:
         for h in hooks:
             if h.poll() is None: h.kill(); h.wait(timeout=2)
+
+    stub.write_text('#!/usr/bin/env bash\necho cycle >> "' + str(project / 'expired') + '"\nexit 124\n')
+    expired=subprocess.run(['bash',str(qwb / 'bin' / 'qwb-hook-claude-stop.sh')],env=hook_env,
+        stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=3)
+    assert expired.returncode==2 and '接班未就绪' in expired.stderr
+    assert len((project / 'expired').read_text().splitlines())==2, '124接班不是有限修复'
+    assert not hooklock.exists() and '连续两周期' in (qwb / '.hook.err').read_text()
+    print('PASS  Claude双124有限接班，无健康证据显式故障')
 
     # 假 Herdr：主控在 A，项目值守在 B。三次 ensure 验证创建、复用、失活重启。
     import json
