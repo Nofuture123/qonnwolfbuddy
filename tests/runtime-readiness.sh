@@ -55,7 +55,7 @@ else
   [[ "$successes" -eq 1 ]] && ok "死锁双竞争者：恰一人获锁" \
     || { bad "死锁双竞争者：A rc=${arc} B rc=${brc}（期望恰一人）"; cat "$TMP/A.out" "$TMP/B.out"; }
 fi
-bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
+bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" --owner "pid:$$" >/dev/null
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
 [[ "$rc" -eq 0 && -f "$LOCK/owner" ]] && ok "无锁可获" || bad "无锁获取失败：$out"
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
@@ -64,13 +64,17 @@ out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:999999" 2>&1)"; rc=$?
 [[ "$rc" -ne 0 && "$(cat "$LOCK/owner")" == *"pid:$$" ]] \
   && ok "活锁拒绝且 owner 不变" || bad "活锁被夺：$out"
-bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
+bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" --owner "pid:$$" >/dev/null
 mkdir "$LOCK"; printf '2020-01-01T00:00:00Z pid:invalid\n' > "$LOCK/owner"
 out="$(bash "$ROOT/bin/qwb-lock.sh" acquire --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
 [[ "$rc" -ne 0 && "$(cat "$LOCK/owner")" == *"pid:invalid" ]] \
   && ok "无法判活的锁 fail-closed" || bad "未知锁被回收：$out"
-bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
-[[ ! -d "$LOCK" ]] && ok "release 清理锁目录" || bad "release 未清理锁目录"
+cp "$LOCK/owner" "$TMP/unknown-owner.before"
+out="$(bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" --owner "pid:$$" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 ]] && cmp -s "$LOCK/owner" "$TMP/unknown-owner.before" \
+  && ok "release 拒绝未知 owner 且原字节保持" || bad "release 未安全拒绝未知 owner：$out"
+# 仅清本测试创建的临时夹具，不把清理伪称为release成功。
+rm "$LOCK/owner"; rmdir "$LOCK"
 # 正常入口的 Perl 父进程被杀时，仍在 rm 等待的内层回收必须继续持锁。
 mkdir "$LOCK"; printf '2020-01-01T00:00:00Z pid:999999\n' > "$LOCK/owner"
 mkfifo "$TMP/parent-death-gate"
@@ -105,7 +109,7 @@ else
     && ok "父死交错后活锁未被夺" \
     || bad "父死交错后 owner 被覆盖：B rc=$brc owner=$final_owner"
 fi
-bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
+bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" --owner "pid:$$" >/dev/null
 
 # 假 Herdr 只提供本票会调用的 API，不创建真窗口。
 cat > "$TMP/bin/herdr" <<'EOF'
@@ -208,7 +212,7 @@ else
   bad "锁失败仍派发：rc=$rc"; printf '%s\n' "$out"
 fi
 cp "$TMP/qwb-lock.original" "$PROJECT/qwbuddy/bin/qwb-lock.sh"
-bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" >/dev/null
+bash "$ROOT/bin/qwb-lock.sh" release --project "$PROJECT" --owner wT:ctl >/dev/null
 : > "$QWB_STUB_LOG"
 out="$(QWB_STUB_FAIL=prompt QWB_STUB_APPEND="$TASK" run_case 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \

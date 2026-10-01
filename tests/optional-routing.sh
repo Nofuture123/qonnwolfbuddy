@@ -66,7 +66,7 @@ bad_shape_cli two_objects
 
 # Use the installed CLI layout and a fake Herdr process for the public run path.
 mkdir -p "$T/project/qwbuddy/bin" "$T/project/tasks"
-cp "$ROOT/bin/"qwb-{run,dispatch,lib,lock}.sh "$T/project/qwbuddy/bin/"
+cp "$ROOT/bin/"qwb-{run,dispatch,lib,lock,ledger}.sh "$T/project/qwbuddy/bin/"
 cp "$T/project/qwbuddy/bin/qwb-dispatch.sh" "$T/dispatch.real"
 export FAKE_DISPATCH_LOG="$T/log/dispatch" FAKE_DISPATCH_REAL="$T/dispatch.real"
 cat > "$T/project/qwbuddy/bin/qwb-dispatch.sh" <<'SH'
