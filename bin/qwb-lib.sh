@@ -4,6 +4,71 @@
 # 本文件只定义函数：不执行动作、不设置 shell 选项（set -euo pipefail 归调用方）。
 # 因此它自己不是可运行脚本——QWBUDDY.md §9 表里按「库文件，不直接运行」列出。
 
+qwb_load_workers() {
+  local PROJECT_ROOT="$1" WORKERS_CONF listed w seen count
+  WORKERS_CONF="$PROJECT_ROOT/qwbuddy/workers.sh"
+  [[ -f "$WORKERS_CONF" ]] || { echo "错误：缺少 ${WORKERS_CONF}；若 QWB_WORKERS 是定制表，请按 templates/workers.sh 手动创建逐工人声明；旧长串配置须显式迁移，默认配置可重跑母本仓 bin/qwb-init.sh" >&2; return 1; }
+  QWB_CONFIG_ERROR=0
+  QWB_CONFIG_NAMES=(); QWB_CONFIG_MODES=(); QWB_CONFIG_HARNESSES=(); QWB_CONFIG_OFFSETS=(); QWB_CONFIG_COUNTS=(); QWB_CONFIG_ARGV=()
+  # shellcheck disable=SC2329 # qwb-run调用，workers声明由配置source间接调用。
+  has_headless_arg() { [[ "$1" == -p || "$1" == --print || "$1" == --exec || "$1" == exec || "$1" == -p=* || "$1" == --print=* || "$1" == --exec=* || "$1" == exec=* ]]; }
+  # shellcheck disable=SC2329 # 被动态workers声明入口qwb_worker调用。
+  qwb_parse_worker() {
+    local name="${1:-}" mode="${2:-}" known seen harness
+    harness=$name
+    shift 2 || { echo "错误：workers.sh 声明缺少工人名或启动方式" >&2; return 1; }
+    known=0
+    for seen in $QWB_WORKERS; do [[ "$seen" == "$name" ]] && known=1; done
+    [[ "$known" -eq 1 ]] || { echo "错误：workers.sh 有未知工人 '${name}'（不在 QWB_WORKERS）" >&2; return 1; }
+    for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do
+      [[ "$seen" == "$name" ]] && { echo "错误：workers.sh 工人 '${name}' 重复启动定义" >&2; return 1; }
+    done
+    case "$mode" in
+      herdr)
+        # 仅以分隔符识别新式行，旧式位置实参仍按 argv 原样透传。
+        if [[ "${2:-}" == -- ]]; then
+          [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ && "${2:-}" == -- ]] \
+            || { echo "错误：工人 '${name}' 的显式 harness 须为合法名字且后接 --" >&2; return 1; }
+          harness=$1; shift 2
+        fi
+        ;;
+      pane-run) [[ $# -ge 1 && -n "$1" ]] || { echo "错误：工人 '${name}' 的 pane-run 须有非空可执行文件" >&2; return 1; } ;;
+      *) echo "错误：工人 '${name}' 启动方式 '${mode}' 非法（herdr / pane-run）" >&2; return 1 ;;
+    esac
+    QWB_CONFIG_NAMES+=("$name"); QWB_CONFIG_MODES+=("$mode")
+    QWB_CONFIG_HARNESSES+=("$harness")
+    QWB_CONFIG_OFFSETS+=("${#QWB_CONFIG_ARGV[@]}"); QWB_CONFIG_COUNTS+=("$#")
+    QWB_CONFIG_ARGV+=("$@")
+  }
+  # shellcheck disable=SC2329 # workers.sh通过source调用声明入口。
+  qwb_worker() {
+    qwb_parse_worker "$@" || { QWB_CONFIG_ERROR=1; return 1; }
+  }
+  # 不依赖errexit：调用方的 ||/if 会抑制函数内set -e，任何声明错误必须粘住。
+  # shellcheck source=/dev/null
+  . "$WORKERS_CONF" || return 1
+  [[ "$QWB_CONFIG_ERROR" -eq 0 ]] || return 1
+  listed=()
+  for w in $QWB_WORKERS; do
+    for seen in "${listed[@]+"${listed[@]}"}"; do
+      [[ "$seen" == "$w" ]] && { echo "错误：QWB_WORKERS 中工人 '${w}' 重复" >&2; return 1; }
+    done
+    listed+=("$w")
+    count=0
+    for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do [[ "$seen" == "$w" ]] && count=$((count+1)); done
+    [[ "$count" -eq 1 ]] || { echo "错误：工人 '${w}' 在 workers.sh 缺少唯一启动定义" >&2; return 1; }
+  done
+}
+
+# 启动唯一共用路径；argv逐项原样进入Herdr，不拼接成prompt。
+qwb_start_worker() {
+  local name="$1" pane="$2" harness="$3" timeout="$4"
+  shift 4
+  local argv=(agent start "$name" --kind "$harness" --pane "$pane" --timeout "$timeout")
+  if [[ $# -gt 0 ]]; then argv+=(-- "$@"); fi
+  herdr "${argv[@]}"
+}
+
 # 只提取首个 state 值；是否有 state 字段、值是否合法由调用方决定。
 qwb_task_state() {
   sed -n 's/^state:[[:space:]]*//p' "$1" | head -1 | tr -d '[:space:]'

@@ -123,6 +123,14 @@ else
 fi
 
 echo
+echo "== 常驻角色（当前活动/记录冲突）=="
+ROLE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-role.sh"
+if [[ -d "$PROJECT_ROOT/qwbuddy/.roles" && -f "$ROLE_BIN" ]]; then
+  bash "$ROLE_BIN" status --project "$PROJECT_ROOT" || echo "角色：unknown（记录/原生查询失败，不能认闲）"
+else
+  echo "（未登记角色）"
+fi
+echo
 echo "== Herdr 窗口 =="
 if command -v herdr >/dev/null 2>&1; then
   herdr agent list 2>/dev/null || echo "（herdr agent list 失败：无运行中的 server 或无 agent）"

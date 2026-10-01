@@ -123,49 +123,7 @@ if [[ ${QWB_WORKER_LAUNCH+x} || ${QWB_WORKER_ARGS+x} ]]; then
   echo "错误：检测到旧 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS；先运行母本仓 bin/qwb-init.sh --migrate-worker-config '$PROJECT_ROOT'，不可直接派发" >&2
   exit 1
 fi
-WORKERS_CONF="$PROJECT_ROOT/qwbuddy/workers.sh"
-[[ -f "$WORKERS_CONF" ]] || { echo "错误：缺少 ${WORKERS_CONF}；若 QWB_WORKERS 是定制表，请按 templates/workers.sh 手动创建逐工人声明；旧长串配置须显式迁移，默认配置可重跑母本仓 bin/qwb-init.sh" >&2; exit 1; }
-QWB_CONFIG_NAMES=(); QWB_CONFIG_MODES=(); QWB_CONFIG_HARNESSES=(); QWB_CONFIG_OFFSETS=(); QWB_CONFIG_COUNTS=(); QWB_CONFIG_ARGV=()
-has_headless_arg() { [[ "$1" == -p || "$1" == --print || "$1" == --exec || "$1" == exec || "$1" == -p=* || "$1" == --print=* || "$1" == --exec=* || "$1" == exec=* ]]; }
-qwb_worker() {
-  local name="${1:-}" mode="${2:-}" known seen harness
-  harness=$name
-  shift 2 || { echo "错误：workers.sh 声明缺少工人名或启动方式" >&2; return 1; }
-  known=0
-  for seen in $QWB_WORKERS; do [[ "$seen" == "$name" ]] && known=1; done
-  [[ "$known" -eq 1 ]] || { echo "错误：workers.sh 有未知工人 '${name}'（不在 QWB_WORKERS）" >&2; return 1; }
-  for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do
-    [[ "$seen" == "$name" ]] && { echo "错误：workers.sh 工人 '${name}' 重复启动定义" >&2; return 1; }
-  done
-  case "$mode" in
-    herdr)
-      # 仅以分隔符识别新式行，旧式位置实参仍按 argv 原样透传。
-      if [[ "${2:-}" == -- ]]; then
-        [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ && "${2:-}" == -- ]] \
-          || { echo "错误：工人 '${name}' 的显式 harness 须为合法名字且后接 --" >&2; return 1; }
-        harness=$1; shift 2
-      fi
-      ;;
-    pane-run) [[ $# -ge 1 && -n "$1" ]] || { echo "错误：工人 '${name}' 的 pane-run 须有非空可执行文件" >&2; return 1; } ;;
-    *) echo "错误：工人 '${name}' 启动方式 '${mode}' 非法（herdr / pane-run）" >&2; return 1 ;;
-  esac
-  QWB_CONFIG_NAMES+=("$name"); QWB_CONFIG_MODES+=("$mode")
-  QWB_CONFIG_HARNESSES+=("$harness")
-  QWB_CONFIG_OFFSETS+=("${#QWB_CONFIG_ARGV[@]}"); QWB_CONFIG_COUNTS+=("$#")
-  QWB_CONFIG_ARGV+=("$@")
-}
-# shellcheck source=/dev/null
-. "$WORKERS_CONF"
-listed=()
-for w in $QWB_WORKERS; do
-  for seen in "${listed[@]+"${listed[@]}"}"; do
-    [[ "$seen" == "$w" ]] && { echo "错误：QWB_WORKERS 中工人 '${w}' 重复" >&2; exit 1; }
-  done
-  listed+=("$w")
-  count=0
-  for seen in "${QWB_CONFIG_NAMES[@]+"${QWB_CONFIG_NAMES[@]}"}"; do [[ "$seen" == "$w" ]] && count=$((count+1)); done
-  [[ "$count" -eq 1 ]] || { echo "错误：工人 '${w}' 在 workers.sh 缺少唯一启动定义" >&2; exit 1; }
-done
+qwb_load_workers "$PROJECT_ROOT" || exit 1
 # —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
 # clear → 解析出的工人；off/error/ambiguous → 默认工人（规则文件的 default.worker，无规则文件则 pi），
 # stderr 一行说明，不阻塞派发；qwb-dispatch 非零退出（规则文件坏等配置错误）→ 拒绝派发，不许绕过。
@@ -812,13 +770,8 @@ case "$LAUNCH_MODE" in
       [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
       printf '%s\n' "$prompt_out"
     else
-      start_argv=(agent start "$NAME" --kind "$WORKER_HARNESS" --pane "$PANE" --timeout "$START_MS")
-      if [[ ${#WORKER_ARGV[@]} -gt 0 ]]; then
-        start_argv+=(--)
-        start_argv+=("${WORKER_ARGV[@]}")
-      fi
       start_rc=0
-      start_out="$(herdr "${start_argv[@]}" 2>&1)" || start_rc=$?
+      start_out="$(qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}" 2>&1)" || start_rc=$?
       [[ "$start_rc" -eq 0 ]] || delivery_failed "herdr agent start" "$start_rc" "$start_out"
       printf '%s\n' "$start_out"
       prompt_rc=0
