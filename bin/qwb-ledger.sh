@@ -3,13 +3,15 @@
 set -euo pipefail
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   cat <<'EOF'
-用法: qwb-ledger.sh <read|metrics|append|prepare|revise|revise-scenarios|state|claim|release|dispatch|not-sent|question|answer|resume|migrate> --project <根> --task <路径> [--expect <rev>] [--event-id <id>] [--legacy] -- <参数...>
+用法: qwb-ledger.sh <read|metrics|append|prepare|revise|revise-scenarios|state|claim|release|recover-claim|wake-check|wake|dispatch|not-sent|question|answer|resume|migrate> --project <根> --task <路径> [--expect <rev>] [--event-id <id>] [--legacy] -- <参数...>
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
 prepare: 场景指纹 [常驻附页正文]；revise: 旧指纹 新指纹 原因；state: 五值之一。
 revise-scenarios: 新场景块 原因（主控持版本 --expect，保留场景外原字节）。
 claim/release: op_id；dispatch: op_id pane 完整dispatch行；not-sent: op_id blocked失败行。
 question/answer/resume: key 内容；普通进展不解除问题。answer 必须是真实答复证据。
+recover-claim: op_id 对账JSON文件（task_sha256/op_id/previous_owner/reconciled）；必须--expect、现主控和旧owner真实死亡；移交不清claim。
+wake-check/wake: 主控目标 state fp；独立值守须主控ensure登记及原生进程核验，仅能写wake。
 migrate: 停写确认JSON文件（task_sha256；confirm对象含run/wake/worktree/worker/controller/old-fds/external-actions的证据字符串）。
 仅主控确认、lsof无写FD、全部调用者/模板齐备且原字节未变才切一票；不自动迁历史票。
 read 输出版本JSON；metrics 输出真实事件时间，旧缺项 unknown。--legacy 只供已接线运行时兼容未迁票；不提供工人裸追加替代权限。
@@ -31,7 +33,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$CMD" && -n "$ROOT" && -n "$TASK" ]] || { echo '错误：需要命令/project/task' >&2; exit 2; }
 ACTOR="${HERDR_PANE_ID:-pid:$PPID}"
-exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$@" <<'PERL'
+BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$@" <<'PERL'
 use strict;
 use warnings;
 use utf8;
@@ -44,8 +47,9 @@ use JSON::PP;
 use Encode qw(decode encode FB_CROAK);
 use POSIX qw(strftime);
 use IO::Handle;
+use Errno qw(ESRCH);
 binmode STDERR, ':encoding(UTF-8)';
-my ($cmd,$root,$file,$actor,$expect,$event,$legacy,@args)=@ARGV;
+my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,@args)=@ARGV;
 sub fail { die "账本拒绝：$_[0]\n" }
 sub text { my $v=shift; return decode('UTF-8',$v,FB_CROAK) }
 @args=map { text($_) } @args;
@@ -108,6 +112,7 @@ sub strict_json {
   }
   return $obj;
 }
+my $has_protocol=index($body,'<!-- qwb-collab-')>=0;
 my $data;
 if ($body =~ /\n<!-- qwb-collab-v1\n([^\n]+)\n-->\n?\z/) {
   $data=strict_json(encode('UTF-8',$1));
@@ -135,7 +140,8 @@ sub scenario {
 }
 sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[0]))) }
 sub validate {
-  return unless $data;
+  # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
+  return unless $has_protocol || defined($data);
   keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration));
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
@@ -186,22 +192,57 @@ if (-d $dir && !-l $dir && realpath($dir) eq $dir) {
   flock($controller_guard,LOCK_EX) or fail('主控目录flock失败');
   inherit_guard($controller_guard);
 } else { fail('主控目录非法') unless !$data && $legacy && !-e $dir && !-l $dir }
-my $owner='';
+my ($owner,$owner_raw)=('','');
 if (-e "$dir/.controller.lock/owner") {
   fail('主控锁符号链接非法') if -l "$dir/.controller.lock" || -l "$dir/.controller.lock/owner";
   my $own=safe_open("$dir/.controller.lock/owner",O_RDONLY);
-  my $s=<$own> // ''; close $own;
-  ($owner)=$s =~ /^\S+\s+(\S+)\s*\z/; $owner //='';
+  $owner_raw=<$own> // ''; close $own;
+  ($owner)=$owner_raw =~ /^\S+\s+(\S+)\s*\z/; $owner //='';
 }
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
+sub native_reply {
+  open my $probe,'-|','herdr',@_ or fail('原生身份探针无法启动');
+  my $s=do { local $/; <$probe> } // ''; close $probe; my $rc=$?;
+  my $j=strict_json($s); fail('原生身份回复不是对象') unless ref($j) eq 'HASH';
+  return ($j,$rc);
+}
+my $wake_cmd=$cmd eq 'wake' || $cmd eq 'wake-check';
+my $watcher=0;
+if ($data && $wake_cmd && !$controller) {
+  # .watch由主控ensure在同一目录锁内登记，绑定原owner文件代次；换主控自动失效。
+  my $w=safe_open("$dir/.watch",O_RDONLY); my $s=<$w> // ''; close $w;
+  my ($pane,$target,$generation)=$s =~ /\Apane=(\S+) workspace=\S+ pid=\S* started=\S+ controller=(\S+) owner-fp=([0-9a-f]{64}) cmd=/;
+  fail('值守未获本代主控wake授权') unless defined($pane) && $pane eq $actor && $target eq $owner && ($args[0] // '') eq $owner && $generation eq sha256_hex($owner_raw);
+  my ($j,$rc)=native_reply('pane','process-info','--pane',$actor);
+  fail('值守原生进程身份未知') if $rc;
+  my $pi=$j->{result}{process_info}; fail('值守进程信息非法') unless ref($pi) eq 'HASH' && ref($pi->{foreground_processes}) eq 'ARRAY';
+  for my $p (@{$pi->{foreground_processes}}) {
+    next unless ($p->{pid} // '') eq getppid() && ref($p->{argv}) eq 'ARRAY';
+    my @a=@{$p->{argv}};
+    next unless @a>=2 && $a[0]=~m{(?:^|/)(?:bash|sh|zsh)\z} && $a[1] eq "$bindir/qwb-wake.sh";
+    my ($project,$dest);
+    for (my $i=2;$i<@a;$i++) {
+      $project=$a[$i+1] if $a[$i] eq '--project';
+      $dest=$a[$i+1] if $a[$i] eq '--pane';
+    }
+    next if grep { /\A--(?:ensure|check|dry-run|block)\z/ } @a;
+    $watcher=1 if defined($project) && (realpath($project) // '') eq $root && defined($dest) && $dest eq $owner;
+  }
+  fail('调用者不是登记pane的真实值守进程') unless $watcher;
+}
 if (!$data && $legacy && $cmd ne 'migrate') {
   # expand期保留旧票格式与原inode；不能假称裸追加旧会话受新协议保护。
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
-  fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|append|prepare|revise|dispatch|not-sent)\z/;
+  fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
-fail('角色未授权（仅现有主控/已绑定工人）') unless $controller || ($worker && $cmd =~ /\A(append|question)\z/) || (!$data && $legacy && $cmd ne 'migrate');
+fail('角色未授权（仅现有主控/已绑定工人）') unless $controller || $watcher || ($worker && $cmd =~ /\A(append|question)\z/) || (!$data && $legacy && $cmd ne 'migrate');
 exit 0 if $cmd eq 'check';
+if ($wake_cmd) {
+  fail('wake参数非法') unless @args==3 && string_ok($args[0]) && $args[0] ne '' && $args[1]=~/\A(running|blocked|needs-decision)\z/ && $args[2]=~/\A[0-9a-f]{40}\z/;
+  fail('wake目标不是当前主控') if $data && $args[0] ne $owner;
+  exit 0 if $cmd eq 'wake-check';
+}
 fail('expect版本不是整数') if $expect ne '' && $expect !~ /\A[0-9]+\z/;
 fail('期望版本冲突') if $data && $expect ne '' && $expect != $data->{rev};
 fail('event_id非法') if $event ne '' && !id_ok($event);
@@ -300,6 +341,25 @@ if ($cmd eq 'migrate') {
   $op=$args[0]; fail('op非法/已存在') unless id_ok($op) && !exists $data->{ops}{$op};
   fail('持久claim尚未释放') if $data->{claim};
   $data->{claim}={owner=>$actor,op_id=>$op}; $data->{ops}{$op}={owner=>$actor,pane=>'',status=>'claimed'};
+} elsif ($cmd eq 'wake') {
+  $kind='wake'; $line='wake: '.strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)." state=$args[1] fp=$args[2]"; append_body($line);
+} elsif ($cmd eq 'recover-claim') {
+  fail('接管必须持期望版本') if $expect eq '';
+  $op=$args[0]; fail('接管op与持久claim不符') unless id_ok($op) && $data->{claim} && $data->{claim}{op_id} eq $op;
+  my $old=$data->{claim}{owner}; fail('不能接管本人/不一致op') if $old eq $actor || !exists($data->{ops}{$op}) || $data->{ops}{$op}{owner} ne $old;
+  my $fh=safe_open(encode('UTF-8',$args[1] // ''),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $e=strict_json($s); keys_only($e,qw(task_sha256 op_id previous_owner reconciled));
+  fail('接管快照/op/原owner/对账证据不符') unless $e->{task_sha256} eq sha256_hex($raw) && $e->{op_id} eq $op && $e->{previous_owner} eq $old && string_ok($e->{reconciled}) && $e->{reconciled} ne '';
+  if ($old =~ /\Apid:([1-9][0-9]*)\z/) {
+    fail('旧owner仍活或死亡未知') unless !kill(0,$1) && $! == ESRCH;
+  } else {
+    fail('旧owner身份非法') if $old eq '' || $old =~ /^pid:/;
+    my ($j,$rc)=native_reply('pane','get',$old);
+    fail('旧owner仍活或死亡未知') unless $rc && ($j->{error}{code} // '') eq 'pane_not_found';
+  }
+  # 转移原op所有权，不删claim/事件；补偿或release仍须随后显式进行。
+  $data->{claim}{owner}=$actor; $data->{ops}{$op}{owner}=$actor;
+  $line="working: claim-recovered: op_id=$op previous_owner=$old owner=$actor evidence_sha256=".sha256_hex($s)." reconciled=$e->{reconciled}"; append_body($line);
 } elsif ($cmd eq 'release') {
   $op=$args[0]; require_claim($op); $data->{claim}=undef;
   my $status=$data->{ops}{$op}{status};

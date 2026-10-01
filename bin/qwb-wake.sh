@@ -197,9 +197,26 @@ watch_scan() {
 }
 
 watch_field() { grep -oE "(^|[[:space:]])$1=[^[:space:]]+" "$WATCHF" 2>/dev/null | head -1 | cut -d= -f2 || true; }
-watch_write() { # $1=pane $2=workspace $3=pid（可空）
-  printf 'pane=%s workspace=%s pid=%s started=%s cmd=%s\n' \
-    "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WATCH_CMD" > "$WATCHF"
+watch_write() { # $1=pane $2=workspace $3=pid（可空）；不是另一账本，仅现有值守登记。
+  perl -MFcntl=:DEFAULT,:flock,O_NOFOLLOW -MDigest::SHA=sha256_hex -e '
+    my ($dir,$pane,$ws,$pid,$at,$cmd,$actor,$target)=@ARGV;
+    open my $guard,"<",$dir or die "watch guard: $!\n";
+    flock($guard,LOCK_EX) or die "watch flock: $!\n";
+    my ($owner,$generation)=("","");
+    my $path="$dir/.controller.lock/owner";
+    die "watch owner symlink\n" if -l "$dir/.controller.lock" || -l $path;
+    if (-e $path) {
+      sysopen my $f,$path,O_RDONLY|O_NOFOLLOW or die "watch owner: $!\n";
+      my $raw=<$f> // ""; close $f;
+      my ($o)=$raw =~ /^\S+\s+(\S+)\s*\z/;
+      if (defined($o) && $o eq $actor && $o eq $target) { $owner=$o; $generation=sha256_hex($raw) }
+    }
+    sysopen my $f,"$dir/.watch",O_WRONLY|O_CREAT|O_NOFOLLOW,0600 or die "watch open: $!\n";
+    my @s=stat($f); die "watch nonregular/hardlink\n" unless -f $f && $s[3]==1 && $s[4]==$<;
+    truncate($f,0) or die "watch truncate: $!\n";
+    print {$f} "pane=$pane workspace=$ws pid=$pid started=$at controller=$owner owner-fp=$generation cmd=$cmd\n" or die "watch write: $!\n";
+    close $f or die "watch close: $!\n";
+  ' "$PROJECT_ROOT/qwbuddy" "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WATCH_CMD" "${HERDR_PANE_ID:-pid:$PPID}" "$PANE"
 }
 
 watch_check() {
@@ -366,6 +383,8 @@ _ensure_body() {
         || { echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1; }
       echo "复用已在运行的值守（pane ${WATCH_FOUND}，此前未登记/登记不一致，已补记 .watch）"
     else
+      # 已登记也复核/更新本代主控授权，不能把旧无授权登记当协议接线齐备。
+      watch_write "$WATCH_FOUND" "$tabws" "$(watch_field pid)" || return 1
       echo "复用已在运行的值守（pane ${WATCH_FOUND}）"
     fi
     return 0
@@ -392,6 +411,7 @@ _ensure_body() {
     case "$v" in
       wake:*)
         ensure_target_ok "$rp" "$v" || return 1
+        watch_write "$rp" "$tabws" "$(watch_field pid)" || return 1
         echo "复用已在运行的值守（pane ${rp}）"; return 0 ;;
       err)
         echo "错误：登记 pane ${rp} 进程查询失败，无法确认值守状态——不擅自多开" >&2; return 1 ;;
@@ -567,19 +587,25 @@ check_round() {
   compose_msg "$duef"
   if [[ "$DRY" -eq 1 ]]; then rm -f "$duef"; return 0; fi
   [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; rm -f "$duef"; exit 1; }
+  # 先逐票核验wake-only权限，拒绝不投递；登记在启动探针后完成，循环启动首轮可稍后重试。
+  local f st fp last lostpane write_failed=0
+  while IFS=$'\t' read -r f st fp last lostpane; do
+    qwb_ledger "$PROJECT_ROOT" "$f" wake-check "$PANE" "$st" "$fp" >/dev/null \
+      || { echo "错误：值守写入未授权/协议非法，不投递：$f" >&2; write_failed=1; break; }
+  done < "$duef"
+  if (( write_failed )); then rm -f "$duef"; return 1; fi
   # 一轮只发一条投递：全部要叫的票拼进同一条文本；投递成功才逐票写 wake 行，失败一行都不写
   if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
-    local f st fp last lostpane
     while IFS=$'\t' read -r f st fp last lostpane; do
-      qwb_ledger "$PROJECT_ROOT" "$f" append "wake: $(date -u +%Y-%m-%dT%H:%M:%SZ) state=${st} fp=${fp}" >/dev/null \
-        || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; continue; }
+      qwb_ledger "$PROJECT_ROOT" "$f" wake "$PANE" "$st" "$fp" >/dev/null \
+        || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; write_failed=1; continue; }
       echo "已叫醒：$(basename "$f" .md) state=${st} → pane ${PANE}"
     done < "$duef"
   else
     echo "错误：投递失败（pane ${PANE}）：本轮 ${DUE_N} 张票一行 wake 都不写、保持未叫，下轮重试" >&2
   fi
   rm -f "$duef"
-  return 0
+  return "$write_failed"
 }
 
 # 毫秒级计时：macOS 的 date 不支持 %N，用 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
@@ -676,12 +702,15 @@ block_round() {
   if [[ -s "$duef" ]]; then
     if ! block_owner_ok; then rm -f "$duef"; return 0; fi
     compose_msg "$duef"
-    local lost_host=0
+    local lost_host=0 write_failed=0
     while IFS=$'\t' read -r f st fp last lostpane; do
       if ! block_owner_ok; then lost_host=1; break; fi
-      qwb_ledger "$PROJECT_ROOT" "$f" append "wake: $(date -u +%Y-%m-%dT%H:%M:%SZ) state=${st} fp=${fp}" >/dev/null \
-        || echo "警告：wake 行写入失败（仍叫醒，下轮会重写）：$f" >&2
+      # block由主控harness调用；空pane的旧票兼容入口仍沿用原runtime行。
+      local target="${HERDR_PANE_ID:-pid:$PPID}"
+      qwb_ledger "$PROJECT_ROOT" "$f" wake "$target" "$st" "$fp" >/dev/null \
+        || { echo "错误：wake 行写入失败：$f" >&2; write_failed=1; break; }
     done < "$duef"
+    if (( write_failed )); then rm -f "$duef"; return 3; fi
     if (( lost_host )); then rm -f "$duef"; return 0; fi
     printf '看账本：%d 张未结项有进展 →%s。只需读这些票。\n' "$DUE_N" "$DUE_MSG"
     rm -f "$duef"
@@ -707,6 +736,7 @@ if [[ "$BLOCK" -eq 1 ]]; then
     brc=0; block_round || brc=$?
     if (( brc == 2 )); then exit 2; fi
     if (( brc == 0 )); then echo "账本无未结项"; exit 0; fi
+    if (( brc > 2 )); then exit "$brc"; fi
     if [[ -n "$block_deadline" ]] && (( $(now_ms) >= block_deadline )); then
       echo "值守：--block 到期（--max-ms ${MAX_MS}ms）无变化" >&2
       exit 124
@@ -716,9 +746,9 @@ if [[ "$BLOCK" -eq 1 ]]; then
 fi
 
 while :; do
-  check_round
+  roundrc=0; check_round || roundrc=$?
   if [[ "$ONCE" -eq 1 || "$DRY" -eq 1 ]]; then
-    exit 0
+    exit "$roundrc"
   fi
   wait_round
 done

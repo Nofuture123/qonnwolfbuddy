@@ -66,7 +66,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 
 先升级全部调用者和模板，逐一确认 run、wake、worktree、worker、controller 停写，关闭旧写FD并对账外部动作；主控取得锁后写JSON确认文件：`task_sha256` 为原票SHA256，`confirm` 的 `run/wake/worktree/worker/controller/old-fds/external-actions` 各值为真实证据字符串。用 `qwb-ledger.sh migrate --project <根> --task <票> -- <确认文件>` 只切这一票。writer核原字节、全部接线和本机 lsof 写FD；缺项/未知拒绝，不强停工人，不自动迁历史票。保存的 `.qwb-original` 原字节与永久 `.qwb-lock` sidecar 不可删/换inode；项目需把两类运行态文件加入忽略规则（不提交票内锁）。
 
-claim跨长工具保留，短flock只包读/检查/发布；中断不自动清claim。失败派发用op_id读最新票补偿，不复用旧FD/offset。发布失败保留此前完整票；停止新动作，用新reader对账并移交单主控，不能删claim后交旧binary。所有角色权限为同UID防误用，不是OS沙箱；本票不启用多角色。
+claim跨长工具保留，短flock只包读/检查/发布；中断不自动清claim。主控死亡后先经 `qwb-lock.sh acquire` 合法取锁，用reader核对原op和外部动作，保存JSON证据（`task_sha256/op_id/previous_owner/reconciled`），再运行 `qwb-ledger.sh recover-claim --project <根> --task <票> --expect <rev> -- <原op_id> <证据文件>`；旧owner活/未知、版本或原字节不符均拒绝。接管只移交原claim/op，不删历史、不自动release，随后按核实结果显式补偿或释放。失败派发用op_id读最新票补偿，不复用旧FD/offset。发布失败保留此前完整票；停止新动作，用新reader对账并移交单主控，不能删claim后交旧binary。历史独立tab值守需现主控运行 `--ensure` 登记本代owner和pane；writer核原生调用进程/目标，仅开放wake-check/wake，不能借值守写state/spec/claim或普通回报。换主控登记失效；未授权的once非零且不投递，持续循环等待主控登记后重试。所有角色权限为同UID防误用，不是OS沙箱；本票不启用多角色。
 
 问题 `question <key> <内容>` 打开后，主控凭真实答复证据写 `answer` 再写 `resume`；普通 working/done 不清问题。`qwb-status.sh --metrics` 输出原始事件时间；旧缺项为 unknown，不补造done时间。
 

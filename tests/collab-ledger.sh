@@ -29,7 +29,23 @@ case "$1 $2" in
       printf 'injected prompt failure\n' >&2; exit 9
     fi
     printf '{"result":{"type":"ok"}}\n' ;;
-  'pane get') printf '{"result":{"pane":{"pane_id":"test:worker","agent":"pi"}}}\n' ;;
+  'pane get')
+    [[ "$3" != test:unknown ]] || { printf '{"error":{"code":"unavailable"}}\n'; exit 1; }
+    printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","workspace_id":"test","cwd":"%s"}}}\n' "$3" "$TEST_PROJECT" ;;
+  'pane list') printf '{"result":{"panes":[{"pane_id":"test:watch","workspace_id":"test"}]}}\n' ;;
+  'pane process-info')
+    [[ "${TEST_UNKNOWN_WATCH:-0}" != 1 ]] || exit 1
+    python3 - "$PPID" <<'PY'
+import json,os,subprocess,shlex,sys
+if os.environ.get('TEST_ENSURE')=='1':
+    pid=42; argv=['bash',os.environ['TEST_ROOT']+'/bin/qwb-wake.sh','--project',os.environ['TEST_PROJECT'],'--pane','test:ctl']
+else:
+    pid=int(subprocess.check_output(['ps','-o','ppid=','-p',sys.argv[1]]))
+    argv=shlex.split(subprocess.check_output(['ps','-o','command=','-p',str(pid)],text=True).strip())
+p={'pid':pid,'argv':argv,'argv0':argv[0],'cmdline':' '.join(argv)}
+print(json.dumps({'result':{'process_info':{'foreground_processes':[p]}}}))
+PY
+    ;;
   'pane run'|'tab close'|'agent list') printf '{"result":{"type":"ok"}}\n' ;;
   *) echo "unexpected fake Herdr API: $*" >&2; exit 77 ;;
 esac
@@ -85,6 +101,110 @@ wait_file() {
   for _ in {1..400}; do [[ -s "$1" ]] && return 0; sleep 0.01; done
   echo "FAIL: barrier未就绪 $1"; exit 1
 }
+repair_checks() {
+  local R="$P/tasks/2099-02-01-repair.md"
+  write_ticket "$R"; manifest "$R" "$TMP/repair-manifest.json"
+  bash "$L" migrate --project "$P" --task "$R" -- "$TMP/repair-manifest.json" >/dev/null
+  python3 - "$P" "$R" "$L" "$ROOT" "$TMP" <<'PY'
+import hashlib,json,os,re,subprocess,sys
+P,T,L,ROOT,TMP=sys.argv[1:]; failures=[]
+def run(cmd,actor='test:ctl',**env):
+    return subprocess.run(cmd,env=dict(os.environ,HERDR_PANE_ID=actor,HERDR_WORKSPACE_ID='test',**env),capture_output=True,text=True)
+def ledger(cmd,*args,actor='test:ctl',opts=()):
+    return run(['bash',L,cmd,'--project',P,'--task',T,*opts,'--',*args],actor)
+def require(cond,msg):
+    if not cond: failures.append(msg); print('FAIL repair:',msg)
+def read():
+    r=ledger('read'); assert r.returncode==0,r.stderr; return json.loads(r.stdout)
+def content(): return open(T,'rb').read()
+def owner(s): open(P+'/qwbuddy/.controller.lock/owner','w').write('2026-01-01T00:00:00Z '+s+'\n')
+original=content(); require(read()['schema']==1,'normal schema')
+for bad in ['null','false','0','[]','"bad"','true','1']:
+    b=re.sub(rb'(?<=<!-- qwb-collab-v1\n)[^\n]+',bad.encode(),original)
+    open(T,'wb').write(b)
+    r=ledger('read'); w=ledger('append','working: bad downgrade',actor='unbound',opts=['--legacy'])
+    require(r.returncode!=0 and w.returncode!=0 and content()==b,'invalid top-level '+bad+' fails closed')
+open(T,'wb').write(original)
+# 真正ensure登记与不同watch pane的两次once，不把HERDR_PANE_ID伪装为主控。
+r=run(['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--ensure','--pane','test:ctl'],TEST_ENSURE='1')
+require(r.returncode==0,'controller ensure '+r.stderr)
+before=len(read()['events']); log=os.environ['TEST_LOG']; open(log,'w').close()
+cmd=['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--once','--pane','test:ctl']
+a=run(cmd,'test:watch'); b=run(cmd,'test:watch')
+x=read(); wakes=[e for e in x['events'][before:] if e['kind']=='wake']
+sends=[l for l in open(log) if l.startswith('pane run ')]
+require(a.returncode==b.returncode==0 and len(wakes)==len(sends)==1,'registered watch dedupe rc='+str((a.returncode,b.returncode))+' events/sends='+str((len(wakes),len(sends))))
+ledger('append','working: next watch progress'); snap=content()
+for actor,target,unknown in [('unbound','test:ctl','0'),('test:watch','test:other','0'),('test:watch','test:ctl','1')]:
+    open(log,'w').close()
+    r=run(cmd[:-1]+[target],actor,TEST_UNKNOWN_WATCH=unknown)
+    require(r.returncode!=0 and content()==snap and 'pane run ' not in open(log).read(),'watch boundary '+actor+'/'+target+'/'+unknown)
+for action,args in [('state',['done']),('append',['working: watch may not write arbitrary progress']),('claim',['watch-op']),('wake',['test:ctl','running','a'*40])]:
+    r=ledger(action,*args,actor='test:watch')
+    require(r.returncode!=0 and content()==snap,'watch cannot directly '+action)
+# 实际qwb-lock alive否决→进程死→acquire接管；不是仅编辑owner模拟后置状态。
+lock=lambda c,a: run(['bash',ROOT+'/bin/qwb-lock.sh',c,'--project',P],a)
+assert lock('release','test:ctl').returncode==0
+child=subprocess.Popen(['sleep','120']); old='pid:'+str(child.pid)
+try:
+    assert lock('acquire',old).returncode==0
+    assert ledger('claim','orphan-op',actor=old).returncode==0
+    require(lock('acquire','test:newctl').returncode!=0,'alive owner cannot be taken')
+    child.terminate(); child.wait()
+    assert lock('acquire','test:newctl').returncode==0
+    x=read(); snap=content()
+    require(ledger('release','orphan-op',actor='test:newctl').returncode!=0 and ledger('claim','new-op',actor='test:newctl').returncode!=0 and content()==snap,'ordinary release/claim keep orphan')
+    evidence={'task_sha256':hashlib.sha256(snap).hexdigest(),'op_id':'orphan-op','previous_owner':old,'reconciled':'temporary process killed/waited; no external dispatch; retain claim until explicit release'}
+    ep=TMP+'/recovery.json'; json.dump(evidence,open(ep,'w'))
+    for actor,rev in [('unbound',x['rev']),('test:newctl',x['rev']-1)]:
+        r=ledger('recover-claim','orphan-op',ep,actor=actor,opts=['--expect',str(rev)])
+        require(r.returncode!=0 and content()==snap,'recover identity/version fails closed')
+    for key,value in [('task_sha256','0'*64),('op_id','wrong-op'),('previous_owner','test:other'),('reconciled','')]:
+        bad=dict(evidence); bad[key]=value; json.dump(bad,open(ep,'w'))
+        r=ledger('recover-claim','orphan-op',ep,actor='test:newctl',opts=['--expect',str(x['rev'])])
+        require(r.returncode!=0 and content()==snap,'recover evidence '+key+' fails closed')
+    json.dump(evidence,open(ep,'w'))
+    r=ledger('recover-claim','orphan-op',ep,actor='test:newctl',opts=['--expect',str(x['rev'])])
+    require(r.returncode==0,'dead claim recovery '+r.stderr)
+    if r.returncode==0:
+        y=read(); require(y['claim']=={'owner':'test:newctl','op_id':'orphan-op'} and y['events'][:-1]==x['events'] and y['events'][-1]['kind']=='recover-claim','recovery retains claim/history')
+        require(ledger('release','orphan-op',actor='test:newctl').returncode==0 and ledger('claim','new-op',actor='test:newctl').returncode==0,'recovered owner can explicitly continue')
+        assert ledger('release','new-op',actor='test:newctl').returncode==0
+finally:
+    if child.poll() is None: child.terminate(); child.wait()
+    assert lock('release','test:newctl').returncode==0
+    assert lock('acquire','test:ctl').returncode==0
+# 现主控也不能凭对账文件接管活/未知旧owner；显式锁交接不等于死亡证明。
+for previous in ['pid:'+str(os.getpid()),'test:unknown']:
+    x=read()
+    if x['claim']:
+        assert ledger('release',x['claim']['op_id'],actor='test:ctl').returncode==0
+    assert lock('release','test:ctl').returncode==0
+    assert lock('acquire',previous).returncode==0
+    oid='live-op' if previous.startswith('pid:') else 'unknown-op'
+    assert ledger('claim',oid,actor=previous).returncode==0
+    assert lock('release',previous).returncode==0
+    assert lock('acquire','test:ctl').returncode==0
+    snap=content(); x=read()
+    ep=TMP+'/recovery.json'
+    json.dump({'task_sha256':hashlib.sha256(snap).hexdigest(),'op_id':oid,'previous_owner':previous,'reconciled':'explicit transfer but not proof of death'},open(ep,'w'))
+    r=ledger('recover-claim',oid,ep,opts=['--expect',str(x['rev'])])
+    require(r.returncode!=0 and content()==snap,'recover live/unknown old owner rejected '+previous)
+    # 清理仅临时测试：合法交还仍活原owner，由原owner自己release。
+    assert lock('release','test:ctl').returncode==0
+    assert lock('acquire',previous).returncode==0
+    assert ledger('release',oid,actor=previous).returncode==0
+    assert lock('release',previous).returncode==0
+    assert lock('acquire','test:ctl').returncode==0
+# 不把repair票/登记带进原场景，原来的精确event_id断言保持不变。
+for path in [T,T+'.qwb-lock',T+'.qwb-original',P+'/qwbuddy/.watch']:
+    if os.path.exists(path): os.unlink(path)
+if failures: raise SystemExit(1)
+print('PASS repair: falsy schema拒绝、独立watch最小授权/去重、真实死亡claim接管')
+PY
+}
+repair_checks
+[[ "${TEST_REPAIR_ONLY:-0}" != 1 ]] || exit 0
 write_ticket "$T"; cp "$T" "$TMP/old"
 ledger metrics > "$TMP/old-metrics.json"
 python3 - "$TMP/old-metrics.json" <<'PY'
