@@ -80,7 +80,15 @@ inherit_guard($guard);
 my $in=safe_open($file,O_RDONLY);
 my $raw=do { local $/; <$in> }; close $in or fail('读关闭失败');
 fail('票为空') unless defined($raw) && length($raw);
-my $body=text($raw);
+my $byte_legacy=0;
+my $body=eval { text($raw) };
+if ($@) {
+  # 旧运行时仍须能叫醒损坏旧票；仅legacy未迁票按字节保留，绝不修复/吞坏字节。
+  # 迁移及协作区始终严格UTF-8，新协议不能经legacy开关降级。
+  fail('UTF-8非法') unless $legacy && $cmd ne 'migrate' && index($raw,'<!-- qwb-collab-')<0;
+  $byte_legacy=1; $body=decode('ISO-8859-1',$raw);
+  @args=map { decode('ISO-8859-1',encode('UTF-8',$_)) } @args;
+}
 my $json=JSON::PP->new->canonical->utf8;
 sub strict_json {
   my $s=shift;
@@ -117,14 +125,15 @@ sub state_of { my ($s)=$_[0]=~/^state:[ \t]*(\S+)[ \t]*$/m; return $s // '' }
 sub fp_of { my ($s)=$_[0]=~/^scenarios-fp:[ \t]*([0-9a-f]{40})[ \t]*$/m; return $s // '' }
 sub scenario {
   my $s=shift; my $block=''; my $on=0;
+  my $heading=$byte_legacy ? decode('ISO-8859-1',encode('UTF-8','验收场景')) : '验收场景';
   for my $l (split /\n/,$s,-1) {
-    if (!$on && $l =~ /^\#{1,6}[^#]*验收场景/) { $on=1; $block.="$l\n"; next }
+    if (!$on && $l =~ /^\#{1,6}[^#]*\Q$heading\E/) { $on=1; $block.="$l\n"; next }
     $on=0 if $on && ($l =~ /^\#{1,2}[^#]/ || $l =~ /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|scenarios-fp):/);
     $block.="$l\n" if $on;
   }
   $block =~ s/\n+\z//; return $block;
 }
-sub scen_fp { sha1_hex(encode('UTF-8',scenario($_[0]))) }
+sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[0]))) }
 sub validate {
   return unless $data;
   keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration));
@@ -345,7 +354,7 @@ if ($data) {
   validate();
   $body =~ s/\n*\z/\n/;
   $out=encode('UTF-8',$body)."\n<!-- qwb-collab-v1\n".$json->encode($data)."\n-->\n";
-} else { $out=encode('UTF-8',$body) }
+} else { $out=encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',$body) }
 # 检查最新原路径，拒绝合作区外裸追加/替换；锁对象仍是同一个sidecar inode。
 my $check=safe_open($file,O_RDONLY); my $latest=do { local $/; <$check> }; close $check;
 fail('票在锁内被旧writer改动，停新动作并对账') unless $latest eq $raw;
