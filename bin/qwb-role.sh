@@ -221,7 +221,14 @@ def current(d, pending=False):
     visible = run(['herdr','pane','read',d['pane'],'--source','visible']).stdout
     lines = [s.strip() for s in visible.splitlines() if s.strip()]
     require(lines and re.search(r'\('+re.escape(d['provider'])+r'\)\s+'+re.escape(d['model'])+r'\s+•\s+'+re.escape(d['effort'])+r'\s*$', lines[-1]), '当前Pi模型/effort页脚未证实匹配；不以启动argv冒充实际模型')
-    return {'activity':p['agent_status'], 'pid':native['pid'], 'pid_start':native['start'], 'session_path':str(session),
+    observed = json.loads(run(['bash',str(bindir/'qwb-herdr.sh'),'activity','--project',str(root),'--pane',d['pane'],'--dir',d['dir']]).stdout)
+    require(observed.get('pid') == native['pid'] and observed.get('pid_start') == native['start'], '活动观察不是当前PID代次')
+    # 02's fixed role argv always persists actual messages; a zero-request blank TUI reports its exact
+    # session path before creating JSONL. Keep that verified native idle path (not a worker reuse/death proof).
+    blank = observed.get('proof') == 'native-pid+unpersisted-session' and p['agent_status'] in ('idle','done')
+    require(observed['activity'] in ('busy','idle') or blank, '真实活动未知，不以idle认闲或退出')
+    status = 'working' if observed['activity'] == 'busy' else p['agent_status']
+    return {'activity':status, 'activity_evidence':observed, 'pid':native['pid'], 'pid_start':native['start'], 'session_path':str(session),
             'actual_model':d['provider']+'/'+d['model'], 'actual_effort':d['effort'], 'proof':'native-session+pid-start+visible-footer'}
 
 def obligations(d):

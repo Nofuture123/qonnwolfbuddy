@@ -387,8 +387,9 @@ prepare_space_close() {
 close_task_space() {
   [[ -n "$SPACE_ID" ]] || return 0
   local out
-  out="$(herdr workspace close "$SPACE_ID" 2>&1)" \
-    || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭失败，Git 未动：$out" >&2; return 1; }
+  out="$(bash "$(dirname "$LIB")/qwb-herdr.sh" close --project "$PROJECT_ROOT" --task "$TASK_FILE" --space "$SPACE_ID" 2>&1)" \
+    || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭/焦点读回未确认，Git 未动：$out" >&2; return 1; }
+  printf '%s\n' "$out"
 }
 
 BL="$BRANCH"
