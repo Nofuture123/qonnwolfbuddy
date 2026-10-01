@@ -14,15 +14,17 @@ qwb-run.sh 疑点门同判定）的额外标注一行「规格疑点未处理」
 
 选项:
   --project <根>    项目根（默认：当前目录）
+  --metrics         仅输出逐票真实事件/原始时间JSON，旧缺项unknown
   -h, --help        显示本帮助
 EOF
 }
 
-PROJECT_ROOT="$(pwd)"
+PROJECT_ROOT="$(pwd)"; METRICS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --project) PROJECT_ROOT="$2"; shift 2 ;;
+    --metrics) METRICS=1; shift ;;
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -35,6 +37,16 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
 [[ -f "$LIB" ]] || { echo "错误：找不到共享库 ${LIB}——安装副本不完整，请用母本仓重跑 bin/qwb-init.sh 更新（幂等）" >&2; exit 1; }
 # shellcheck source=/dev/null
 . "$LIB"
+
+if [[ "$METRICS" -eq 1 ]]; then
+  shopt -s nullglob
+  for f in "$LEDGER"/*.md; do
+    grep -q '^state:' "$f" || continue
+    printf '%s\t' "$(basename "$f")"
+    qwb_ledger "$PROJECT_ROOT" "$f" metrics || exit 1
+  done
+  exit 0
+fi
 
 echo "== 账本：$LEDGER =="
 shopt -s nullglob
@@ -57,6 +69,7 @@ else
         *) mark="未结" ;;
       esac
     fi
+    [[ -z "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]] || mark="未结"
     last="$(grep -E '^(working|done|blocked|needs-decision|wake|dispatch):' "$f" 2>/dev/null | tail -1 || true)"
     if [[ "$bytes_ok" -eq 0 ]]; then
       printf '[未结] %-40s state=%s —— 账本 UTF-8 损坏，须主控查看\n' "$name" "$st"
@@ -66,6 +79,20 @@ else
       printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
     fi
     [[ -n "$last" ]] && printf '       最近: %s\n' "$last"
+    if grep -q '^<!-- qwb-collab-v1$' "$f"; then
+      if collab="$(qwb_ledger "$PROJECT_ROOT" "$f" read)"; then
+        printf '%s' "$collab" | perl -MJSON::PP -0777 -e '
+          my $d=decode_json(<STDIN>);
+          print "       claim未释放: $d->{claim}{op_id}\n" if $d->{claim};
+          for my $k (sort keys %{$d->{questions}}) {
+            my $q=$d->{questions}{$k};
+            print "       问题未结: key=$k ".($q->{answer} eq "" ? "未答" : "待恢复")."\n" if $q->{resumed} eq "";
+          }
+        '
+      else
+        printf '       [未结] 协作区损坏/未知，须主控对账\n'
+      fi
+    fi
     # 工人丢失判定（关机/herdr 重启后 pane 没了、票还 running）：丢主控开局点名能直接看出
     # 工人已不存在，重派同一票会幂等复用 worktree。无 herdr 或查询失败不当丢失（不猜）。
     if [[ "$st" == "running" ]] && command -v herdr >/dev/null 2>&1; then

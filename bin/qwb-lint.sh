@@ -282,7 +282,15 @@ else
   fail "审核身份检查失败:${rid_bad}"
 fi
 
-echo "== 9. 任务书正文无占位状态行（只警告，不 FAIL）=="
+echo "== 9. 已迁票协作区协议合法 =="
+for f in "$PROJECT_ROOT"/tasks/*.md; do
+  if grep -q '<!-- qwb-collab-' "$f"; then
+    qwb_ledger "$PROJECT_ROOT" "$f" read >/dev/null \
+      || fail "协作区非法：$(basename "$f")（停止写入并对账，不清claim回旧协议）"
+  fi
+done
+
+echo "== 10. 任务书正文无占位状态行（只警告，不 FAIL）=="
 # 列首 working/done/blocked/needs-decision: 行里带 <…> 占位符 = 模板示例被当成真实状态行抄进了票：
 # 会被值守指纹与疑点门当真。缩进行不算列首（模板示例必须缩进，见 TASK.md §4）。
 # 只警告不 FAIL：本仓历史票已有这种行，不补历史票。

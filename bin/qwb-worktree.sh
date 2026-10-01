@@ -133,6 +133,12 @@ WT_BASE_PHYS="$(cd "$WT_BASE" && pwd -P)"
 
 TASK_FILE="$(unique_task_for "$TASK_ID")" \
   || { echo "错误：任务 '${TASK_ID}' 在 ${LEDGER} 匹配不到唯一任务书，记账无处可写" >&2; exit 1; }
+qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" check >/dev/null || exit 1
+FINISH_OP=""
+if grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
+  FINISH_OP="$(qwb_op_id)"
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$FINISH_OP" >/dev/null || exit 1
+fi
 WT_DIR="$WT_BASE/$TASK_ID"
 cleanup_branch_config() {
   local keys key found=0 command_text
@@ -180,8 +186,9 @@ if [[ ! -d "$WT_DIR" ]]; then
   git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
     || { echo "错误：按 partial OID 续删分支失败，原记录保留" >&2; exit 1; }
   cleanup_branch_config
-  printf 'worktree: %s branch=%s tag=%s%s\n' "$ACTION" "$BRANCH" "$TAG" "$partial_rtm" >> "$TASK_FILE" \
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: ${ACTION} branch=${BRANCH} tag=${TAG}${partial_rtm}" >/dev/null \
     || { echo "错误：分支已删但最终记账失败，请手工核对：$TASK_FILE" >&2; exit 1; }
+  [[ -z "$FINISH_OP" ]] || qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" release "$FINISH_OP" >/dev/null
   echo "已续做：按 partial OID ${HEAD_OID} 删除分支 ${BRANCH}，并记账 worktree: ${ACTION}"
   exit 0
 fi
@@ -275,8 +282,7 @@ SPACE_ID=""
 partial_fail() {
   local stage="$1" recovery="" script_path
   partial_rtm=""; [[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && partial_rtm=" root-tab-missing=1"
-  printf 'worktree: partial action=%s branch=%s tag=%s stage=%s space=%s oid=%s%s\n' \
-    "$ACTION" "${BRANCH:-detached}" "${TAG:--}" "$stage" "${SPACE_ID:--}" "$HEAD_OID" "$partial_rtm" >> "$TASK_FILE" \
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: partial action=${ACTION} branch=${BRANCH:-detached} tag=${TAG:--} stage=${stage} space=${SPACE_ID:--} oid=${HEAD_OID}${partial_rtm}" >/dev/null \
     || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
   echo "错误：收尾停在 ${stage}（OID ${HEAD_OID}）；核对 Git worktree/分支与 Herdr Space 后再恢复" >&2
   if [[ "$stage" == "branch-delete" && "$DETACHED" -eq 0 ]]; then
@@ -484,5 +490,6 @@ if [[ "$ROOT_TAB_MISSING_APPLIED" -eq 0 ]] && grep -q "^worktree: partial action
   ROOT_TAB_MISSING_APPLIED=1
 fi
 [[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && line="${line} root-tab-missing=1"
-printf '%s\n' "$line" >> "$TASK_FILE"
+qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "$line" >/dev/null
+[[ -z "$FINISH_OP" ]] || qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" release "$FINISH_OP" >/dev/null
 echo "已记账：$(basename "$TASK_FILE") ← ${line}"

@@ -32,7 +32,7 @@
 - 任务书**写好即写 `state: running`**。「已写好、待派发」不需要单独状态——对值守而言「待派」与「已派」同义：都要主控动手。非 5 值域的值（如 `pending`）或账本 UTF-8 损坏时，`qwb-status.sh` 仍列为 `[未结]` 并提示主控查看，`qwb-wake.sh` 按 `needs-decision` 叫醒主控；`qwb-run.sh` 拒绝非法 state，`qwb-lint.sh` 报 FAIL。主控写票仍只能使用上述五个合法值。
 - 所有任务经任务书文件派发，**无隐性依赖**——换会话、换 AI、重启都不丢。
 - 派发时给工人**主账本的绝对路径**（`<项目根>/tasks/...`）。工人在 worktree 副本里干活，写进副本 `tasks/` 的东西你**看不到**。
-- 工人只往主账本**追加**状态行，不改别人的行、不改 `state:` 字段。
+- 工人只往主账本报告自己的状态行，不改别人的行、不改 `state:` 字段。已迁票必须用 `qwb-ledger.sh append`，裸追加会损坏协作区并被拒绝；旧票保留旧格式，未确认停写不得迁移。
 
 ### 状态行约定（工人写，你读）
 
@@ -54,13 +54,21 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 - `spec-resolved:` **只有你能写**；处置结论只有 `impl`（实现的问题，票没错）与 `spec`（票确实有缺陷）两类。
 - **一个处置结论覆盖其之前全部未决疑点**（不能只回应最后一条）；无法裁决就保留未决，不许硬派。
 - 普通 `working:` / `done:` / `dispatch:` 行**不能解除疑点**；处置之后新提的疑点重新拦截。
-- 不新增头部必填字段（没有返修计数、没有根因归类字段）。
+- 不新增旧票头部必填字段（没有返修计数、没有根因归类字段）。已迁票的版本化协作区由writer维护，不从正文关键词授予权限。
 
 ### `state:` 的改写权
 
 - 工人**不改** `state:`。
 - `done` → `verified` **只能由你改**——因为不采信工人自述，只有你验过才算结。
-- `dispatch:` 行（qwb-run.sh 写）与 `wake:` 行（qwb-wake.sh 写）是运行时记录，别手改。
+- `dispatch:` 行（qwb-run.sh 写）与 `wake:` 行（qwb-wake.sh 写）是运行时记录，别手改。已迁票的 state 只能由现有主控经 `qwb-ledger.sh state` 改；工人不能改spec/verdict/授权/他人claim。
+
+### 一票受控迁移（单主控，能力默认关闭）
+
+先升级全部调用者和模板，逐一确认 run、wake、worktree、worker、controller 停写，关闭旧写FD并对账外部动作；主控取得锁后写JSON确认文件：`task_sha256` 为原票SHA256，`confirm` 的 `run/wake/worktree/worker/controller/old-fds/external-actions` 各值为真实证据字符串。用 `qwb-ledger.sh migrate --project <根> --task <票> -- <确认文件>` 只切这一票。writer核原字节、全部接线和本机 lsof 写FD；缺项/未知拒绝，不强停工人，不自动迁历史票。保存的 `.qwb-original` 原字节与永久 `.qwb-lock` sidecar 不可删/换inode；项目需把两类运行态文件加入忽略规则（不提交票内锁）。
+
+claim跨长工具保留，短flock只包读/检查/发布；中断不自动清claim。失败派发用op_id读最新票补偿，不复用旧FD/offset。发布失败保留此前完整票；停止新动作，用新reader对账并移交单主控，不能删claim后交旧binary。所有角色权限为同UID防误用，不是OS沙箱；本票不启用多角色。
+
+问题 `question <key> <内容>` 打开后，主控凭真实答复证据写 `answer` 再写 `resume`；普通 working/done 不清问题。`qwb-status.sh --metrics` 输出原始事件时间；旧缺项为 unknown，不补造done时间。
 
 ## 4. 派发流程
 
@@ -126,7 +134,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 ## 10. 硬规矩（不可违反）
 
 1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是叫醒主控（herdr 打字 / Stop hook exit 2 / checkpoint 退出码）。
-2. 无队列、无 ACK 协议、无数据库、无 cron——账本承担这些职责。「无守护进程」的边界：**由主控进程拥有、随主控死**的值守子进程（Claude Code Stop hook 的 `--block`、Codex 前台 checkpoint、可见 tab 里的值守循环）不算守护进程；仍然禁止 cron / launchd / systemd / 独立 nohup 进程。
+2. 无独立队列/ACK平台、无数据库、无 cron——账本承担这些职责。允许票内受限持久claim、op/decision收据与处理确认，不新增外部平台。「无守护进程」的边界：**由主控进程拥有、随主控死**的值守子进程（Claude Code Stop hook 的 `--block`、Codex 前台 checkpoint、可见 tab 里的值守循环）不算守护进程；仍然禁止 cron / launchd / systemd / 独立 nohup 进程。
 3. 只用 Herdr，不用 tmux / zellij / orca / cmux。
 4. 超时一律**毫秒**（30 分钟写 `1800000`，不写 `30m`）。
 5. 工人一律 Herdr 窗口**交互式**运行，**禁 headless**（`-p` / `--print` / `--exec` / `codex exec` 等）。

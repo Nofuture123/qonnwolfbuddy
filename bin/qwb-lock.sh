@@ -9,12 +9,12 @@ usage() {
   acquire   抢锁：互斥下建 qwbuddy/.controller.lock 并写 owner；已被占用则判活：
             锁主 pid 已退出 / pane 已不存在 → 自动回收残留锁后重新获锁；
             锁主仍活或查不出死活（herdr 不在 PATH / 查询报错）→ 拒绝（fail-closed，不猜）
-  release   放锁：删除锁目录（只在确认是残留锁时用；不做自动夺锁）
+  release   放锁：仅本人或证明旧owner死亡；未知/活他人拒绝，不做自动夺锁
   status    查锁：打印锁主或「无锁」
 
 选项:
   --project <根>    项目根（默认：当前目录）
-  --owner <标识>    锁主标识（pane_id 或 pid；默认：${HERDR_PANE_ID}，否则 pid:<本进程>）
+  --owner <标识>    锁主标识（pane_id 或 pid；默认：${HERDR_PANE_ID}，否则 pid:<调用进程>）
   -h, --help        显示本帮助
 EOF
 }
@@ -39,7 +39,7 @@ done
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 ME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 LOCK_DIR="$PROJECT_ROOT/qwbuddy/.controller.lock"
-OWNER="${OWNER:-${HERDR_PANE_ID:-pid:$$}}"
+OWNER="${OWNER:-${HERDR_PANE_ID:-pid:$PPID}}"
 
 # qwbuddy 目录在锁目录被删除、重建时保持同一个 inode。锁它而非锁 .controller.lock
 # 或一次性 guard 文件，避免两个回收者各锁一个 inode；内核在进程退出时自动释放 flock。
@@ -130,6 +130,12 @@ case "$CMD" in
     ;;
   release)
     if [[ -d "$LOCK_DIR" ]]; then
+      holder_id="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+      if [[ "$holder_id" != "$OWNER" ]]; then
+        lhd=2
+        lock_holder_dead "$holder_id" && lhd=0 || lhd=$?
+        [[ "$lhd" -eq 0 ]] || { echo "拒绝释放：非本人且旧owner仍活或未知（${holder_id:-unknown}）" >&2; exit 1; }
+      fi
       rm -rf "$LOCK_DIR"
       echo "已释放：${LOCK_DIR}"
     else

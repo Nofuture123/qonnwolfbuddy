@@ -60,9 +60,34 @@ qwb_last_spec_event() {
 qwb_scenario_block() {
   awk '
     inblk==0 && /^#{1,6}[^#]*验收场景/ { inblk=1; print; next }
-    inblk==1 && (/^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|scenarios-fp):/) { inblk=0 }
+    inblk==1 && (/^<!-- qwb-collab-/ || /^#{1,2}[^#]/ || /^(working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|scenarios-fp):/) { inblk=0 }
     inblk==1 { print }
   ' "$1"
+}
+
+# 已迁票的持久未结义务，不依赖末行working/done。损坏协议也按未结处理。
+qwb_task_obligations() {
+  grep -q '<!-- qwb-collab-' "$2" || return 0
+  local data
+  data="$(qwb_ledger "$1" "$2" read)" || { printf '%s' 'protocol-unknown'; return 0; }
+  printf '%s' "$data" | perl -MJSON::PP -0777 -e '
+    my $d=decode_json(<STDIN>);
+    print "claim=$d->{claim}{op_id} " if $d->{claim};
+    for my $k (sort keys %{$d->{questions}}) { print "key=$k " if $d->{questions}{$k}{resumed} eq "" }
+  '
+}
+
+# 全部运行时写账经此入口。legacy仅保留未迁票格式；contract后权限/原子发布自动启用。
+qwb_ledger() {
+  local root="$1" task="$2" cmd="$3" ledger_bin
+  shift 3
+  ledger_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-ledger.sh"
+  [[ -f "$ledger_bin" ]] || { echo "错误：缺 qwb-ledger.sh，拒绝绕过writer" >&2; return 1; }
+  bash "$ledger_bin" "$cmd" --project "$root" --task "$task" --legacy -- "$@"
+}
+
+qwb_op_id() {
+  perl -e 'open my $f,"<","/dev/urandom" or die $!; read($f,my $b,16)==16 or die "random不足"; print unpack("H*",$b)'
 }
 
 # —— herdr workspace list 响应 → TSV 行「id<TAB>focused<TAB>repo_root<TAB>linked<TAB>checkout_path」——

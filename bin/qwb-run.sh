@@ -545,42 +545,18 @@ SELF="${HERDR_PANE_ID:-pid:$$}"
 lock_out="$(bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" 2>&1)" \
   || { printf '错误：主控锁获取失败，拒绝派发：\n%s\n' "$lock_out" >&2; exit 1; }
 
-# —— 显式修订（--revise-scenarios）：锁内、任何派发副作用之前重新核对并更新指纹 ——
-# 先在临时文件写「新指纹 + 修订记录」再原子 mv 回任务书：写与换任何一步失败即退出，不留半更新状态。
+# 持久claim跨worktree/setup/投递保留；内核短锁只在writer调用内。
+RUN_OP="$(qwb_op_id)"
+if grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$RUN_OP" >/dev/null
+  RUN_CLAIM=1
+else
+  RUN_CLAIM=0
+fi
+# 成功才释放；异常/终止保留claim，主控按真实op收据恢复，不自动清。
 if [[ "$REVISE_GIVEN" -eq 1 ]]; then
-  recheck_fp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$TASK_FILE" | head -1 | tr -d '[:space:]')"
-  [[ "$recheck_fp" == "$DECLARED_FP" ]] \
-    || { echo "错误：取得锁后票内旧指纹已变（${DECLARED_FP} → ${recheck_fp}），放弃本次修订，请重新核对后再派" >&2; exit 1; }
-  recheck_scen_fp="$(printf '%s' "$(qwb_scenario_block "$TASK_FILE")" | shasum | cut -d' ' -f1)"
-  [[ "$recheck_scen_fp" == "$SCEN_FP" ]] \
-    || { echo "错误：取得锁后场景块已变，放弃本次修订，请重新核对后再派" >&2; exit 1; }
   REV_OLD="$DECLARED_FP"; REV_NEW="$SCEN_FP"
-  REV_REC="working: scenarios-revised: old=${REV_OLD} new=${REV_NEW} reason=${REVISE}"
-  rev_tmp="${TASK_FILE}.revise.$$"
-  if ! perl -e '
-      my ($new, $rec, $src, $dst) = @ARGV;
-      open my $in, "<", $src or die "读任务书失败: $!\n";
-      my @lines = <$in>; close $in;
-      my $done = 0;
-      for my $l (@lines) {
-        if (!$done && $l =~ /^scenarios-fp:/) { $l = "scenarios-fp: $new\n"; $done = 1 }
-      }
-      die "任务书里没有 scenarios-fp 行\n" unless $done;
-      my $tail = @lines && $lines[-1] !~ /\n\z/ ? "\n" : "";
-      open my $out, ">", $dst or die "写修订临时文件失败: $!\n";
-      print $out @lines, $tail, "$rec\n";
-      close $out or die "写修订临时文件失败: $!\n";
-    ' "$REV_NEW" "$REV_REC" "$TASK_FILE" "$rev_tmp"; then
-    rm -f "$rev_tmp"
-    echo "错误：修订写入失败（新指纹与修订记录均未落盘），不派发" >&2; exit 1
-  fi
-  if ! mv "$rev_tmp" "$TASK_FILE"; then
-    rm -f "$rev_tmp"
-    echo "错误：修订落盘失败（新指纹与修订记录均未生效），不派发" >&2; exit 1
-  fi
-  # 修订自检：新指纹与修订记录必须都已写入，缺一即败（不继续派发）
-  { grep -q "^scenarios-fp: ${REV_NEW}" "$TASK_FILE" && grep -qF "$REV_REC" "$TASK_FILE"; } \
-    || { echo "错误：修订自检失败（新指纹/修订记录未同时写入），不派发——请人工核对任务书" >&2; exit 1; }
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" revise "$REV_OLD" "$REV_NEW" "$REVISE" >/dev/null
   echo "已显式修订验收场景：old=${REV_OLD:0:8}… new=${REV_NEW:0:8}…（原因已留痕）"
 fi
 
@@ -700,7 +676,7 @@ if [[ "$wt_kind_rc" -eq 0 ]]; then
       || abort_opened_space "worktree Space 登记后路径/身份无法唯一核对"
     if [[ "$already_open" == 0 ]]; then
       space_line="worktree-space: id=${TASK_SPACE} root-tab=${opened_tab} path=${DIR}"
-      printf '%s\n' "$space_line" >> "$TASK_FILE" || {
+      qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "$space_line" >/dev/null || {
         abort_opened_space "worktree Space 所有权未能记入任务书"
       }
     fi
@@ -757,48 +733,14 @@ case "$WORKER_HARNESS" in
     ;;
 esac
 
-# —— 记账（F2）：state/场景基线在起任何工人前写；dispatch 在最终 pane 已知后、提示词发出前写 ——
-# 只改 state: 那一行（原地逐行替换），其余行原样保留——禁止"先读整份快照、过一会儿再覆盖"。
-lines_before="$(wc -l < "$TASK_FILE" | tr -d ' ')"
-if grep -q '^state:' "$TASK_FILE"; then
-  perl -i -pe 'if (!$done && /^state:/) { $_ = "state: running\n"; $done = 1 }' "$TASK_FILE"
-else
-  perl -i -pe 'if ($. == 1 && !$done) { $_ = "state: running\n\n$_"; $done = 1 }' "$TASK_FILE"
+# state/fp/附页在同一短锁内重新核对最新票并发布，不跨长工具保存快照。
+qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" prepare "$SCEN_FP" "$BRIEF_INC_BODY" >/dev/null
+if [[ "$REBUILD_FP" -eq 1 ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）" >/dev/null
 fi
-# 首次派发或 --accept-new-scenarios 重建才写 scenarios-fp:；已有基线原样保留（不重写、不改值，R2-M1）
-grep -q '^scenarios-fp:' "$TASK_FILE" \
-  || perl -i -pe 'if (!$ins && /^state:/) { $_ .= "scenarios-fp: '"$SCEN_FP"'\n"; $ins = 1 }' "$TASK_FILE"
-{ grep -q '^state: running' "$TASK_FILE" && grep -q "^scenarios-fp: ${SCEN_FP}" "$TASK_FILE"; } \
-  || { echo "错误：state/scenarios-fp 未正确写入 ${TASK_FILE}" >&2; exit 1; }
-[[ "$REBUILD_FP" -eq 1 ]] \
-  && printf 'working: %s 主控以 --accept-new-scenarios 确认重建冻结基线（原 scenarios-fp 缺失）\n' \
-       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TASK_FILE"
-
-# 提示词：任务书绝对路径 + 主账本绝对路径 + 状态行规矩；--here 时写明这是显式选择的非隔离目录
 DIR_NOTE=""
 [[ "$HERE" -eq 1 ]] && DIR_NOTE="（你用 --here 显式指定的非隔离目录，代码改动将落在主项目根）"
-PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——只追加，不改别人的行，不改 state: 字段。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
-
-# —— 常驻附页追加：任务书最后一节（账本状态行不算节）——
-# 幂等查重按附页内容指纹（brief-include-fp: 行）取最后一份比对：同一内容重复派发不叠加，
-# 内容改了能追加新版（不因「已有附页节」就永远跳过）。指纹行非状态行前缀，附页节在
-# dispatch 行之前追加，场景块指纹语义不变（smoke 有对照用例钉住）；放在开 tab / 写 dispatch
-# 之前，是为了让 dispatch 行始终是启动工人前追加的最后一行——启动失败时能安全回滚它。
-if [[ -n "$BRIEF_INC_BODY" ]]; then
-  BRIEF_INC_FP="$(printf '%s' "$BRIEF_INC_BODY" | shasum | cut -d' ' -f1)"
-  last_inc_fp="$(sed -n 's/^brief-include-fp:[[:space:]]*//p' "$TASK_FILE" | tail -1)"
-  if [[ "$last_inc_fp" != "$BRIEF_INC_FP" ]]; then
-    [[ -s "$TASK_FILE" && -n "$(tail -c1 "$TASK_FILE")" ]] && printf '\n' >> "$TASK_FILE"
-    {
-      printf '## 常驻附页\n\n'
-      printf '以下是本项目常驻规则附页（qwbuddy/brief-include.md）原样收录；本附页与其余各节冲突时，以其余各节为准。\n\n'
-      printf '%s\n' "$BRIEF_INC_BODY"
-      printf 'brief-include-fp: %s\n' "$BRIEF_INC_FP"
-    } >> "$TASK_FILE" || { echo "错误：常驻附页写入失败：${TASK_FILE}" >&2; exit 1; }
-  fi
-  grep -q "^brief-include-fp: ${BRIEF_INC_FP}" "$TASK_FILE" \
-    || { echo "错误：常驻附页自检失败（指纹未落盘），不派发——请人工核对任务书" >&2; exit 1; }
-fi
+PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完整读它，再读它点名的文档）。工作目录=${DIR}${DIR_NOTE}，代码改动只留在本目录。每完成一个阶段往主账本追加状态行（working:/done:/blocked:/needs-decision:），主账本=${TASK_FILE}——不改别人的行，不改 state: 字段。已迁协议票只能用 bash ${PROJECT_ROOT}/qwbuddy/bin/qwb-ledger.sh append --project '${PROJECT_ROOT}' --task '${TASK_FILE}' -- 'working: 内容'（身份取本工人HERDR_PANE_ID，dispatch op_id=${RUN_OP}）；禁止裸追加或覆盖协作区。旧票按旧追加约定，未经主控停写确认不迁移。done: 必须附跑了什么检查与原始结果。写完状态行再收工。"
 
 # 窗口：复用既有工人 pane / 复用 --pane / 新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
 if [[ -n "$REUSE_PANE" ]]; then
@@ -832,64 +774,20 @@ elif [[ -z "$PANE" ]]; then
   ')"
 fi
 
-# 最终 pane 已知后追加完整 dispatch，随后才启动工人并发送提示词。
-# 记下本次 append 的真实偏移（同一 fd 的写后位置），供失败时只改本行前缀。
-DISPATCH_LINE="$(printf 'dispatch: %s worker=%s agent=%s pane=%s dir=%s' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WORKER" "$NAME" "$PANE" "$DIR")"
-DISPATCH_OFFSET="$(perl -MFcntl=O_WRONLY,O_APPEND -e '
-  my ($f, $line) = @ARGV;
-  open my $r, "<", $f or die "读任务书失败: $!\n";
-  binmode $r;
-  my $prefix = "";
-  if (-s $r) {
-    seek($r, -1, 2) or die "读取尾字节失败: $!\n";
-    read($r, my $last, 1) == 1 or die "读取尾字节失败: $!\n";
-    $prefix = "\n" if $last ne "\n";
-  }
-  close $r;
-  sysopen my $w, $f, O_WRONLY|O_APPEND or die "打开任务书失败: $!\n";
-  binmode $w;
-  my $record = $prefix . $line . "\n";
-  my $n = syswrite($w, $record);
-  die "dispatch 追加失败: $!\n" unless defined $n && $n == length $record;
-  my $end = sysseek($w, 0, 1);
-  die "获取 dispatch 偏移失败: $!\n" unless defined $end;
-  print $end - length($line) - 1;
-  close $w or die "关闭任务书失败: $!\n";
-' "$TASK_FILE" "$DISPATCH_LINE")" \
+# op_id收据在投递前写好；失败后锁内重读原路径，不复用任何旧offset/FD。
+DISPATCH_LINE="$(printf 'dispatch: %s op_id=%s worker=%s agent=%s pane=%s dir=%s' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_OP" "$WORKER" "$NAME" "$PANE" "$DIR")"
+qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" dispatch "$RUN_OP" "$PANE" "$DISPATCH_LINE" >/dev/null \
   || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
-# 自检：任务书原有行不得丢失（行数只增不减）
-lines_after="$(wc -l < "$TASK_FILE" | tr -d ' ')"
-(( lines_after >= lines_before )) \
-  || { echo "错误：记账后任务书行数减少（${lines_before}→${lines_after}），疑似覆盖丢失，中止派发" >&2; exit 1; }
-
-# 只把本次 dispatch: 的 9 字节前缀原位改成 not-sent:（同长度）。
-# 不截断、不 rename 整份账本；其他工人即使在其后并发追加，也不会被覆盖。
-undo_dispatch_line() {
-  perl -e '
-    my ($f, $line, $off) = @ARGV;
-    open my $fh, "+<", $f or die "打开任务书失败: $!\n";
-    binmode $fh;
-    seek($fh, $off, 0) or die "定位本次 dispatch 失败: $!\n";
-    my $actual = <$fh>;
-    die "本次 dispatch 已变动，不敢改写\n" unless defined $actual && $actual eq "$line\n";
-    seek($fh, $off, 0) or die "重新定位失败: $!\n";
-    my $n = syswrite($fh, "not-sent:");
-    die "原位标记失败: $!\n" unless defined $n && $n == 9;
-    close $fh or die "关闭任务书失败: $!\n";
-  ' "$TASK_FILE" "$DISPATCH_LINE" "$DISPATCH_OFFSET"
-}
 delivery_failed() {
   local step="$1" rc="$2" detail="$3"
-  # 只关闭本次创建的 tab；已有 --pane 或复用工人的 pane 永不关闭。
   if [[ -n "$TAB_ID" ]]; then
     herdr tab close "$TAB_ID" >/dev/null 2>&1 \
       || echo "警告：本次 tab ${TAB_ID} 关闭失败，请手工核对" >&2
   fi
-  undo_dispatch_line \
-    || echo "警告：本次 dispatch 原位撤销失败，需人工核对 $TASK_FILE" >&2
-  printf 'blocked: %s 派发投递失败 step=%s rc=%s pane=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$step" "$rc" "$PANE" >> "$TASK_FILE"
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" not-sent "$RUN_OP" \
+    "blocked: $(date -u +%Y-%m-%dT%H:%M:%SZ) 派发投递失败 step=${step} rc=${rc} pane=${PANE}" "$DISPATCH_LINE" >/dev/null \
+    || echo "警告：补偿发布失败，保留原收据与claim，需人工核对 $TASK_FILE" >&2
   printf '错误：%s 失败（退出码 %s）：\n%s\n' "$step" "$rc" "$detail" >&2
   exit 1
 }
@@ -958,4 +856,7 @@ case "$LAUNCH_MODE" in
     ;;
 esac
 
+if [[ "$RUN_CLAIM" -eq 1 ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" release "$RUN_OP" >/dev/null
+fi
 echo "已派发：${TASK_ID} → ${WORKER}（agent=${NAME} pane=${PANE} dir=${DIR}）"

@@ -456,7 +456,10 @@ open_items() {
     fi
     case "$st" in
       running|blocked|needs-decision) printf '%s\t%s\n' "$f" "$st" ;;
-      done|verified) ;;
+      done|verified)
+        if [[ -n "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]]; then
+          printf '%s\tneeds-decision\n' "$f"
+        fi ;;
       *) echo "警告：$(basename "$f") state=${st} 非法，按未结项叫主控查看" >&2
          printf '%s\tneeds-decision\n' "$f" ;;
     esac
@@ -568,7 +571,7 @@ check_round() {
   if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
     local f st fp last lostpane
     while IFS=$'\t' read -r f st fp last lostpane; do
-      printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
+      qwb_ledger "$PROJECT_ROOT" "$f" append "wake: $(date -u +%Y-%m-%dT%H:%M:%SZ) state=${st} fp=${fp}" >/dev/null \
         || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; continue; }
       echo "已叫醒：$(basename "$f" .md) state=${st} → pane ${PANE}"
     done < "$duef"
@@ -676,7 +679,7 @@ block_round() {
     local lost_host=0
     while IFS=$'\t' read -r f st fp last lostpane; do
       if ! block_owner_ok; then lost_host=1; break; fi
-      printf 'wake: %s state=%s fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$st" "$fp" >> "$f" \
+      qwb_ledger "$PROJECT_ROOT" "$f" append "wake: $(date -u +%Y-%m-%dT%H:%M:%SZ) state=${st} fp=${fp}" >/dev/null \
         || echo "警告：wake 行写入失败（仍叫醒，下轮会重写）：$f" >&2
     done < "$duef"
     if (( lost_host )); then rm -f "$duef"; return 0; fi
