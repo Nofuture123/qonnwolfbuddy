@@ -217,7 +217,7 @@ def presentation():
         rpc(path,'workspace.move',dict(workspace_id=a.space,insert_index=wire))
         after,after_order,after_focus=snapshot(); require(after_order==order,'failed close original order restore unconfirmed')
     if focus[2] and focus!=after_focus and focus[0] in after_order:
-        require(after_focus[0] in (a.space,focus[0]) and any(x.get('pane_id')==focus[2] and x.get('workspace_id')==focus[0] and x.get('tab_id')==focus[1] for x in after.get('panes',[])),'focus changed concurrently or old target absent; no focus overwrite')
+        require(after_focus[0] == a.space and any(x.get('pane_id')==focus[2] and x.get('workspace_id')==focus[0] and x.get('tab_id')==focus[1] for x in after.get('panes',[])),'focus changed concurrently or old target absent; no focus overwrite')
         rpc(path,'pane.focus',{'pane_id':focus[2]})
         _,after_order,after_focus=snapshot(); require(after_focus==focus,'focus restore unconfirmed')
     require(not focus[0] or focus[0]==a.space or after_focus==focus,'unrelated focus not preserved')

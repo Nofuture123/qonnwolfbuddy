@@ -112,6 +112,7 @@ else: sys.exit(9)
                     s['workspaces']=[x for x in s['workspaces'] if x['workspace_id']!=ws]; s['workspaces'].insert(slot-1 if slot>old else slot,item)
                     # Herdr-like layout side effect: require explicit same-pane restore/readback.
                     s.update(focused_workspace_id=ws,focused_tab_id=ws+':t1',focused_pane_id=ws+':p1')
+                    if s.get('concurrent_focus'): s.update(focused_workspace_id='wOther',focused_tab_id='wOther:t1',focused_pane_id='wOther:p2')
                     result={'type':'workspace_list','workspaces':s['workspaces']}
                 elif method=='pane.focus':
                     pane=params['pane_id']; ws=next(x['workspace_id'] for x in s['panes'] if x['pane_id']==pane)
@@ -126,6 +127,10 @@ else: sys.exit(9)
     s=json.loads(state.read_text()); assert [w['workspace_id'] for w in s['workspaces']]==['wOther','wTask'] and s['focused_pane_id']=='wOther:p1',s
     assert task.read_text().endswith(f'path={wt}\n'),'ordering mutated ticket ownership'
     foreign=run(*[x if x!='wTask' else 'wOther' for x in base],env=env); assert foreign.returncode!=0
+    concurrent=dict(initial,concurrent_focus=True); concurrent['panes']=initial['panes']+[dict(pane('wOther'),pane_id='wOther:p2')]
+    state.write_text(json.dumps(concurrent))
+    conflict=run(*base,env=env); assert conflict.returncode!=0 and json.loads(state.read_text())['focused_pane_id']=='wOther:p2',conflict.stderr
+    state.write_text(json.dumps(s))
     # A native idle edge with an outstanding tool call is busy and never closed.
     session=b/'pi.jsonl'; session.write_text('\n'.join(json.dumps(x) for x in [
         dict(type='session',id='session',cwd=str(wt)),
