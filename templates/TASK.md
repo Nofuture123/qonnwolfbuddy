@@ -61,6 +61,8 @@ Then  <可见结果及不得发生的副作用>
 
 审核JSON字段为context（`gate-context`精确输出）、implementer/reviewer（model/family/session/evidence原生Pi JSONL）、standards/spec（pass|fail）、covered（场景名数组）、findings（id/original/classification/root/evidence）。classification为must-fix/suggestion/not-founded/unresolved，原意见历史不能删除；修复复核须绑定当前候选。按票rc0仅记收据，accepted只记verdict，仍待land/cleanup、不自动verified/合并，五值state不扩。报告不写进候选。
 
+本地交付（仅确获具体授权的主控）：接回本人claim后用`land-authorize -- <claim> <auth_ref> main <授权原话/依据> [精确受控tasks/*.md...]`登记固定M/C和当前accepted证据，再`qwb-worktree.sh land <id> --op <claim> --auth-ref <auth_ref>`。默认拒绝索引/产品dirty，不stash/reset；MD须逐路径登记、索引clean、候选不触碰相关目录且实测保留。main前进交原隔离候选有界集成并补新attempt证据/新授权；不在主副本rebase或锁内跑门。同op恢复先核现实、仅补land或finish的partial，收尾完整才verified。记录before/after/auth/op、真实时间、质量与token（未知写unknown）；无gate/夜间自动授权。
+
 ## 4. 报告要求
 
 往主账本绝对路径报告 `working:` / `done:`（含跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。

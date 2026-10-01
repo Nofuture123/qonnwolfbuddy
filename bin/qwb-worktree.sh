@@ -7,7 +7,13 @@ export LC_ALL=C  # 收尾账本记录按字节解析，损坏 UTF-8 不得误判
 
 usage() {
   cat <<'EOF'
-用法: qwb-worktree.sh <list|finish> [参数] [选项]
+用法: qwb-worktree.sh <list|land|finish> [参数] [选项]
+
+  land <任务id> --op <本人claim> --auth-ref <明确授权引用>
+                    复用04固定候选验收，prepared→main短锁ff固定C→读回→原finish；
+                    同op恢复只补实际阶段，不跑门、不重merge。仅现有已获权主控。
+                    授权先通过ledger land-authorize登记；不会自动授权gate或夜间。
+                    main前进拒绝，退出后交隔离候选有界整合并补必要验收。
 
   list                      列出 <项目>/.worktrees/ 下的目录：
                             「未结项」= 账本中有对应 state ∈ {running,blocked,needs-decision} 的任务书；
@@ -43,15 +49,18 @@ EOF
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
-  list|finish) CMD="$1"; shift ;;
+  list|land|finish) CMD="$1"; shift ;;
   *) echo "错误：需要子命令 list|finish" >&2; usage >&2; exit 2 ;;
 esac
 
 PROJECT_ROOT="$(pwd)"; TASK_ID=""; ACTION=""; REASON=""; ROOT_TAB_MISSING=0; ROOT_TAB_MISSING_APPLIED=0
+LAND_OP=""; AUTH_REF=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --project) PROJECT_ROOT="$2"; shift 2 ;;
+    --op) LAND_OP="$2"; shift 2 ;;
+    --auth-ref) AUTH_REF="$2"; shift 2 ;;
     --merged|--archive) ACTION="${1#--}"; shift ;;
     --keep) ACTION="keep"; shift ;;
     --keep=*) ACTION="keep"; REASON="${1#--keep=}"; shift ;;
@@ -117,6 +126,28 @@ if [[ "$CMD" == "list" ]]; then
   exit 0
 fi
 
+# land复用原finish；验证/授权和落地发布仍由唯一MD writer承担。
+if [[ "$CMD" == land ]]; then
+  [[ -n "$LAND_OP" && -n "$AUTH_REF" && -z "$ACTION" ]] || { echo '拒绝：land需要本人op/明确auth-ref，不接受finish动作' >&2; exit 2; }
+  TASK_FILE="$(unique_task_for "$TASK_ID")" || { echo '拒绝：找不到唯一任务书' >&2; exit 1; }
+  state="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" read)" || exit 1
+  stage="$(printf '%s' "$state" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("land",{}).get("stage",""))')"
+  if [[ "$stage" == closed ]]; then
+    qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-close "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
+    echo '已收尾（原land收据保留）'; exit 0
+  fi
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-prepare "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
+  if [[ "$stage" != landed ]]; then
+    qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-apply "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
+  fi
+  argv=(finish "$TASK_ID" --merged --project "$PROJECT_ROOT" --op "$LAND_OP" --auth-ref "$AUTH_REF")
+  [[ "$ROOT_TAB_MISSING" -eq 0 ]] || argv+=(--root-tab-missing)
+  bash "${BASH_SOURCE[0]}" "${argv[@]}" || exit 1
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-close "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
+  echo '已本地落地、读回并收尾；tokens=unknown'
+  exit 0
+fi
+
 # finish
 [[ -n "$TASK_ID" ]] || { echo "错误：finish 需要 <任务id>" >&2; usage >&2; exit 2; }
 [[ -n "$ACTION" ]] || { echo "错误：finish 需要动作 --merged|--archive|--keep[=原因]" >&2; exit 2; }
@@ -134,12 +165,41 @@ WT_BASE_PHYS="$(cd "$WT_BASE" && pwd -P)"
 TASK_FILE="$(unique_task_for "$TASK_ID")" \
   || { echo "错误：任务 '${TASK_ID}' 在 ${LEDGER} 匹配不到唯一任务书，记账无处可写" >&2; exit 1; }
 qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" check >/dev/null || exit 1
-FINISH_OP=""
-if grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
+FINISH_OP=""; LAND_PROOF=""
+if [[ -n "$LAND_OP" || -n "$AUTH_REF" ]]; then
+  [[ "$ACTION" == merged && -n "$LAND_OP" && -n "$AUTH_REF" ]] || { echo '拒绝：land收尾参数不齐/动作不符' >&2; exit 1; }
+  LAND_PROOF="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-proof "$LAND_OP" "$AUTH_REF")" || exit 1
+elif grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
+  if [[ "$ACTION" == merged ]] && grep -q '"gate":' "$TASK_FILE"; then
+    echo '拒绝：协作候选须先经land证明精确本地main，不接受remote/任意HEAD包含' >&2; exit 1
+  fi
   FINISH_OP="$(qwb_op_id)"
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$FINISH_OP" >/dev/null || exit 1
 fi
+# 只探本票派发登记的端点；idle/done不是退出证明。端点未知保留候选。
+land_writers_stopped() {
+  [[ -n "$LAND_PROOF" ]] || return 0
+  local data panes pane out rc proc
+  data="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" read)" || return 1
+  panes="$(printf '%s' "$data" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["workers"]))')" || return 1
+  [[ -n "$panes" ]] || return 0
+  while IFS= read -r pane; do
+    rc=0; out="$(herdr pane get "$pane" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      printf '%s' "$out" | perl -MJSON::PP -0777 -e 'my $j=decode_json(<STDIN>); exit(($j->{error}{code}//"") eq "pane_not_found" ? 0 : 1);' \
+        || { echo '拒绝：本票写入者端点未知，不能删除候选' >&2; return 1; }
+      continue
+    fi
+    printf '%s' "$out" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{pane}; exit 1 unless ref($p) eq "HASH" && exists($p->{agent}) && !defined($p->{agent});' \
+      || { echo '拒绝：本票写入者尚未退出（idle/done不等于已停）' >&2; return 1; }
+    proc="$(herdr pane process-info --pane "$pane" 2>&1)" || return 1
+    printf '%s' "$proc" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};' \
+      || { echo '拒绝：本票写入者前台活动/未知' >&2; return 1; }
+  done <<< "$panes"
+}
+
 WT_DIR="$WT_BASE/$TASK_ID"
+land_writers_stopped || exit 1
 cleanup_branch_config() {
   local keys key found=0 command_text
   if ! keys="$(git -C "$PROJECT_ROOT" config --local --list --name-only 2>/dev/null)"; then
@@ -160,6 +220,17 @@ cleanup_branch_config() {
 if [[ ! -d "$WT_DIR" ]]; then
   [[ "$ACTION" != keep && ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
     || { echo "错误：worktree 不存在或任务书是符号链接：${WT_DIR}" >&2; exit 1; }
+  if [[ -n "$LAND_PROOF" ]]; then
+    proof_branch="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["branch"])')"
+    proof_oid="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["after"])')"
+    refs="$(git -C "$PROJECT_ROOT" for-each-ref --format='%(refname)' "refs/heads/$proof_branch")" || exit 1
+    if [[ -z "$refs" ]]; then
+      listing="$(git -C "$PROJECT_ROOT" worktree list --porcelain)" || exit 1
+      if printf '%s\n' "$listing" | grep -Fxq "worktree $WT_DIR"; then echo '拒绝：worktree元数据仍在，现实不明' >&2; exit 1; fi
+      qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: merged branch=${proof_branch} tag=-" >/dev/null || exit 1
+      echo "已按本地land收据补记收尾 OID=$proof_oid"; exit 0
+    fi
+  fi
   partial="$(grep '^worktree:' "$TASK_FILE" | tail -1 || true)"
   if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})( root-tab-missing=1)?$ ]]; then
     echo "错误：worktree 不存在且没有可续做的 branch-delete 记录：${WT_DIR}" >&2; exit 1
@@ -168,6 +239,9 @@ if [[ ! -d "$WT_DIR" ]]; then
   [[ "${BASH_REMATCH[1]}" == "$ACTION" ]] \
     || { echo "拒绝：续做动作与 partial 记录不符" >&2; exit 1; }
   BRANCH="${BASH_REMATCH[2]}"; TAG="${BASH_REMATCH[3]}"; HEAD_OID="${BASH_REMATCH[5]}"
+  if [[ -n "$LAND_PROOF" ]]; then
+    [[ "$BRANCH" == "$proof_branch" && "$HEAD_OID" == "$proof_oid" ]] || { echo '拒绝：partial分支/OID与land身份不符' >&2; exit 1; }
+  fi
   [[ "$BRANCH" != detached ]] || { echo "拒绝：detached 收据不能续做分支删除" >&2; exit 1; }
   if [[ "$ACTION" == archive ]]; then
     [[ "$TAG" == "archive/$TASK_ID" && "$(git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null || true)" == "$HEAD_OID" ]] \
@@ -243,6 +317,9 @@ recheck_head() {   # 打印 worktree 当前实际 HEAD OID；读不到返回非 
 }
 check_unchanged() {
   local cur
+  if [[ -n "$LAND_PROOF" && "$(git -C "$PROJECT_ROOT" rev-parse refs/heads/main)" != "$HEAD_OID" ]]; then
+    echo '拒绝：收尾期间精确本地main已变，保留候选/分支待对账' >&2; return 1
+  fi
   cur="$(recheck_head)" || { echo "错误：无法读取 ${WT_DIR} 的当前 HEAD，拒绝收尾" >&2; return 1; }
   [[ "$cur" == "$HEAD_OID" ]] || {
     echo "拒绝：收尾期间 ${WT_DIR} 的实际 HEAD 已变化，工作已被推进。" >&2
@@ -255,6 +332,9 @@ check_unchanged() {
 # worktree 删掉之后复核分支：refs/heads/<分支> 仍指着已核实/已归档的 OID 才准删
 branch_tip_unchanged() {
   local cur
+  if [[ -n "$LAND_PROOF" && "$(git -C "$PROJECT_ROOT" rev-parse refs/heads/main)" != "$HEAD_OID" ]]; then
+    echo '拒绝：main已变，不删保留分支' >&2; return 1
+  fi
   cur="$(git -C "$PROJECT_ROOT" rev-parse "refs/heads/$BRANCH" 2>/dev/null)" || return 1
   [[ "$cur" == "$HEAD_OID" ]] || {
     echo "提示：分支 ${BRANCH} 顶端已推进（${HEAD_OID} → ${cur}），不删该分支" >&2
@@ -368,6 +448,15 @@ prepare_space_close() {
     for my $p (@$a) { exit 1 unless ref $p eq "HASH" && $p->{pane_id}; printf "%s\t%s\n",$p->{pane_id},($p->{agent_status}//"unknown") }' || true)"
   [[ -n "$pane_rows" ]] || { echo "拒绝：Space pane 列表无法解析" >&2; return 1; }
   while IFS=$'\t' read -r pane_id state; do
+    if [[ -n "$LAND_PROOF" ]]; then
+      # idle/done是模型状态，不是退出证明；land不关闭仍挂Pi的pane。
+      pane_out="$(herdr pane get "$pane_id" 2>&1)" || { echo '拒绝：land写入者身份未知' >&2; return 1; }
+      printf '%s' "$pane_out" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{pane}; exit 1 unless ref($p) eq "HASH" && exists($p->{agent}) && !defined($p->{agent});' \
+        || { echo '拒绝：land写入者尚未退出（idle/done不等于已停）' >&2; return 1; }
+      proc="$(herdr pane process-info --pane "$pane_id" 2>&1)" || { echo '拒绝：land前台未知' >&2; return 1; }
+      printf '%s' "$proc" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};' \
+        || { echo '拒绝：land前台仍有活动写入者' >&2; return 1; }
+    fi
     case "$state" in
       working|blocked) echo "拒绝：Space pane ${pane_id} 的 agent 仍在 ${state}" >&2; return 1 ;;
       idle|done) ;;
@@ -397,7 +486,12 @@ TAG="-"
 case "$ACTION" in
   merged)
     landed=""
-    if git -C "$PROJECT_ROOT" merge-base --is-ancestor "$HEAD_OID" HEAD 2>/dev/null; then
+    if [[ -n "$LAND_PROOF" ]]; then
+      proof_oid="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["after"])')"
+      proof_branch="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["branch"])')"
+      [[ "$DETACHED" -eq 0 && "$BRANCH" == "$proof_branch" && "$HEAD_OID" == "$proof_oid" && "$(git -C "$PROJECT_ROOT" rev-parse refs/heads/main)" == "$proof_oid" ]] || { echo '拒绝：本地main/候选不是land精确C' >&2; exit 1; }
+      landed="精确本地main land收据（${proof_oid}）"
+    elif git -C "$PROJECT_ROOT" merge-base --is-ancestor "$HEAD_OID" HEAD 2>/dev/null; then
       landed="已合并进当前分支（HEAD）"
     elif [[ "$DETACHED" -eq 0 ]]; then
       while IFS= read -r rt; do
@@ -413,6 +507,7 @@ case "$ACTION" in
     fi
     check_unchanged    # 核实通过≠此刻仍是同一提交：删 worktree 前复核
     branch_only_here || exit 1
+    land_writers_stopped || exit 1
     prepare_space_close || exit 1
     close_task_space || exit 1
     check_unchanged || partial_fail head-changed-after-space-close

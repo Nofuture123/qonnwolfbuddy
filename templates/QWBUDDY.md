@@ -92,7 +92,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 - `qwb-test.sh --report <新文件>` 是可选的配置门执行记录；核对报告的项目目录、配置键、运行前后 HEAD、工作区与退出码，再对照本票场景和实际验收对象。仓库 HEAD 不能代替安装包或线上版本身份；真实 UI、安装包、人工步骤另附实际证据，未跑的场景保留待验收。
 - 收到审核意见时，按 `roles/审核者.md`「意见与复审」及 `roles/主控.md` 核对证据、形成返修清单；记录每条原意见、分类、裁定依据和最终要求。成立的必须修复项未闭环或正确性／安全意见仍未决时不放行；偏好建议不阻断，不成立意见须有反证。未决争议复用下方疑点处置流程，不新增 `state:` 值。
 - 把「跑了什么、结果、结论」写进账本任务书留痕——权力下放 + 可审计。
-- 通过 → 把 `state:` 改为 `verified`，走 worktree 收尾；不通过 → 返工或记错题（`tasks/lessons/`）。
+- 通过 → 已迁协作票只记 accepted verdict；确获本地落地授权后经 land→读回→finish，清理义务完成才由writer置 verified。未迁旧票仍按旧收尾约定；不通过 → 返工或记错题（`tasks/lessons/`）。
 - **你可自干小活**（改动一行这类、无独立验收价值的），同样留一行「怎么验证的」。
 - **先处置疑点再派发**：票上有未决 `spec-defect:` 疑点时 `qwb-run.sh` 会拒绝派发（`qwb-status.sh` 也会标出「规格疑点未处理」，后续普通日志遮不住）。你逐项核对后写 `working: spec-resolved: <impl|spec>；…` 处置；无法裁决就保留未决。处置**不要求必须开审核窗口**——只有实质分歧、缺可验证反例、或疑点被驳回后带新证据复发时，才按需审票（见 `roles/审核者.md` 的「审票」节）。
 - **改场景走显式修订**：改验收场景必须用 `qwb-run.sh --revise-scenarios=<原因>`（留 `scenarios-revised:` 记录、更新指纹），不得无痕改；`qwb-lint.sh` 对无修订记录的场景差异仍然 FAIL。`spec-resolved:` 不授权绕过指纹检查；`--accept-new-scenarios` 只管「缺基线」那一种情况，不与修订混用。
@@ -109,11 +109,17 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 ## 7. worktree 四步规范
 
 - **开**：只在派工时开；`<项目>/.worktrees/<任务id>/`，一任务一个，在 Herdr Spaces 中以 worktree 形式显示；开之前先清点——有已完成任务的残留就先收掉。
-- **收·成功**：验收通过 → 合并/推送 → 核对并关闭本票空闲 Space（根 tab 已被手工关闭时，用 `finish --root-tab-missing` 显式兑底并留痕，其余身份证据照核）→ 安全删除 worktree 与已落地分支 → 记账。
+- **收·成功**：协作候选验收通过且确获本地授权 → `land <id> --op <本人claim> --auth-ref <明确引用>` 固定OID合入精确本地main并读回 → 原finish核本票写入者已退出（idle/done不等于退出），再关闭本票Space（根tab已缺时显式`--root-tab-missing`且核其余证据）→ 安全删除副本/分支并记账。任意HEAD包含/remote不能证明协作票本地交付；常驻角色不随票退休。
 - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Space → `git tag archive/<任务id>` → 安全删除 worktree 与分支 → 记账（写明标签名）。
 - **留·例外**：只允许两种——等使用者裁决的、有冲突待解的；且必须在账本**点名**。
 - 补充：谁派生谁收尾；`git worktree prune` 清元数据残留。
 - 实现：`qwb-worktree.sh list` 清点（标出残留）、`qwb-worktree.sh finish <id> --merged|--archive|--keep[=原因]` 收尾并往任务书追加 `worktree:` 记账行；`qwb-run.sh --create-worktree` 开新 worktree 前会自动清点，有残留打警告但不阻塞。
+
+本地land只保留主控原有具体权限，不新增gate/夜间自主权限。主控接回claim后先登记：
+
+`qwb-ledger.sh land-authorize --project <根> --task <原票> -- <本人claim> <auth_ref> main <真实授权依据> [精确tasks/*.md路径...]`
+
+授权引用不是实现授权或ff可行性的替代；接口只防同UID误用，不是OS沙箱。主副本必须是精确main，候选在本项目`.worktrees/<id>`；默认索引/产品/未登记路径dirty均拒绝。受控MD只准逐文件登记、索引clean、M→C不碰其tasks目录且字节/模式实测保留，不能忽略整个tasks。repo+main锁内只复核/ff固定OID/读回/短发布，不跑测试；主分支前进只停本次land，保留原候选。隔离候选有界更新后主控可`gate-candidate -- <claim> <新attempt> <原候选> <当前main精确OID> integration`登记；旧授权归档，旧绿不当组合绿，须新证据和新auth_ref。合入但记账失败同op只补事实，partial收尾仅续未发生步骤；接班先按01对账claim，确有本地C时可用新的`land-authorize -- <原op> <新auth_ref> main <明确恢复依据>`（不传MD列表）只授权剩余收尾，保留旧授权，不重开merge。prepared/landed/closed记录的是实测阶段读回时间；恢复补记的观测时间不能冒充未知的原合入时刻。main已变化、端点不明或欠清理保持未结，不stash/reset/force。
 
 ## 8. 身份切换
 
