@@ -19,8 +19,8 @@ with tempfile.TemporaryDirectory(prefix='qwb-gate-') as tmp:
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
     # 仅本测试私有Git的候选，不是共享lane/池；TemporaryDirectory随测试回收。
-    ca=tmp/'candidate-A'; cb=tmp/'candidate-B'; cc=tmp/'candidate-C'; cl=tmp/'candidate-long-A'; cd=tmp/'candidate-changing'
-    for candidate in [ca,cb,cc,cl,cd]: git('worktree','add','-q','--detach',str(candidate))
+    ca=tmp/'candidate-A'; cb=tmp/'candidate-B'; cc=tmp/'candidate-C'; cl=tmp/'candidate-long-A'; cd=tmp/'candidate-changing'; cr=tmp/'candidate-replay'
+    for candidate in [ca,cb,cc,cl,cd,cr]: git('worktree','add','-q','--detach',str(candidate))
     state=tmp/'native.json'
     (stub/'lsof').write_text('#!/bin/sh\nexit 1\n')
     (stub/'ps').write_text('''#!/usr/bin/env python3
@@ -161,6 +161,51 @@ f.write_text(json.dumps(s))
     assert json.loads(call('qwb-ledger.sh','read','--task',t).stdout)['gate']['verdict']=='rework'
     assert json.loads(call('qwb-ledger.sh','read','--task',bt).stdout)['gate']['verdict']=='accepted'
     print('PASS 两票不同结论：A公开run原范围返修，B accepted，未自动verified/合并')
+    # F1单条件红测：配置/对象不变，真实0→真实7→原成功重放，不能洗掉失败。
+    failure_marker=tmp/'replay-fail'
+    with (cr/'qwbuddy/config.sh').open('a') as f:f.write(f"QWB_GATE_FULL='test ! -e {failure_marker} || exit 7'\n")
+    subprocess.run(['git','-C',str(cr),'add','qwbuddy/config.sh'],check=True)
+    subprocess.run(['git','-C',str(cr),'-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','replay command fixture'],check=True)
+    rt=p/'tasks/Replay.md';rt.write_text('# 收据重放\nstate: running\n'+frozen+'\n')
+    m.write_text(json.dumps({'task_sha256':hashlib.sha256(rt.read_bytes()).hexdigest(),'confirm':{k:'fixture stopped; no actions' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}}))
+    call('qwb-ledger.sh','migrate','--task',rt,'--',m)
+    request.write_text(json.dumps(dict(brequest,candidate=str(cr))))
+    call('qwb-ledger.sh','gate-assign','--task',rt,'--','gate',request);call('qwb-ledger.sh','claim','--task',rt,'--','accept-R',actor='gate-pane')
+    def replay_test(name,ok=True):
+        f=tmp/name
+        result=call('qwb-test.sh','full','--project',cr,'--task',rt,'--ledger-project',p,'--op','accept-R','--report',f,actor='gate-pane',ok=ok)
+        return f,result
+    def import_replay(f):return call('qwb-ledger.sh','gate-receipt','--task',rt,'--','accept-R',f,actor='gate-pane')
+    def replay_verdict(ok=True):return call('qwb-ledger.sh','gate-verdict','--task',rt,'--','accept-R','accepted',actor='gate-pane',ok=ok)
+    first,_=replay_test('Replay-original-success.json')
+    replay_review=tmp/'Replay-review.json';replay_review.write_text(json.dumps(dict(review,context=json.loads(first.read_text())['after'],findings=[])))
+    call('qwb-ledger.sh','gate-review','--task',rt,'--','accept-R',replay_review,actor='gate-pane');replay_verdict()
+    failure_marker.touch();failed_report,failed_result=replay_test('Replay-newer-failure.json',ok=False)
+    assert failed_result.returncode==7
+    replay_verdict(ok=False)
+    import_replay(first)
+    replay_verdict(ok=False)
+    assert [r['receipt']['rc'] for r in json.loads(call('qwb-ledger.sh','read','--task',rt).stdout)['gate']['receipts']]==[0,7]
+    # 等待严格跨秒边界，不用导入顺序或同秒并列推断执行先后。
+    while int(time.time())<=json.loads(failed_report.read_text())['ended_at']:time.sleep(0.05)
+    failure_marker.unlink();fresh,_=replay_test('Replay-fresh-success.json');replay_verdict()
+    snapshot=rt.read_bytes();import_replay(first);import_replay(failed_report);import_replay(fresh)
+    # 另一报告路径、JSON排版不同仍是同一执行；幂等不能重置verdict/rev/事件。
+    duplicate=tmp/'Replay-duplicate-format.json';duplicate.write_text(json.dumps(json.loads(first.read_text()),indent=2))
+    import_replay(duplicate);assert rt.read_bytes()==snapshot
+    # 协议乱序/模糊时间夹具只改变真实收据时间，不冒充额外真实执行。
+    later=json.loads(fresh.read_text());earlier=json.loads(failed_report.read_text())
+    older=tmp/'Replay-older-failure.json';earlier.update(started_at=later['started_at']-2,ended_at=later['started_at']-2,elapsed_seconds=0);older.write_text(json.dumps(earlier))
+    import_replay(older);replay_verdict() # 较晚成功仍可用，不能按数组尾失败判定。
+    tied=tmp/'Replay-ambiguous-failure.json';earlier.update(started_at=later['started_at'],ended_at=later['ended_at'],elapsed_seconds=later['elapsed_seconds']);tied.write_text(json.dumps(earlier))
+    import_replay(tied);replay_verdict(ok=False);import_replay(fresh);replay_verdict(ok=False)
+    malformed=tmp/'Replay-invalid-time.json';invalid=dict(later,started_at=later['ended_at']+1);malformed.write_text(json.dumps(invalid))
+    call('qwb-ledger.sh','gate-receipt','--task',rt,'--','accept-R',malformed,actor='gate-pane',ok=False)
+    while int(time.time())<=later['ended_at']:time.sleep(0.05)
+    replay_test('Replay-after-ambiguity-success.json');replay_verdict()
+    history=json.loads(call('qwb-ledger.sh','read','--task',rt).stdout)['gate']['receipts']
+    assert [r['receipt']['rc'] for r in history]==[0,7,0,7,7,0]
+    print('PASS F1真实0→7→旧0仍拒绝；重复执行幂等、乱序保历史、同秒不猜先后、明确新成功恢复')
     # 原票工人修复真实缺陷，新attempt重验；旧必须修复意见保留在原版本历史。
     ca.joinpath('safety.sh').write_text('#!/bin/sh\n[ "${1:-}" != unresolved ] || exit 7\nexit 0\n')
     subprocess.run(['git','-C',str(ca),'add','safety.sh'],check=True)

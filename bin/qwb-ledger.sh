@@ -348,6 +348,11 @@ sub json_file {
   my $fh=safe_open(encode('UTF-8',$_[0]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
   return (strict_json($s),sha256_hex($s));
 }
+sub receipt_interval_ok {
+  my $r=shift;
+  return 0 if grep { !defined($r->{$_}) || ref($r->{$_}) || $r->{$_}!~/\A[0-9]+\z/ } qw(started_at ended_at elapsed_seconds);
+  return $r->{ended_at}>=$r->{started_at} && $r->{elapsed_seconds}==$r->{ended_at}-$r->{started_at};
+}
 sub gate_context {
   my $observe=shift // 0;
   my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
@@ -420,6 +425,11 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   fail('报告必须在候选之外') if $resolved eq encode('UTF-8',$c->{candidate}) || index($resolved,encode('UTF-8',$c->{candidate}).'/')==0;
   fail('收据对象/规格/策略/命令/配置/环境不匹配') unless $r->{schema} eq 'qwb-candidate-receipt-v1' && $json->encode($r->{before}) eq $json->encode($c) && $json->encode($r->{after}) eq $json->encode($c) && exists($c->{commands}{$r->{gate}}) && $r->{command_sha256} eq $c->{commands}{$r->{gate}} && $r->{executor} eq $actor && $r->{rc}=~/\A[0-9]+\z/ && $r->{elapsed_seconds}>=0;
   fail('dirty候选不能记可信收据') unless $c->{status} eq 'clean';
+  fail('收据执行时间非法') unless receipt_interval_ok($r);
+  # 同一执行内容重复导入幂等；路径/排版不构成新执行，不改历史、verdict或事件顺序。
+  for my $old (@{$data->{gate}{receipts}}) {
+    if ($json->encode($old->{receipt}) eq $json->encode($r)) { print "$old->{sha256}\n"; exit }
+  }
   # 复制精确结果到同票协议；外部报告可读回，后续改写不改变已登记收据。
   push @{$data->{gate}{receipts}},{receipt=>$r,sha256=>$sha,ref=>text($resolved)};
   $data->{gate}{verdict}='pending';
@@ -477,7 +487,14 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
     for my $name (keys %{$c->{required}}) {
       fail("关键场景未覆盖: $name") if grep { !$covered{$_} } @{$c->{required}{$name}};
       my @matching=grep { $_->{receipt}{gate} eq $name && $json->encode($_->{receipt}{after}) eq $json->encode($c) } @{$g->{receipts}};
-      fail("无同对象/条件最新可信成功收据: $name") unless @matching && $matching[-1]{receipt}{rc}==0;
+      fail("同对象收据执行时间不明: $name") if grep { !receipt_interval_ok($_->{receipt}) } @matching;
+      my @failed=grep { $_->{receipt}{rc}!=0 } @matching;
+      # 导入顺序不是执行顺序。秒级并列/重叠保守拒绝，须明确晚于所有失败的新成功。
+      my @successful=grep {
+        my $r=$_->{receipt};
+        $r->{rc}==0 && !grep { $r->{started_at}<=$_->{receipt}{ended_at} } @failed
+      } @matching;
+      fail("无同对象/条件明确晚于所有失败的可信成功收据: $name") unless @successful;
     }
     for my $f (values %{$g->{findings}}) { fail('成立缺陷/安全意见未决') if $f->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ }
     for my $q (values %{$data->{questions}}) { fail('用户专属问题尚未恢复') unless $q->{resumed} ne '' }
