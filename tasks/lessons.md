@@ -2,6 +2,8 @@
 
 一行一条，详情见 `lessons/<主题>.md`。每次踩坑先在这里加一行，再写详情文件。
 
+- [左侧Space不是顶部Tab](lessons/左侧Space不是顶部Tab.md) —— 2026-10-01 纠正：Tab改名不等于独立Spaces分组；须核真实workspace及迁移前后的身份连续性。
+
 | 日期 | 一句话 | 详情 |
 |---|---|---|
 | 2026-09-15 | shell 脚本里 `$VAR` 后紧跟非 ASCII 字符（全角括号/逗号）会被 bash 当成变量名的一部分，`set -u` 下直接 `unbound variable` 崩溃 | [shell-变量后紧跟非ascii字符](lessons/shell-变量后紧跟非ascii字符.md) |
