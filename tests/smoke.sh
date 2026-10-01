@@ -367,6 +367,11 @@ assert cur==rounds*1000 and slept==rounds*(1000-burn), (cur,slept)
 PY
   then ok "共用等待预算：$2 轮实际补睡=$(( $2 * (1000-$1) ))ms，已耗只计一次、无忙循环"
   else bad "事件等待预算失真"; cat "$FKS"; fi
+  if grep -q 'events.subscribe' "$WIRELOG"; then
+    local scans; scans="$(grep -c '^herdr pane get wtest:p9' "$FCLOG" || true)"
+    [[ "$scans" -eq "$2" ]] && ok "真实公开账本扫描恰$2轮（已耗预算不重复启动等待）" \
+      || bad "预算轮数不符：实际扫描=$scans，期望=$2"
+  fi
 }
 for burn in 250 600 0; do
   echo "== 12. 共用订阅等待：额外耗时 ${burn}ms 纳入每轮1000ms预算 =="
