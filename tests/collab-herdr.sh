@@ -309,4 +309,75 @@ for mode in ['live','missing','dead','extra-pane','no-attempt']:
         else:
             assert result.returncode==0 and not wt.exists() and not state.exists() and len(closes)==1,(mode,result.returncode,result.stdout,result.stderr)
             print('PASS '+mode+': proven-ended/no-start safe finish remains usable')
+
+# F2 public seam: real qwb-run fresh/reuse (including prompt failure), actual process death, then finish.
+# Native Pi metadata is an external Herdr double; PID/start belong to a real owned child, not a model CLI.
+native_stub=STUB.replace('if args[:2] == ["status", "--json"]:', r'''native = Path(os.environ["QWB_TEST_NATIVE"])
+session = os.environ["QWB_TEST_NATIVE_SESSION"]
+if args[:2] == ["agent", "start"]:
+    native.write_text("started")
+    out({"type": "agent_started"})
+elif args[:2] == ["agent", "get"] and native.exists():
+    out({"agent": {"name": "qwb-case", "agent": "pi", "agent_status": "idle", "pane_id": "wTask:p1", "workspace_id": "wTask", "cwd": wt}})
+elif args[:2] == ["pane", "get"] and args[2] == "wTask:p1" and native.exists():
+    out({"pane": {"pane_id": "wTask:p1", "tab_id": "wTask:t1", "workspace_id": "wTask", "agent": "pi", "agent_status": "idle", "foreground_cwd": wt,
+         "agent_session": {"source": "herdr:pi", "kind": "path", "value": session}}})
+elif args[:2] == ["pane", "process-info"] and args[3] == "wTask:p1" and native.exists():
+    pid = int(os.environ["QWB_TEST_NATIVE_PID"])
+    out({"process_info": {"pane_id": "wTask:p1", "shell_pid": 42, "foreground_process_group_id": pid,
+         "foreground_processes": [{"pid": pid, "argv0": "pi", "cwd": wt}]}})
+elif args[:2] == ["agent", "prompt"]:
+    # Observe the durable receipt at the external transport boundary, before failure compensation.
+    text = Path(os.environ["QWB_TEST_NATIVE_TICKET"]).read_text()
+    with log.open("a") as f: f.write(json.dumps(["prompt-ticket", text]) + "\n")
+    if os.environ.get("QWB_TEST_PROMPT_FAILED") == "1": err("prompt_failed")
+    out({"type": "ok"})
+elif args[:2] == ["status", "--json"]:''')
+for mode in ['reuse','failed-reuse','unknown-start']:
+    with tempfile.TemporaryDirectory(prefix='qwb-public-reuse-'+mode+'-') as d:
+        b=Path(d); repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
+        assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+        child=subprocess.Popen(['sleep','60'],cwd=wt)
+        native=b/'native-active'; session=b/'pi.jsonl'
+        session.write_text(json.dumps(dict(type='session',cwd=str(wt)))+'\n'+json.dumps(dict(type='message',id='end',message=dict(role='assistant',content=[],stopReason='stop')))+'\n')
+        (b/'stub/herdr').write_text(native_stub)
+        env={**env,'QWB_TEST_NATIVE':str(native),'QWB_TEST_NATIVE_SESSION':str(session),'QWB_TEST_NATIVE_PID':str(child.pid),'QWB_TEST_NATIVE_TICKET':str(ticket)}
+        dispatch=['bash',str(repo/'qwbuddy/bin/qwb-run.sh'),'--project',str(repo),'--task','case','--worker','pi']
+        finish=['bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--merged','--project',str(repo)]
+        try:
+            first=call(*dispatch,env=env); assert first.returncode==0,(first.stdout,first.stderr)
+            if mode=='unknown-start':
+                ticket.write_text('\n'.join(x for x in ticket.read_text().splitlines() if not x.startswith('working: worker-activity'))+'\n')
+            second=call(*dispatch,env={**env,**({'QWB_TEST_PROMPT_FAILED':'1'} if mode=='failed-reuse' else {})})
+            assert second.returncode==(0 if mode=='reuse' else 1),(mode,second.stdout,second.stderr)
+            if mode!='unknown-start': assert '复用既有工人' in second.stdout,(mode,second.stdout,second.stderr)
+            else: assert '本代真实活动为 unknown' in second.stderr,(mode,second.stderr)
+            calls=[json.loads(x) for x in log.read_text().splitlines()]
+            assert sum(x[:2]==['agent','start'] for x in calls)==1 and not any(x[:2]==['tab','create'] for x in calls),calls
+            # Native label can return to shell while its process still lives: must preserve original obligations.
+            native.unlink(); alive=call(*finish,env=env)
+            reason='launch attempt has no matching death evidence' if mode=='unknown-start' else 'old native PID still alive or death unknown'
+            assert alive.returncode!=0 and wt.exists() and state.exists(),(mode,alive.stderr)
+            child.terminate(); child.wait()
+            ended=call(*finish,env=env)
+            print('PUBLIC REUSE',mode,'native_pid=',child.pid,'ended_rc=',ended.returncode,'wt=',wt.exists(),'space=',state.exists(),'stderr=',ended.stderr,flush=True)
+            if mode=='unknown-start':
+                assert ended.returncode!=0 and reason in ended.stderr and wt.exists() and state.exists(),ended.stderr
+                assert sum(x[:2]==['agent','prompt'] for x in calls)==1,'unknown reuse must not deliver'
+            else:
+                assert ended.returncode==0 and not wt.exists() and not state.exists(),(mode,ended.stdout,ended.stderr)
+                receipts=[x for x in ticket.read_text().splitlines() if x.startswith(('dispatch:','not-sent:'))]
+                assert len(receipts)==2 and ('not-sent:' in receipts[-1])==(mode=='failed-reuse'),receipts
+                # Both delivery ops retain the same validated native incarnation before their prompts.
+                proofs=[]
+                for _,text in [x for x in calls if x[0]=='prompt-ticket']:
+                    receipt=next(x for x in reversed(text.splitlines()) if x.startswith('dispatch:'))
+                    op=next(x.split('=',1)[1] for x in receipt.split() if x.startswith('op_id='))
+                    bound=next(x for x in text.splitlines() if x.startswith('working: worker-activity op='+op+' pane=wTask:p1 evidence='))
+                    proofs.append(json.loads(bound.split(' evidence=',1)[1]))
+                assert len(proofs)==2 and all((p['pid'],p['pid_start'],p['session'])==(proofs[0]['pid'],proofs[0]['pid_start'],proofs[0]['session']) for p in proofs),proofs
+                assert call('git','-C',str(repo),'show-ref','--verify','--quiet','refs/heads/case',env=env).returncode!=0
+            print('PASS public run '+mode+': '+('unknown start never redelivers or closes' if mode=='unknown-start' else 'verified incarnation persists before prompt; alive preserves, proven-ended reuse finishes'))
+        finally:
+            if child.poll() is None: child.terminate(); child.wait()
 PY

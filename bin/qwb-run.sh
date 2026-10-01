@@ -352,6 +352,7 @@ fi
 # working/blocked → 拒绝派发（工人还在干，别打断）；查询失败（非 not_found）→ fail-closed 拒绝。
 # 应答里 agent 名与本任务名不同或缺身份字段 → 拒绝，不猜接收者。
 REUSE_PANE=""
+REUSE_ACTIVITY=""
 TAB_ID=""
 validate_reuse() {
   local expected_dir actual_dir expected_ws caller_info pane_out pane_meta
@@ -415,7 +416,8 @@ validate_reuse() {
      && "$hist_dir" == "$expected_dir" ]] \
     || { echo "错误：同名工人 $NAME 没有匹配本票的既有 dispatch 身份，拒绝认领" >&2; return 1; }
   local observed
-  observed="$(qwb_pane_activity "$ag_pane" "$expected_dir" "$TASK_FILE")" || return 1
+  REUSE_ACTIVITY="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$ag_pane" --dir "$expected_dir" --task "$TASK_FILE")" || return 1
+  observed="$(printf '%s' "$REUSE_ACTIVITY" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{activity}')" || return 1
   [[ "$observed" == idle ]] || { echo "错误：本代真实活动为 ${observed}，不凭Herdr idle复用或中断" >&2; return 1; }
 }
 if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
@@ -763,7 +765,11 @@ sleep_ms() {
 
 record_worker_activity() {
   local observation
-  observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
+  # A reuse dispatch is a delivery op, not a new native start: bind its already verified incarnation.
+  observation="$REUSE_ACTIVITY"
+  if [[ -z "$observation" ]]; then
+    observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
+  fi
   # Evidence stays in the sole MD truth, tagged to this dispatch operation; unknown is not fabricated idle.
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: worker-activity op=$RUN_OP pane=$PANE evidence=$observation" >/dev/null
 }
@@ -771,6 +777,7 @@ record_worker_activity() {
 case "$LAUNCH_MODE" in
   herdr)
     if [[ -n "$REUSE_PANE" ]]; then
+      record_worker_activity
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
       prompt_rc=0
       prompt_out="$(herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}" 2>&1)" || prompt_rc=$?
