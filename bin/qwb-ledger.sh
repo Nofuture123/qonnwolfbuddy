@@ -202,7 +202,12 @@ if (-e "$dir/.controller.lock/owner") {
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
 sub native_reply {
-  open my $probe,'-|','herdr',@_ or fail('原生身份探针无法启动');
+  # Herdr失败JSON在stderr；合并后严格解析整份回复，混入诊断/第二份JSON仍拒绝。
+  my $pid=open(my $probe,'-|'); defined($pid) or fail('原生身份探针无法启动');
+  if (!$pid) {
+    open STDERR,'>&',STDOUT or exit 255;
+    exec('herdr',@_) or exit 255;
+  }
   my $s=do { local $/; <$probe> } // ''; close $probe; my $rc=$?;
   my $j=strict_json($s); fail('原生身份回复不是对象') unless ref($j) eq 'HASH';
   return ($j,$rc);
