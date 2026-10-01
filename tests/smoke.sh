@@ -253,34 +253,86 @@ printf '# F4\nstate: running\n' > "$F4F"
   && ok "投递失败时 --once 退出码 0" || bad "投递失败时 --once 非 0"
 grep -q '^wake:' "$F4F" && bad "投递失败仍写了 wake 行" || ok "投递失败未写 wake 行"
 
-# —— 假时钟装置（QWB_NOW_MS_CMD / QWB_SLEEP_CMD 注入）：预算断言不再真 sleep ——
-# now.sh 每次调用 +STEP；sleep.sh 记参数不真睡，满 N 次杀掉 wake.sh 截断循环；看门狗防死循环。
-FKN="$TMP/fake-now"; FKS="$TMP/fake-sleep.log"
+# —— §12 独立单票夹具：前组较新的 dispatch 不得抢选预算测试的 pane ——
+FCT="$TMP/fakeclock"; mkdir -p "$FCT/tasks" "$FCT/qwbuddy" "$FCT/stubbin" "$FCT/herdr-dyn"
+cp -R "$TMP/qwbuddy/bin" "$FCT/qwbuddy/"
+cp "$TMP/qwbuddy/config.sh" "$FCT/qwbuddy/config.sh"
+FCLOG="$FCT/herdr-calls.log"
+sed "s|$STUBLOG|$FCLOG|g" "$STUB/herdr" > "$FCT/stubbin/herdr"
+chmod +x "$FCT/stubbin/herdr"
+FKN="$FCT/fake-now"; FKS="$FCT/fake-sleep.log"
+# now.sh 每次调用 +STEP；sleep.sh 不真睡，满 N 次使公开 wake 入口自停。
 mk_fakeclock() { # $1=STEP $2=截断次数
   echo 0 > "$FKN"; : > "$FKS"
-  cat > "$TMP/now.sh" <<EOF
+  cat > "$FCT/now.sh" <<EOF
 #!/usr/bin/env bash
 cur="\$(( \$(cat "$FKN") + $1 ))"; echo "\$cur" > "$FKN"; echo "\$cur"
 EOF
-  cat > "$TMP/sleep.sh" <<EOF
+  cat > "$FCT/sleep.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$1" >> "$FKS"
 [[ "\$(wc -l < "$FKS" | tr -d ' ')" -ge $2 ]] && kill "\$PPID" 2>/dev/null
 exit 0
 EOF
-  chmod +x "$TMP/now.sh" "$TMP/sleep.sh"
+  chmod +x "$FCT/now.sh" "$FCT/sleep.sh"
+}
+# 每次仅创建自己的进程组；看门狗明确失败，TERM 后排空，不留后台 sleep/值守。
+fc_watchdog() {
+  rm -f "$FCT/watchdog-fired"
+  ( sleep 15 & timer=$!
+    trap 'kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; exit 0' TERM
+    wait "$timer"
+    : > "$FCT/watchdog-fired"
+    kill -TERM -- "-$WPID" 2>/dev/null || kill "$WPID" 2>/dev/null
+  ) & WD=$!
+}
+fc_stop_watchdog() {
+  [[ -n "$WD" ]] || return 0
+  kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
+  WD=""
+}
+fc_ready() {
+  while ! grep -q '^herdr agent wait ' "$FCLOG" 2>/dev/null; do
+    if [[ -f "$FCT/watchdog-fired" ]] || ! kill -0 "$WPID" 2>/dev/null; then
+      bad "§12 冷态启动未到首个 wait（有界握手失败）"
+      return 1
+    fi
+    sleep 0.02
+  done
+}
+fc_finish() {
+  wait "$WPID" 2>/dev/null; FC_RC=$?
+  fc_stop_watchdog
+  kill -TERM -- "-$WPID" 2>/dev/null || true
+  if [[ -f "$FCT/watchdog-fired" ]]; then
+    bad "§12 看门狗15秒触发（rc=$FC_RC，now=$(cat "$FKN")，sleep=$(wc -l < "$FKS" | tr -d ' ')）"
+    cat "$FCT/runtime.log"
+  elif [[ "$FC_RC" != 143 ]]; then
+    bad "§12 公开入口异常退出（rc=$FC_RC，非夹具TERM自停）"
+    cat "$FCT/runtime.log"
+  else
+    ok "§12 夹具TERM自停/排空（rc=$FC_RC），看门狗未触发"
+  fi
+}
+fc_pane_ok() {
+  if awk '/^herdr agent wait / { n++; if ($4 != "wtest:p9") wrong=1 } END { exit(!n || wrong) }' "$FCLOG"; then
+    ok "§12 实际 wait 目标为单票 wtest:p9"
+  else
+    bad "§12 wait 未到单票目标（前组污染/目标错误）"
+  fi
 }
 run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外环境变量
-  ( cd "$TMP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$TMP/now.sh" QWB_SLEEP_CMD="$TMP/sleep.sh" \
-      QWB_FAKE_NOW_FILE="$FKN" HERDR_FAIL="${HERDR_FAIL:-}" HERDR_WAIT_BUMP_MS="${HERDR_WAIT_BUMP_MS:-0}" \
-      exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
-  WPID=$!
-  ( sleep 15; kill "$WPID" 2>/dev/null ) & WD=$!
-  wait "$WPID" 2>/dev/null || true
-  kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
+  ( cd "${1:-$FCT}" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
+      QWB_NOW_MS_CMD="$FCT/now.sh" QWB_SLEEP_CMD="$FCT/sleep.sh" QWB_FAKE_NOW_FILE="$FKN" \
+      HERDR_FAIL="${HERDR_FAIL:-}" HERDR_WAIT_BUMP_MS="${HERDR_WAIT_BUMP_MS:-0}" \
+      exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
+        bash "$FCT/qwbuddy/bin/qwb-wake.sh" --pane wtest:p9 --interval 1000 ) >"$FCT/runtime.log" 2>&1 &
+  WPID=$!; fc_watchdog
+  if [[ "${1:-$FCT}" == "$FCT" ]]; then fc_ready || true; fi
+  fc_finish
 }
-# 等待预算需要一个带 dispatch: pane 的未结项
-FCF="$TMP/tasks/2099-01-20-fakeclock.md"
+# 等待预算需要一个带 dispatch: pane 的未结项，只有本票参与。
+FCF="$FCT/tasks/2099-01-20-fakeclock.md"
 printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
 all_eq() { # 全部行 == $1 且非空
   local want="$1" l
@@ -290,9 +342,10 @@ all_eq() { # 全部行 == $1 且非空
 
 echo "== 12. F2 回归（假时钟）：agent wait 失败 → 每轮恰 1 次 wait + 补睡满 1×interval，无忙循环 =="
 mk_fakeclock 250 3
-: > "$STUBLOG"
+: > "$FCLOG"
 HERDR_FAIL=wait run_wake_fakeclock
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+fc_pane_ok
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
 [[ "$nsl" == "3" && "$nwt" == "3" ]] \
   && ok "3 轮 = 3 次 agent wait + 3 次补睡（每轮恰一次）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
 all_eq 750 && ok "每轮补睡 750ms（interval 1000 − wait 已耗 250 = 恰 1×interval）" \
@@ -300,9 +353,10 @@ all_eq 750 && ok "每轮补睡 750ms（interval 1000 − wait 已耗 250 = 恰 1
 
 echo "== 12b. G2 回归（假时钟）：agent wait 耗时计入预算，超时路径不重复 sleep =="
 mk_fakeclock 50 3
-: > "$STUBLOG"
+: > "$FCLOG"
 HERDR_WAIT_BUMP_MS=600 run_wake_fakeclock   # wait 烧掉 600ms → dt=650 → 应补睡 350，旧实现会再睡 1000
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+fc_pane_ok
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
 [[ "$nsl" == "3" && "$nwt" == "3" ]] \
   && ok "3 轮 = 3 次 wait + 3 次补睡" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
 all_eq 350 && ok "wait 耗 650ms 后只补睡 350ms（已耗计入预算；旧实现会睡满 1000）" \
@@ -312,9 +366,10 @@ grep -qx '1000' "$FKS" && bad "出现整睡 1000——超时路径仍重复 slee
 
 echo "== 12c. H2 回归（假时钟）：agent wait 立即成功也计入预算，无忙循环 =="
 mk_fakeclock 1 3                          # 每次读钟仅 +1ms → wait 视为瞬时 → 应补睡 999
-: > "$STUBLOG"
+: > "$FCLOG"
 run_wake_fakeclock
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$STUBLOG" || true)"
+fc_pane_ok
+nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
 [[ "$nsl" == "3" && "$nwt" == "3" ]] \
   && ok "3 轮 = 3 次 wait + 3 次补睡（不真睡也不忙循环）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
 all_eq 999 && ok "瞬时 wait 每轮补睡 999ms ≈1×interval（修复前实测 4.9 秒 91 轮）" \
@@ -325,24 +380,31 @@ NP="$TMP/nopane"; mkdir -p "$NP/tasks" "$NP/qwbuddy"
 printf '# np\nstate: running\n' > "$NP/tasks/2099-01-21-np.md"
 cp "$TMP/qwbuddy/config.sh" "$NP/qwbuddy/config.sh"
 mk_fakeclock 100 2
-( cd "$NP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$TMP/now.sh" QWB_SLEEP_CMD="$TMP/sleep.sh" \
-    exec bash "$TMP/qwbuddy/bin/qwb-wake.sh" --pane wtest:p9 --interval 1000 ) >/dev/null 2>&1 &
-WPID=$!
-( sleep 15; kill "$WPID" 2>/dev/null ) & WD=$!
-wait "$WPID" 2>/dev/null || true
-kill "$WD" 2>/dev/null; wait "$WD" 2>/dev/null || true
+: > "$FCLOG"
+run_wake_fakeclock "$NP"
+if grep -q '^herdr agent wait ' "$FCLOG"; then bad "无 dispatch 夹具误选其他组 pane"; else ok "无 dispatch 夹具没有 agent wait"; fi
 all_eq 1000 && ok "无可用 pane 时每轮整睡 1000ms（=1×interval 退化等待）" \
   || { bad "整睡值不对（应全 1000）:"; cat "$FKS"; }
 
 echo "== 12e. 真时钟轻量冒烟：真跑一轮 =="
-: > "$STUBLOG"
-( cd "$TMP" && PATH="$STUB:$PATH" exec bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 600 ) >/dev/null 2>&1 &
-WPID=$!
-sleep 1.3
-kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null || true
-n="$(grep -c 'agent wait' "$STUBLOG" || true)"
+# 重新构造无 wake 历史的冷态单票；启动就绪与节奏窗口分开，不改生产启动SLA。
+printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
+: > "$FCLOG"
+( cd "$FCT" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
+    exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
+      bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 600 ) >"$FCT/runtime.log" 2>&1 &
+WPID=$!; fc_watchdog
+if fc_ready; then
+  fc_stop_watchdog
+  # 首个 wait 是就绪窗口的起点，仍计入原1≤n≤4；不清日志制造额外必需wait。
+  sleep 1.3
+fi
+kill -TERM -- "-$WPID" 2>/dev/null || true
+fc_finish
+fc_pane_ok
+n="$(grep -c 'agent wait' "$FCLOG" || true)"
 [[ "$n" -ge 1 && "$n" -le 4 ]] \
-  && ok "1.3 秒内 ${n} 次 agent wait（真时钟真跑，节奏正常）" || bad "1.3 秒内 ${n} 次 agent wait（异常）"
+  && ok "就绪后1.3 秒内 ${n} 次 agent wait（真时钟真跑，节奏正常）" || bad "就绪后1.3 秒内 ${n} 次 agent wait（异常）"
 
 echo "== 13. F1 回归：主控锁 =="
 # 残留锁自动回收落地后，「锁被占用而拒绝」必须用活锁主构造：stub + dyn 片场让锁主 pane 真实存在；
