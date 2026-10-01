@@ -22,8 +22,8 @@ perl -MCwd=realpath -MFile::Temp=tempdir -e '
     ["$t/missing","$t/missing",0,"both missing"]
   ) {
     my ($candidate,$expected,$want,$label)=@$case;
-    my $script=realpath($candidate);
-    my $same=defined($script) && $script eq (realpath($expected) // "");
+    my $script=-f $candidate ? realpath($candidate) : undef;
+    my $same=defined($script) && -f $expected && $script eq (realpath($expected) // "");
     die "FAIL pure path: $label\n" unless !!$same == $want;
     print "PASS pure path: $label\n";
   }
