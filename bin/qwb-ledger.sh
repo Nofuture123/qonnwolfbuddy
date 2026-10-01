@@ -10,6 +10,8 @@ gate-review: op JSON（context/implementer/reviewer/standards/spec/covered/findi
 gate-verdict: op accepted，或op rework 根因 新证据；accepted仍待land/cleanup，同根因3轮无新证据转技术重诊。
 gate-candidate: op 新attempt 原候选目录 base；gate-receipt: op 候选外JSON，由qwb-test生成，不自动验收。
 gate-dispatch: op child review|rework 主控已授权工人；长门在独立命令/op下运行，不持writer锁等待。
+ci-assign: 现主控授权CI actor + qwb-ci-source-v1 JSON（当前候选/命令/环境/限定本地日志）。
+ci-report: 按需CI本人提交qwb-ci-diagnosis-v1 JSON；有限提案回原票03交接，不执行正文或替代04收据。
 handoff-* 为03兼容扩展，请用 qwb-send.sh --help 查看投递/received/accept/activity/prepared/handled/reconcile；仅合法主控通道，不迁旧票。
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
@@ -45,7 +47,10 @@ IDENTITY='{}'
 if [[ "$CMD" != read && "$CMD" != metrics ]]; then
   # shellcheck source=/dev/null
   . "$BINDIR/qwb-lib.sh"
-  if [[ "$CMD" == gate-assign ]]; then
+  if [[ "$CMD" == ci-assign || "$CMD" == ci-report ]]; then
+    CI_ACTOR=""; [[ "$CMD" != ci-assign ]] || CI_ACTOR="${1:-}"
+    IDENTITY="$(qwb_gate_identity "$ROOT" "$CI_ACTOR" CI)" || exit 1
+  elif [[ "$CMD" == gate-assign ]]; then
     IDENTITY="$(qwb_gate_identity "$ROOT" "${1:-}")" || exit 1
   elif [[ -d "$ROOT/qwbuddy/.roles" ]]; then
     IDENTITY="$(qwb_gate_identity "$ROOT")" || exit 1
@@ -144,6 +149,25 @@ sub keys_only {
 }
 sub id_ok { defined($_[0]) && !ref($_[0]) && $_[0] =~ /\A[A-Za-z0-9_.:-]{1,160}\z/ }
 sub string_ok { defined($_[0]) && !ref($_[0]) && $_[0] !~ /[\x00-\x1f]/ }
+sub ci_source_fields { qw(repo source_run_id attempt source_head_sha candidate_attempt gate command_sha256 environment_sha256 log_sha256) }
+sub ci_key { my $s=shift; return 'ci:'.sha256_hex($json->encode([@{$s}{qw(repo source_run_id attempt source_head_sha)}])) }
+sub ci_source_ok {
+  my $s=shift;
+  keys_only($s,'schema',ci_source_fields(),qw(log_ref source_kind));
+  fail('CI来源版本/身份/路径非法') unless $s->{schema} eq 'qwb-ci-source-v1' && $s->{repo} eq text($root) && id_ok($s->{source_run_id}) && id_ok($s->{attempt}) && id_ok($s->{candidate_attempt}) && $s->{gate}=~/\A(fast|full)\z/ && string_ok($s->{log_ref}) && $s->{log_ref}=~m{\A/} && $s->{source_kind}=~/\A(fixture|downloaded-receipt)\z/;
+  fail('CI来源摘要非法') unless $s->{source_head_sha}=~/\A[0-9a-f]{40,64}\z/ && !grep { !defined($s->{$_}) || ref($s->{$_}) || $s->{$_}!~/\A[0-9a-f]{64}\z/ } qw(command_sha256 environment_sha256 log_sha256);
+}
+sub ci_report_ok {
+  my ($r,$s)=@_;
+  keys_only($r,'schema',ci_source_fields(),qw(classification evidence hypotheses next_step tokens));
+  fail('CI提案版本/来源不匹配') unless $r->{schema} eq 'qwb-ci-diagnosis-v1' && !grep { !string_ok($r->{$_}) || $r->{$_} ne $s->{$_} } ci_source_fields();
+  fail('CI提案分类/成本非法') unless $r->{classification}=~/\A(superseded|timeout|failure|retry-green)\z/ && defined($r->{tokens}) && !ref($r->{tokens}) && $r->{tokens}=~/\A(unknown|[0-9]+)\z/;
+  for my $key (qw(evidence hypotheses)) {
+    fail('CI依据/假设非法') unless ref($r->{$key}) eq 'ARRAY' && @{$r->{$key}}<=16 && ($key ne 'evidence' || @{$r->{$key}});
+    fail('CI依据/假设文本非法') if grep { !string_ok($_) || $_ eq '' || length(encode('UTF-8',$_))>4096 } @{$r->{$key}};
+  }
+  fail('CI最小下一步非法') unless string_ok($r->{next_step}) && $r->{next_step} ne '' && length(encode('UTF-8',$r->{next_step}))<=4096;
+}
 sub state_of { my ($s)=$_[0]=~/^state:[ \t]*(\S+)[ \t]*$/m; return $s // '' }
 sub fp_of { my ($s)=$_[0]=~/^scenarios-fp:[ \t]*([0-9a-f]{40})[ \t]*$/m; return $s // '' }
 sub scenario {
@@ -160,7 +184,7 @@ sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : ());
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : (), exists($data->{ci}) ? 'ci' : ());
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -201,6 +225,20 @@ sub validate {
     for my $p (values %{$b->{worker_profiles}}) { keys_only($p,qw(model provider effort)); fail('gate型号配置非法') if grep { !string_ok($_) || $_ eq '' } values %$p }
     for my $id (keys %{$g->{dispatches}}) { fail('gate child op非法') unless exists($data->{ops}{$id}) && $g->{dispatches}{$id}=~/\A(review|rework)\z/ }
     fail('gate verdict非法') unless $data->{gate}{verdict}=~/\A(pending|rework|rediagnose|accepted)\z/;
+  }
+  if (exists $data->{ci}) {
+    keys_only($data->{ci},qw(requests reports));
+    fail('CI集合非法') unless ref($data->{ci}{requests}) eq 'HASH' && ref($data->{ci}{reports}) eq 'HASH';
+    for my $key (keys %{$data->{ci}{requests}}) {
+      my $q=$data->{ci}{requests}{$key}; keys_only($q,qw(identity source context));
+      keys_only($q->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+      ci_source_ok($q->{source}); fail('CI关联/上下文非法') unless $key eq ci_key($q->{source}) && ref($q->{context}) eq 'HASH';
+    }
+    for my $key (keys %{$data->{ci}{reports}}) {
+      my $q=$data->{ci}{requests}{$key} // fail('CI报告缺授权来源'); my $r=$data->{ci}{reports}{$key};
+      keys_only($r,qw(report sha256 ref event_id)); ci_report_ok($r->{report},$q->{source});
+      fail('CI报告来源/交接非法') unless $r->{sha256}=~/\A[0-9a-f]{64}\z/ && string_ok($r->{ref}) && $r->{ref}=~m{\A/} && exists($data->{handoffs}{$r->{event_id}}) && $data->{handoffs}{$r->{event_id}}{corr} eq $key && $data->{handoffs}{$r->{event_id}}{payload} eq text($json->encode($r->{report}));
+    }
   }
   keys_only($data->{migration},qw(task_sha256 confirm installed));
   fail('migration摘要非法') unless $data->{migration}{task_sha256}=~/\A[0-9a-f]{64}\z/;
@@ -294,8 +332,9 @@ if (!$data && $legacy && $cmd ne 'migrate') {
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
+my $ci_actor=$cmd eq 'ci-report' && $identity->{pane} && $identity->{pane} eq $actor && $identity->{owner_fp} eq sha256_hex($owner_raw);
 my $gate_allowed=$cmd =~ /\A(claim|release|check|dispatch|not-sent|gate-context|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
-fail('角色未授权（仅现有主控/已绑定工人/本代获授权门禁）') unless $controller || $watcher || ($gate && $gate_allowed) || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
+fail('角色未授权（仅现有主控/已绑定工人/本代获授权门禁）') unless $controller || $watcher || $ci_actor || ($gate && $gate_allowed) || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
 exit 0 if $cmd eq 'check';
 if ($wake_cmd) {
   fail('wake参数非法') unless @args==3 && string_ok($args[0]) && $args[0] ne '' && $args[1]=~/\A(running|blocked|needs-decision)\z/ && $args[2]=~/\A[0-9a-f]{40}\z/;
@@ -347,6 +386,14 @@ sub capture {
 sub json_file {
   my $fh=safe_open(encode('UTF-8',$_[0]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
   return (strict_json($s),sha256_hex($s));
+}
+sub ci_bytes {
+  my $path=encode('UTF-8',shift);
+  fail('CI本地来源路径须绝对且无符号链接重定向') unless $path=~m{\A/} && (realpath($path) // '') eq $path;
+  my $fh=safe_open($path,O_RDONLY); my $s='';
+  my $n=read($fh,$s,65537); close $fh;
+  fail('CI来源为空/过大/读取失败（最多65536字节）') unless defined($n) && $n>0 && $n<=65536;
+  return $s;
 }
 sub receipt_interval_ok {
   my $r=shift;
@@ -417,6 +464,35 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
     $c->{contexts}=\%contexts;
   }
   print $json->encode($c),"\n"; exit;
+} elsif ($cmd eq 'ci-assign') {
+  fail('CI授权仅现主控+已迁原票') unless $controller && $data && @args==2 && $identity->{actor} eq $args[0];
+  my $s=strict_json(ci_bytes($args[1])); ci_source_ok($s);
+  my $c=gate_context();
+  fail('CI来源不是当前clean候选/命令/环境') unless $c->{status} eq 'clean' && $s->{source_head_sha} eq $c->{head} && $s->{candidate_attempt} eq $c->{attempt} && exists($c->{commands}{$s->{gate}}) && $s->{command_sha256} eq $c->{commands}{$s->{gate}} && $s->{environment_sha256} eq $c->{environment_sha256};
+  fail('CI限定日志摘要损坏') unless sha256_hex(ci_bytes($s->{log_ref})) eq $s->{log_sha256};
+  my $key=ci_key($s); $data->{ci} //= {requests=>{},reports=>{}};
+  my $q={identity=>$identity,source=>$s,context=>$c};
+  if (my $old=$data->{ci}{requests}{$key}) {
+    fail('CI同来源授权冲突') unless $json->encode($old) eq $json->encode($q);
+    print "$key\n"; exit;
+  }
+  $data->{ci}{requests}{$key}=$q; $data->{gate}{verdict}='pending';
+  $pending_output=$key; $line="working: ci-request corr=$key source_run_id=$s->{source_run_id} attempt=$s->{attempt} head=$s->{source_head_sha} log_sha256=$s->{log_sha256} tokens=unknown"; append_body($line);
+} elsif ($cmd eq 'ci-report') {
+  fail('CI报告仅登记本人（主控不得冒充）') unless $ci_actor && @args==1;
+  my $raw_report=ci_bytes($args[0]); my $r=strict_json($raw_report); my $key=ci_key($r);
+  my $q=$data->{ci}{requests}{$key} // fail('CI报告缺授权来源'); ci_report_ok($r,$q->{source});
+  fail('CI报告角色/代次越权') unless $json->encode($identity) eq $json->encode($q->{identity});
+  my $c=gate_context(); fail('CI报告已过期/对象条件改变，仅可参考不能导入验收') unless $c->{status} eq 'clean' && $json->encode($c) eq $json->encode($q->{context});
+  fail('CI授权日志被改写') unless sha256_hex(ci_bytes($q->{source}{log_ref})) eq $q->{source}{log_sha256};
+  if (my $old=$data->{ci}{reports}{$key}) {
+    fail('CI同S/A/C报告冲突') unless $json->encode($old->{report}) eq $json->encode($r);
+    print "$old->{event_id}\n"; exit;
+  }
+  $event='send:'.sha256_hex(encode('UTF-8',"$key\0$r->{attempt}"));
+  $data->{ci}{reports}{$key}={report=>$r,sha256=>sha256_hex($raw_report),ref=>$args[0],event_id=>$event};
+  $handoff_return=[$key,$r->{attempt},text($json->encode($r))];
+  $line="working: ci-proposal corr=$key source_run_id=$r->{source_run_id} attempt=$r->{attempt} head=$r->{source_head_sha} classification=$r->{classification} report=$args[0] tokens=$r->{tokens} proposal-only"; append_body($line);
 } elsif ($cmd eq 'gate-receipt') {
   fail('receipt参数非法') unless @args==2; require_claim($args[0]);
   my ($r,$sha)=json_file($args[1]); keys_only($r,qw(schema before after gate command_sha256 rc started_at ended_at elapsed_seconds executor));
@@ -476,6 +552,12 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   my $g=$data->{gate}; my $c=gate_context();
   if ($verdict eq 'accepted') {
     fail('accepted参数非法') unless @args==2;
+    my $ci=$data->{ci} // {requests=>{},reports=>{}};
+    for my $key (keys %{$ci->{requests}}) {
+      my $q=$ci->{requests}{$key}; next unless $json->encode($q->{context}) eq $json->encode($c);
+      my $r=$ci->{reports}{$key};
+      fail('当前CI诊断缺证或未办理；提案不是成功收据') unless $r && $data->{handoffs}{$r->{event_id}}{handled};
+    }
     fail('dirty或无独立审核') unless $c->{status} eq 'clean' && @{$g->{reviews}};
     for my $id (keys %{$g->{dispatches}}) {
       my $status=$data->{ops}{$id}{status};
@@ -592,7 +674,7 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
     my $added=0;
     for my $e (@{$data->{events}}) {
       # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
-      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\A(?:handoff-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
       my $id=source_id($e->{event_id});
       next if exists $data->{handoffs}{$id};
       my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{line};

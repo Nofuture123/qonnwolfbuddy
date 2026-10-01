@@ -89,6 +89,12 @@ else
             my $elapsed=0; $elapsed+=$_->{receipt}{elapsed_seconds} for @{$g->{receipts}};
             print "       核证据: receipts=".scalar(@{$g->{receipts}})." reviews=".scalar(@{$g->{reviews}})." validation_seconds=$elapsed tokens=unknown\n";
           }
+          if (my $ci=$d->{ci}) {
+            for my $key (sort keys %{$ci->{requests}}) {
+              my $s=$ci->{requests}{$key}{source}; my $r=$ci->{reports}{$key};
+              print "       CI提案: corr=$key source_run_id=$s->{source_run_id} attempt=$s->{attempt} head=$s->{source_head_sha} ".($r ? "classification=$r->{report}{classification} report=$r->{ref} tokens=$r->{report}{tokens}" : "缺证 tokens=unknown")."（非成功收据）\n";
+            }
+          }
           for my $k (sort keys %{$d->{questions}}) {
             my $q=$d->{questions}{$k};
             print "       问题未结: key=$k ".($q->{answer} eq "" ? "未答" : "待恢复")."\n" if $q->{resumed} eq "";
@@ -134,7 +140,7 @@ else
 fi
 
 echo
-echo "== 常驻角色（当前活动/记录冲突）=="
+echo "== 角色（常驻/按需，当前活动/记录冲突）=="
 ROLE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-role.sh"
 if [[ -d "$PROJECT_ROOT/qwbuddy/.roles" && -f "$ROLE_BIN" ]]; then
   bash "$ROLE_BIN" status --project "$PROJECT_ROOT" || echo "角色：unknown（记录/原生查询失败，不能认闲）"
