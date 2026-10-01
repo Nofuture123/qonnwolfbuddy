@@ -220,7 +220,9 @@ if ($data && $wake_cmd && !$controller) {
   for my $p (@{$pi->{foreground_processes}}) {
     next unless ($p->{pid} // '') eq getppid() && ref($p->{argv}) eq 'ARRAY';
     my @a=@{$p->{argv}};
-    next unless @a>=2 && $a[0]=~m{(?:^|/)(?:bash|sh|zsh)\z} && $a[1] eq "$bindir/qwb-wake.sh";
+    next unless @a>=2 && $a[0]=~m{(?:^|/)(?:bash|sh|zsh)\z};
+    my $script=realpath($a[1]);
+    next unless defined($script) && $script eq (realpath("$bindir/qwb-wake.sh") // '');
     my ($project,$dest);
     for (my $i=2;$i<@a;$i++) {
       $project=$a[$i+1] if $a[$i] eq '--project';
