@@ -237,6 +237,11 @@ def obligations(d):
             claim = data.get('claim')
             associated = associated or bool(panes.intersection(data.get('workers',{})))
             if claim and (associated or claim.get('owner') in panes): found.append({'task':str(task),'kind':'claim','op_id':claim['op_id']})
+            for key, request in data.get('test_requests',{}).items():
+                if request['identity']['actor'] == d['actor']:
+                    handoff = data.get('handoffs',{}).get('source:'+request['event_id'],{})
+                    if not request['reply_sha256'] or not handoff.get('handled'):
+                        found.append({'task':str(task),'kind':'test-request','request_id':key})
             if associated:
                 for key, question in data.get('questions',{}).items():
                     if not question.get('resumed'): found.append({'task':str(task),'kind':'unresolved-question','key':key})

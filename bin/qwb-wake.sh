@@ -614,7 +614,7 @@ compose_msg() {
 # 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
 # 不创建第二watcher，不替门禁确认received/handled；ready/重诊仍交主控。
 route_gate_due() {
-  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed
+  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed request_event split remainder
   local targets=() batches=() grants=() actors=()
   dir="$(mktemp -d "${TMPDIR:-/tmp}/qwb-gate-routes.XXXXXX")" || return 3
   keep="$dir/controller"; : > "$keep"
@@ -624,17 +624,33 @@ route_gate_due() {
       data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
         my $d=decode_json(<STDIN>); my $g=$d->{gate};
-        if ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
+        my $due=decode_json(substr($ARGV[0],length("[qwb-handoff] "))); my %due=map { $_->{event_id}=>1 } @$due;
+        my ($r)=sort { $a->{event_id} cmp $b->{event_id} } grep { $_->{reply_sha256} eq "" && $due{"source:".$_->{event_id}} } values %{$d->{test_requests} // {}};
+        if ($r) {
+          print "$r->{identity}{actor}\t".JSON::PP->new->canonical->encode($r->{identity})."\t$r->{identity}{pane}\tsource:$r->{event_id}";
+        } elsif ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
           print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}";
         }
-      ')"
+      ' "$last")"
     fi
     if [[ -n "$info" ]]; then
-      IFS=$'\t' read -r actor grant target <<< "$info"
+      IFS=$'\t' read -r actor grant target request_event <<< "$info"
+      if [[ -n "$request_event" ]]; then
+        split="$(perl -MJSON::PP -e '
+          my ($raw,$id)=@ARGV; my $p=decode_json(substr($raw,length("[qwb-handoff] "))); my $j=JSON::PP->new->canonical->utf8;
+          print $j->encode([grep { $_->{event_id} eq $id } @$p]),"\t",$j->encode([grep { $_->{event_id} ne $id } @$p]);
+        ' "$last" "$request_event")"
+        IFS=$'\t' read -r split remainder <<< "$split"
+        if [[ "$remainder" != '[]' ]]; then
+          printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "[qwb-handoff] $remainder" "$lostpane" >> "$keep"
+        fi
+        last="[qwb-handoff] $split"
+        fp="$(printf '%s' "$split" | shasum | cut -d' ' -f1)"
+      fi
       idx=-1
       for i in "${!targets[@]}"; do [[ "${targets[i]}" != "$target" ]] || idx="$i"; done
       if (( idx < 0 )); then
-        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor")" || proof='{}'
+        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor" '门禁|测试体系')" || proof='{}'
         proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
         if [[ "$proof" == "$grant" ]]; then
           idx="${#targets[@]}"; targets+=("$target"); grants+=("$grant"); actors+=("$actor"); batches+=("$dir/$idx")
@@ -650,7 +666,7 @@ route_gate_due() {
   done < "$duef"
   for i in "${!targets[@]}"; do
     # 投递前再核代次；失效只交主控，不把旧pane/session当新实例。
-    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}")" || proof='{}'
+    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}" '门禁|测试体系')" || proof='{}'
     proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
     if [[ "$proof" != "${grants[i]}" ]]; then
       cat "${batches[i]}" >> "$keep"; continue
@@ -662,7 +678,7 @@ route_gate_due() {
     done < "${batches[i]}"
     if (( failed )); then rm -rf "$dir"; return 3; fi
     compose_msg "${batches[i]}"
-    if herdr pane run "${targets[i]}" "门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"; then
+    if herdr pane run "${targets[i]}" "常驻角色看账本：${DUE_N} 张原票有成果/关联request →${DUE_MSG}。只处理本人绑定请求或门禁claim；测试给受限建议不替作者自证，门禁独自验收，不改场景或自动合并。"; then
       while IFS=$'\t' read -r f st fp last lostpane; do
         qwb_ledger "$PROJECT_ROOT" "$f" wake "$controller" "$st" "$fp" >/dev/null || { rm -rf "$dir"; return 3; }
       done < "${batches[i]}"

@@ -47,6 +47,8 @@ Then  <可见结果及不得发生的副作用>
 
 ## 3. 验收门
 
+复用项目版本化测试策略时，头部只引用 `test-policy: <qwbuddy/test-policy/版本.md 的 policy_rev>`、`risk: normal|high`；gate-assign 的 policy 必须相同。已有覆盖普通/高风险票零额外test会签；新行为/真实缺口/复杂非绿才由主控或门禁按 `roles/测试体系.md` 请求一次受限补充，授权作者写测试、gate独自验收。条件匹配的按票收据自动复用并输出依据；需要真实重测显式 `--rerun`，现有full要求不下降。旧策略版本保留，票不复制策略正文。
+
 - 快门（改一行跑它）：`<命令，如 bash bin/qwb-test.sh fast>`
 - 全门（合并前跑）：`<命令，如 bash bin/qwb-test.sh full>`
 - <其他本项目验收命令>

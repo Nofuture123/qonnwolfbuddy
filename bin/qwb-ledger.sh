@@ -10,6 +10,9 @@ gate-review: op JSON（context/implementer/reviewer/standards/spec/covered/findi
 gate-verdict: op accepted，或op rework 根因 新证据；accepted仍待land/cleanup，同根因3轮无新证据转技术重诊。
 gate-candidate: op 新attempt 原候选目录 base；gate-receipt: op 候选外JSON，由qwb-test生成，不自动验收。
 gate-dispatch: op child review|rework 主控已授权工人；长门在独立命令/op下运行，不持writer锁等待。
+gate-reuse: op fast|full；只读匹配当前可信成功收据，不自动验收。票test-policy引用qwbuddy/test-policy/<版本>.md。
+test-request: op request-id 测试actor new-behavior|policy-gap|complex-failure|rediagnose 场景；同spec只咨询一次。
+test-reply: request-id JSON（task/request_id/context/validation/tests）；02本代测试身份、03接手/prepared后受限建议，不能验收。
 handoff-* 为03兼容扩展，请用 qwb-send.sh --help 查看投递/received/accept/activity/prepared/handled/reconcile；仅合法主控通道，不迁旧票。
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
@@ -47,11 +50,19 @@ if [[ "$CMD" != read && "$CMD" != metrics ]]; then
   . "$BINDIR/qwb-lib.sh"
   if [[ "$CMD" == gate-assign ]]; then
     IDENTITY="$(qwb_gate_identity "$ROOT" "${1:-}")" || exit 1
+  elif [[ "$CMD" == test-request ]]; then
+    IDENTITY="$(qwb_gate_identity "$ROOT")" || exit 1
+  elif [[ "$CMD" == test-reply || "$CMD" == handoff-* ]]; then
+    IDENTITY="$(qwb_gate_identity "$ROOT" '' '门禁|测试体系')" || exit 1
   elif [[ -d "$ROOT/qwbuddy/.roles" ]]; then
     IDENTITY="$(qwb_gate_identity "$ROOT")" || exit 1
   fi
 fi
-exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$@" <<'PERL'
+TEST_IDENTITY='{}'
+if [[ "$CMD" == test-request ]]; then
+  TEST_IDENTITY="$(qwb_gate_identity "$ROOT" "${3:-}" '测试体系')" || exit 1
+fi
+exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$@" <<'PERL'
 use strict;
 use warnings;
 use utf8;
@@ -67,7 +78,7 @@ use IO::Handle;
 use Time::HiRes qw(time);
 use Errno qw(ESRCH);
 binmode STDERR, ':encoding(UTF-8)';
-my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,$identity_raw,@args)=@ARGV;
+my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,$identity_raw,$test_identity_raw,@args)=@ARGV;
 sub fail { die "账本拒绝：$_[0]\n" }
 sub text { my $v=shift; return decode('UTF-8',$v,FB_CROAK) }
 @args=map { text($_) } @args;
@@ -160,7 +171,7 @@ sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : ());
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : (), exists($data->{test_requests}) ? 'test_requests' : ());
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -193,14 +204,26 @@ sub validate {
     fail('gate集合非法') unless ref($g->{receipts}) eq 'ARRAY' && ref($g->{reviews}) eq 'ARRAY' && ref($g->{findings}) eq 'HASH' && ref($g->{dispatches}) eq 'HASH' && ref($g->{rounds}) eq 'ARRAY';
     keys_only($g->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
     fail('gate身份非法') unless id_ok($g->{identity}{actor}) && string_ok($g->{identity}{pane}) && $g->{identity}{pane} ne '' && $g->{identity}{incarnation}=~/\A[1-9][0-9]*\z/ && $g->{identity}{owner_fp}=~/\A[0-9a-f]{64}\z/;
-    my $b=$g->{binding}; keys_only($b,qw(candidate base attempt policy environment required workers spec_rev scenarios_fp spec_sha256 head tree workers_sha256 worker_profiles));
+    my $b=$g->{binding}; keys_only($b,qw(candidate base attempt policy environment required workers spec_rev scenarios_fp spec_sha256 head tree workers_sha256 worker_profiles), exists($b->{test_policy_sha256}) ? 'test_policy_sha256' : ());
     fail('gate绑定非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && $b->{candidate}=~m{\A/} && $b->{environment}=~m{\A/} && $b->{spec_rev}=~/\A[0-9]+\z/ && $b->{scenarios_fp}=~/\A[0-9a-f]{40}\z/ && $b->{spec_sha256}=~/\A[0-9a-f]{64}\z/ && ref($b->{required}) eq 'HASH' && exists($b->{required}{full});
+    fail('gate策略摘要非法') if exists($b->{test_policy_sha256}) && $b->{test_policy_sha256}!~/\A[0-9a-f]{64}\z/;
     fail('gate候选OID非法') for grep { !defined($_) || !/\A[0-9a-f]{40,64}\z/ } @{$b}{qw(base head tree)};
     for my $name (keys %{$b->{required}}) { fail('gate场景映射非法') unless $name=~/\A(fast|full)\z/ && ref($b->{required}{$name}) eq 'ARRAY' && @{$b->{required}{$name}} }
     keys_only($b->{workers},qw(review rework)); keys_only($b->{worker_profiles},qw(review rework));
     for my $p (values %{$b->{worker_profiles}}) { keys_only($p,qw(model provider effort)); fail('gate型号配置非法') if grep { !string_ok($_) || $_ eq '' } values %$p }
     for my $id (keys %{$g->{dispatches}}) { fail('gate child op非法') unless exists($data->{ops}{$id}) && $g->{dispatches}{$id}=~/\A(review|rework)\z/ }
     fail('gate verdict非法') unless $data->{gate}{verdict}=~/\A(pending|rework|rediagnose|accepted)\z/;
+  }
+  if (exists $data->{test_requests}) {
+    fail('test_requests非法') unless ref($data->{test_requests}) eq 'HASH';
+    for my $id (keys %{$data->{test_requests}}) {
+      my $r=$data->{test_requests}{$id};
+      keys_only($r,qw(event_id identity reason scenario context reply reply_sha256));
+      keys_only($r->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+      fail('test请求非法') unless id_ok($id) && $seen{$r->{event_id}} && $r->{reason}=~/\A(new-behavior|policy-gap|complex-failure|rediagnose)\z/ && string_ok($r->{scenario}) && ref($r->{context}) eq 'HASH' && ref($r->{reply}) eq 'HASH' && defined($r->{reply_sha256}) && $r->{reply_sha256}=~/\A(?:[0-9a-f]{64})?\z/;
+      fail('test身份非法') unless id_ok($r->{identity}{actor}) && string_ok($r->{identity}{pane}) && $r->{identity}{pane} ne '' && $r->{identity}{incarnation}=~/\A[1-9][0-9]*\z/ && $r->{identity}{owner_fp}=~/\A[0-9a-f]{64}\z/;
+      keys_only($r->{reply},qw(task request_id context validation tests)) if $r->{reply_sha256} ne '';
+    }
   }
   keys_only($data->{migration},qw(task_sha256 confirm installed));
   fail('migration摘要非法') unless $data->{migration}{task_sha256}=~/\A[0-9a-f]{64}\z/;
@@ -250,6 +273,7 @@ if (-e "$dir/.controller.lock/owner") {
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
 my $identity=strict_json($identity_raw);
+my $test=$data && $identity->{pane} && grep { $json->encode($_->{identity}) eq $json->encode($identity) && $identity->{pane} eq $actor && $identity->{owner_fp} eq sha256_hex($owner_raw) } values %{$data->{test_requests} // {}};
 my $gate=$data && $data->{gate} && $identity->{pane} && $identity->{pane} eq $actor && $json->encode($identity) eq $json->encode($data->{gate}{identity}) && $identity->{owner_fp} eq sha256_hex($owner_raw);
 sub native_reply {
   # Herdr失败JSON在stderr；合并后严格解析整份回复，混入诊断/第二份JSON仍拒绝。
@@ -294,8 +318,8 @@ if (!$data && $legacy && $cmd ne 'migrate') {
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
-my $gate_allowed=$cmd =~ /\A(claim|release|check|dispatch|not-sent|gate-context|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
-fail('角色未授权（仅现有主控/已绑定工人/本代获授权门禁）') unless $controller || $watcher || ($gate && $gate_allowed) || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
+my $gate_allowed=$cmd =~ /\A(claim|release|check|dispatch|not-sent|gate-context|gate-reuse|test-request|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
+fail('角色未授权（仅现有主控/已绑定工人/本代获授权门禁）') unless $controller || $watcher || ($test && $cmd=~/\A(test-reply|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/) || ($gate && $gate_allowed) || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate');
 exit 0 if $cmd eq 'check';
 if ($wake_cmd) {
   fail('wake参数非法') unless @args==3 && string_ok($args[0]) && $args[0] ne '' && $args[1]=~/\A(running|blocked|needs-decision)\z/ && $args[2]=~/\A[0-9a-f]{40}\z/;
@@ -353,6 +377,29 @@ sub receipt_interval_ok {
   return 0 if grep { !defined($r->{$_}) || ref($r->{$_}) || $r->{$_}!~/\A[0-9]+\z/ } qw(started_at ended_at elapsed_seconds);
   return $r->{ended_at}>=$r->{started_at} && $r->{elapsed_seconds}==$r->{ended_at}-$r->{started_at};
 }
+sub test_policy {
+  my $rev=shift;
+  fail('策略版本非法') unless $rev=~/\A[A-Za-z0-9_-]{1,80}\z/;
+  my $path="$root/qwbuddy/test-policy/$rev.md";
+  fail('策略目录非法') unless -d dirname($path) && !-l dirname($path) && realpath(dirname($path)) eq dirname($path);
+  my $fh=safe_open($path,O_RDONLY); my $raw=do { local $/; <$fh> }; close $fh;
+  my $s=text($raw);
+  my %expected=(schema=>'qwb-test-policy-v1',policy_rev=>$rev,risks=>'normal high','required-gates'=>'full');
+  for my $key (keys %expected) {
+    my @values=$s=~/^\Q$key\E:[ \t]*(.*)$/mg;
+    fail('策略契约重复/非法/降低full') unless @values==1 && $values[0] eq $expected{$key};
+  }
+  return sha256_hex($raw);
+}
+sub reusable_receipts {
+  my ($c,$name)=@_;
+  fail('门未授权') unless exists($c->{required}{$name});
+  return () unless $c->{status} eq 'clean';
+  my @matching=grep { $_->{receipt}{gate} eq $name && $json->encode($_->{receipt}{before}) eq $json->encode($c) && $json->encode($_->{receipt}{after}) eq $json->encode($c) } @{$data->{gate}{receipts}};
+  return () if grep { !receipt_interval_ok($_->{receipt}) } @matching;
+  my @failed=grep { $_->{receipt}{rc}!=0 } @matching;
+  return grep { my $r=$_->{receipt}; $r->{rc}==0 && !grep { $r->{started_at}<=$_->{receipt}{ended_at} } @failed } @matching;
+}
 sub gate_context {
   my $observe=shift // 0;
   my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
@@ -392,9 +439,50 @@ sub gate_context {
   fail('候选已变但未登记新attempt') unless $observe || ($head eq $b->{head} && $tree eq $b->{tree});
   my $dirty=capture('git','-C',$c,'status','--porcelain=v1','--untracked-files=all');
   capture('git','-C',$c,'merge-base','--is-ancestor',$b->{base},$head);
-  return {task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
+  my %policy;
+  if (exists $b->{test_policy_sha256}) {
+    my @refs=$body=~/^test-policy:[ \t]*(\S+)[ \t]*$/mg;
+    fail('票策略引用变化') unless @refs==1 && $refs[0] eq $b->{policy};
+    $policy{test_policy_sha256}=test_policy($b->{policy});
+    fail('策略内容已变；保留旧版，显式修订后重授权') unless $observe || $policy{test_policy_sha256} eq $b->{test_policy_sha256};
+  }
+  return {%policy,task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
 }
-if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
+if ($cmd eq 'test-request') {
+  fail('请求参数非法') unless @args==5 && id_ok($args[1]); require_claim($args[0]);
+  my ($idop,$id,$recipient,$reason,$scenario)=@args; my $c=gate_context();
+  fail('只有版本化策略的真实缺口/新行为/复杂失败/技术重诊才请求') unless exists($c->{test_policy_sha256}) && $reason=~/\A(new-behavior|policy-gap|complex-failure|rediagnose)\z/;
+  fail('重诊须同因三轮停止线') if $reason eq 'rediagnose' && $data->{gate}{verdict} ne 'rediagnose';
+  fail('场景不在原票') unless grep { $_ eq $scenario } map { @$_ } values %{$c->{required}};
+  my $ti=strict_json($test_identity_raw);
+  fail('测试负责人身份/代次未知') unless ($ti->{actor} // '') eq $recipient && $ti->{owner_fp} eq sha256_hex($owner_raw);
+  $data->{test_requests} //= {};
+  if (my $old=$data->{test_requests}{$id}) {
+    fail('请求重放内容/spec冲突') unless $old->{reason} eq $reason && $old->{scenario} eq $scenario && $json->encode($old->{identity}) eq $json->encode($ti) && $json->encode($old->{context}) eq $json->encode($c);
+    print "$old->{event_id}\n"; exit;
+  }
+  fail('同spec已有一次有效咨询；不逐票重复回签') if grep { $_->{context}{spec_sha256} eq $c->{spec_sha256} } values %{$data->{test_requests}};
+  $event='test-request:'.sha256_hex(encode('UTF-8',$id));
+  $data->{test_requests}{$id}={event_id=>$event,identity=>$ti,reason=>$reason,scenario=>$scenario,context=>$c,reply=>{},reply_sha256=>''};
+  $data->{gate}{verdict}='pending';
+  $line="working: test-request id=$id actor=$recipient reason=$reason scenario=$scenario spec=$c->{spec_rev} policy=$c->{policy}"; append_body($line);
+} elsif ($cmd eq 'test-reply') {
+  fail('reply参数非法/非测试负责人') unless @args==2 && $test;
+  my $request=$data->{test_requests}{$args[0]} // fail('请求不存在');
+  fail('不是请求绑定的本代测试负责人') unless $json->encode($request->{identity}) eq $json->encode($identity);
+  my ($reply,$sha)=json_file($args[1]); keys_only($reply,qw(task request_id context validation tests));
+  my $c=gate_context();
+  fail('回复不匹配原票/spec/对象/策略') unless $reply->{task} eq text($file) && $reply->{request_id} eq $args[0] && $json->encode($reply->{context}) eq $json->encode($request->{context}) && $json->encode($reply->{context}) eq $json->encode($c);
+  fail('只能给最小验证/受限补测建议') unless ref($reply->{validation}) eq 'ARRAY' && @{$reply->{validation}} && ref($reply->{tests}) eq 'ARRAY' && !grep { !string_ok($_) || $_ eq '' } (@{$reply->{validation}},@{$reply->{tests}});
+  my $h=$data->{handoffs}{source_id($request->{event_id})} // fail('先读03持久请求');
+  fail('先通过03接手并prepared，不能替作者自证') unless $h->{accepted} eq $actor && $h->{prepared} && $h->{owner_fp} eq sha256_hex($owner_raw);
+  if ($request->{reply_sha256} ne '') {
+    fail('有效reply不可覆盖') unless $json->encode($request->{reply}) eq $json->encode($reply);
+    print "$request->{reply_sha256}\n"; exit;
+  }
+  $request->{reply}=$reply; $request->{reply_sha256}=$sha;
+  $line="working: test-reply id=$args[0] spec=$c->{spec_rev} policy=$c->{policy} advice-only author-writes-tests gate-assesses tokens=unknown"; append_body($line);
+} elsif ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   require_claim($args[0]);
   fail('context参数非法') if $cmd eq 'gate-context' && (@args>2 || (@args==2 && $args[1] ne 'observe'));
   my $c=gate_context($cmd eq 'gate-context' && ($args[1] // '') eq 'observe');
@@ -417,6 +505,13 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
     $c->{contexts}=\%contexts;
   }
   print $json->encode($c),"\n"; exit;
+} elsif ($cmd eq 'gate-reuse') {
+  fail('reuse参数非法') unless @args==2 && $args[1]=~/\A(fast|full)\z/;
+  require_claim($args[0]); my $c=gate_context();
+  fail('旧票未显式引用版本化test-policy，不改变既有执行行为') unless exists $c->{test_policy_sha256};
+  my @r=reusable_receipts($c,$args[1]);
+  fail('无同对象/条件可信成功收据') unless @r;
+  print $json->encode({reused=>1,sha256=>$r[-1]{sha256},ref=>$r[-1]{ref},gate=>$args[1],elapsed_seconds=>$r[-1]{receipt}{elapsed_seconds},tokens=>'unknown',basis=>$c}),"\n"; exit;
 } elsif ($cmd eq 'gate-receipt') {
   fail('receipt参数非法') unless @args==2; require_claim($args[0]);
   my ($r,$sha)=json_file($args[1]); keys_only($r,qw(schema before after gate command_sha256 rc started_at ended_at elapsed_seconds executor));
@@ -476,6 +571,10 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   my $g=$data->{gate}; my $c=gate_context();
   if ($verdict eq 'accepted') {
     fail('accepted参数非法') unless @args==2;
+    for my $r (values %{$data->{test_requests} // {}}) {
+      my $h=$data->{handoffs}{source_id($r->{event_id})};
+      fail('已请求的测试补充尚未回复/读回交接；不是每票额外回签') unless $r->{reply_sha256} ne '' && $h && $h->{handled};
+    }
     fail('dirty或无独立审核') unless $c->{status} eq 'clean' && @{$g->{reviews}};
     for my $id (keys %{$g->{dispatches}}) {
       my $status=$data->{ops}{$id}{status};
@@ -568,6 +667,13 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   # 绑定规格正文，不绑定会不断增长的运行时账本正文。
   my $spec=$body; $spec=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
   $b->{spec_sha256}=sha256_hex(encode('UTF-8',$spec));
+  my @policy_refs=$body=~/^test-policy:[ \t]*(\S+)[ \t]*$/mg;
+  if (@policy_refs) {
+    fail('票策略版本不唯一/与授权不符') unless @policy_refs==1 && $policy_refs[0] eq $b->{policy};
+    $b->{test_policy_sha256}=test_policy($b->{policy});
+    my @risks=$body=~/^risk:[ \t]*(\S+)[ \t]*$/mg;
+    fail('策略票须唯一normal/high风险') unless @risks==1 && $risks[0]=~/\A(normal|high)\z/;
+  }
   my $workers=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $worker_config=do { local $/; <$workers> }; close $workers;
   $b->{workers_sha256}=sha256_hex($worker_config);
   $b->{worker_profiles}={};
@@ -624,7 +730,12 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
       if ($h->{transport_count}>=3) { print "$id\n"; exit }
       $h->{transport_count}++; $h->{transport_at}=$now;
     } else {
-      fail('仅当前收件人能确认') unless $controller || $gate;
+      if ($test) {
+        my ($request)=grep { source_id($_->{event_id}) eq $id && $json->encode($_->{identity}) eq $json->encode($identity) } values %{$data->{test_requests}};
+        fail('测试只能消费本人绑定request') unless $request;
+        fail('回复未持久读回，不能handled') if $cmd eq 'handoff-handled' && $request->{reply_sha256} eq '';
+      }
+      fail('仅当前收件人能确认') unless $controller || $gate || $test;
       require_claim($data->{claim}{op_id}) if $gate;
       if ($cmd eq 'handoff-received') {
         fail('received参数非法') unless @args==1;
