@@ -2,7 +2,7 @@
 
 一行一条，详情见 `lessons/<主题>.md`。每次踩坑先在这里加一行，再写详情文件。
 
-- [左侧Space不是顶部Tab](lessons/左侧Space不是顶部Tab.md) —— 2026-10-01 纠正：Tab改名不等于独立Spaces分组；须核真实workspace及迁移前后的身份连续性。
+- [左侧Space不是顶部Tab](lessons/左侧Space不是顶部Tab.md) —— 2026-10-01 纠正：Tab改名、Unicode树标签或平铺Space都不是原生worktree树；须核同repo_key、父非linked/子linked、身份连续性及meta新端点。
 
 | 日期 | 一句话 | 详情 |
 |---|---|---|
