@@ -94,11 +94,16 @@ else
           if (my $g=$d->{gate}) {
             my $pending=$d->{land} && $d->{land}{stage} eq "closed" ? "已本地land/cleanup" : "待land/cleanup（不自动verified）";
             print "       门禁: verdict=$g->{verdict} attempt=$g->{binding}{attempt} candidate=$g->{binding}{head} $pending\n";
+            print "       测试策略: $g->{binding}{policy} sha256=$g->{binding}{test_policy_sha256}（覆盖票零额外test会签）\n" if exists $g->{binding}{test_policy_sha256};
             my $elapsed=0; $elapsed+=$_->{receipt}{elapsed_seconds} for @{$g->{receipts}};
             print "       核证据: receipts=".scalar(@{$g->{receipts}})." reviews=".scalar(@{$g->{reviews}})." validation_seconds=$elapsed tokens=unknown\n";
           }
           if (my $l=$d->{land}) {
             print "       本地land: stage=$l->{stage} op=$l->{op_id} auth=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after} prepared_ms=$l->{prepared_at} landed_ms=$l->{landed_at} closed_ms=$l->{closed_at} tokens=unknown\n";
+          }
+          for my $id (sort keys %{$d->{test_requests} // {}}) {
+            my $r=$d->{test_requests}{$id};
+            print "       测试咨询: id=$id actor=$r->{identity}{actor} reason=$r->{reason} spec=$r->{context}{spec_rev} reply=".($r->{reply_sha256} ne "" ? "advice-only" : "pending")."\n";
           }
           for my $k (sort keys %{$d->{questions}}) {
             my $q=$d->{questions}{$k};

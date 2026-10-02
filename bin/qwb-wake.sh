@@ -630,7 +630,7 @@ compose_msg() {
 # 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
 # 不创建第二watcher，不替门禁确认received/handled；ready/重诊仍交主控。
 route_gate_due() {
-  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed role
+  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed role request_event split remainder
   local targets=() batches=() grants=() actors=() roles=()
   dir="$(mktemp -d "${TMPDIR:-/tmp}/qwb-gate-routes.XXXXXX")" || return 3
   keep="$dir/controller"; : > "$keep"
@@ -641,15 +641,31 @@ route_gate_due() {
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
         use utf8; binmode STDOUT, ":encoding(UTF-8)";
         my $d=decode_json(<STDIN>); my $g=$d->{gate};
-        if ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
+        my $due=decode_json(substr($ARGV[0],length("[qwb-handoff] "))); my %due=map { $_->{event_id}=>1 } @$due;
+        my ($r)=sort { $a->{event_id} cmp $b->{event_id} } grep { $_->{reply_sha256} eq "" && $due{"source:".$_->{event_id}} } values %{$d->{test_requests} // {}};
+        if ($r) {
+          print "$r->{identity}{actor}\t".JSON::PP->new->canonical->encode($r->{identity})."\t$r->{identity}{pane}\t测试体系\tsource:$r->{event_id}";
+        } elsif ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
           print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁";
         } elsif (my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef)) {
           print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
         }
-      ')"
+      ' "$last")"
     fi
     if [[ -n "$info" ]]; then
-      IFS=$'\t' read -r actor grant target role <<< "$info"
+      IFS=$'\t' read -r actor grant target role request_event <<< "$info"
+      if [[ -n "$request_event" ]]; then
+        split="$(perl -MJSON::PP -e '
+          my ($raw,$id)=@ARGV; my $p=decode_json(substr($raw,length("[qwb-handoff] "))); my $j=JSON::PP->new->canonical->utf8;
+          print $j->encode([grep { $_->{event_id} eq $id } @$p]),"\t",$j->encode([grep { $_->{event_id} ne $id } @$p]);
+        ' "$last" "$request_event")"
+        IFS=$'\t' read -r split remainder <<< "$split"
+        if [[ "$remainder" != '[]' ]]; then
+          printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "[qwb-handoff] $remainder" "$lostpane" >> "$keep"
+        fi
+        last="[qwb-handoff] $split"
+        fp="$(printf '%s' "$split" | shasum | cut -d' ' -f1)"
+      fi
       idx=-1
       for i in "${!targets[@]}"; do [[ "${targets[i]}" != "$target" ]] || idx="$i"; done
       if (( idx < 0 )); then
@@ -684,6 +700,8 @@ route_gate_due() {
     local message
     if [[ "${roles[i]}" == 规划 ]]; then
       message="规划看账本：${DUE_N} 张受限原票有请求/就绪事件 →${DUE_MSG}。先received/accept/prepared，对账request映射与原话；仅按授权版本/范围/工人/预算派工，读回后handled；不改在验标准、不自动验收/合并。"
+    elif [[ "${roles[i]}" == 测试体系 ]]; then
+      message="测试体系看账本：${DUE_N} 张原票有关联request →${DUE_MSG}。只处理本人绑定请求，给受限建议不替作者自证；门禁独自验收，不改场景或自动合并。"
     else
       message="门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"
     fi

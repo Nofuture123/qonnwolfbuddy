@@ -23,12 +23,13 @@ usage() {
   --task <票> --ledger-project <主项目> --op <本人claim>
                     按票检查，report必填且在候选之外，输出candidate-bound JSON收据
                     --project必须是获授权候选；rc0不自动accepted/verified
+                    同条件有效收据自动复用，report写复用依据；--rerun显式重测
   -h, --help        显示本帮助
 EOF
 }
 
 GATE=""; PROJECT_ROOT="$(pwd)"; REPORT=""; REPORT_SET=0
-TASK=""; LEDGER_PROJECT=""; OP=""
+TASK=""; LEDGER_PROJECT=""; OP=""; RERUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
       [[ -z "$GATE" ]] || { echo "错误：门只能选一个（fast|full）" >&2; exit 2; }
       GATE="$1"; shift ;;
     --project) PROJECT_ROOT="${2:-}"; shift 2 ;;
+    --rerun) RERUN=1; shift ;;
     --task|--ledger-project|--op)
       [[ -n "${2:-}" && "$2" != --* ]] || { echo "错误：$1 缺值" >&2; exit 2; }
       case "$1" in --task) TASK="$2" ;; --ledger-project) LEDGER_PROJECT="$2" ;; --op) OP="$2" ;; esac
@@ -93,6 +95,22 @@ except AssertionError as e:
     print('按票检查拒绝: '+str(e),file=sys.stderr); sys.exit(2)
 PY
 )" || exit 2
+  if [[ "$RERUN" -eq 0 && "$BEFORE" == *'"test_policy_sha256":'* ]] && REUSE="$(bash "$BINDIR/qwb-ledger.sh" gate-reuse --project "$LEDGER_PROJECT" --task "$TASK" -- "$OP" "$GATE" 2>/dev/null)"; then
+    AFTER="$(context)" || exit 2
+    python3 -B - "$REPORT_PATH" "$REUSE" "$BEFORE" "$AFTER" <<'PY'
+import json,os,sys,tempfile
+path,raw,before,after=sys.argv[1:]; r=json.loads(raw)
+assert r['basis']==json.loads(before)==json.loads(after), '复用采样间对象/条件变化'
+r['schema']='qwb-reused-receipt-v1'
+fd,tmp=tempfile.mkstemp(prefix='.qwb-reuse-',dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd,'w') as f:json.dump(r,f,ensure_ascii=False,sort_keys=True);f.write('\n');f.flush();os.fsync(f.fileno())
+    os.link(tmp,path)
+finally:os.unlink(tmp)
+PY
+    echo "复用可信收据（${GATE}）：${REUSE}" >&2
+    exit 0
+  fi
   STARTED_AT="$(date +%s)" || { echo '错误：无法记录开始时间，门未执行' >&2; exit 2; }
   rc=0; (cd "$PROJECT_ROOT" && bash -c "$CMD") || rc=$?
   ENDED_AT="$(date +%s)" || {

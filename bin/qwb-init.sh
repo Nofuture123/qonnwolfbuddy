@@ -147,6 +147,7 @@ guide_docs=(ci-guide.md host-watch-guide.md worker-launch-guide.md)
 for doc in "${guide_docs[@]}"; do
   [[ -f "$TPL/$doc" ]] || { echo "错误：缺少专项文档源文件：$TPL/$doc" >&2; exit 1; }
 done
+[[ -f "$TPL/test-policy/qwb-v1.md" ]] || { echo '错误：缺版本化test-policy模板' >&2; exit 1; }
 
 check_install_dir() {
   local path="$1"
@@ -180,7 +181,7 @@ new_file_mode() {
 }
 
 # 先核对本次可能写入的全部路径，避免晚发现链接时留下半套安装。
-for dir in "$ROOT/qwbuddy" "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" \
+for dir in "$ROOT/qwbuddy" "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/qwbuddy/test-policy" \
            "$ROOT/tasks" "$ROOT/tasks/lessons" "$ROOT/.pi" "$ROOT/.pi/extensions" \
            "$ROOT/.claude"; do
   check_install_dir "$dir" || exit 1
@@ -192,6 +193,7 @@ for dst in "$ROOT/qwbuddy/QWBUDDY.md" "$ROOT/qwbuddy/TASK.md" \
   check_install_file "$dst" || exit 1
 done
 for doc in "${guide_docs[@]}"; do check_install_file "$ROOT/qwbuddy/$doc" || exit 1; done
+check_install_file "$ROOT/qwbuddy/test-policy/qwb-v1.md" || exit 1
 for src in "$TPL"/roles/*.md; do check_install_file "$ROOT/qwbuddy/roles/$(basename "$src")" || exit 1; done
 for src in "$SRC"/qwb-*.sh; do
   [[ "$(basename "$src")" == "qwb-init.sh" ]] && continue
@@ -202,7 +204,11 @@ for dst in "$ROOT/qwbuddy/config.sh" "$ROOT/qwbuddy/workers.sh" \
   check_preserved_file "$dst" || exit 1
 done
 
-mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/tasks/lessons"
+mkdir -p "$ROOT/qwbuddy/roles" "$ROOT/qwbuddy/bin" "$ROOT/qwbuddy/test-policy" "$ROOT/tasks/lessons"
+# Immutable prior policy versions remain project-owned; installation never enables per-ticket routing.
+if [[ ! -f "$ROOT/qwbuddy/test-policy/qwb-v1.md" ]]; then
+  atomic_copy "$TPL/test-policy/qwb-v1.md" "$ROOT/qwbuddy/test-policy/qwb-v1.md"
+fi
 
 atomic_copy "$TPL/QWBUDDY.md" "$ROOT/qwbuddy/QWBUDDY.md"
 for doc in "${guide_docs[@]}"; do
