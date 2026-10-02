@@ -202,15 +202,15 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
     continue
   fi
   # 存在性与失败路径同派发门标准
-  if ! { printf '%s\n' "$blk" | grep -q 'Given' \
-      && printf '%s\n' "$blk" | grep -q 'When' \
-      && printf '%s\n' "$blk" | grep -q 'Then'; } \
+  if ! { printf '%s\n' "$blk" | grep 'Given' >/dev/null \
+      && printf '%s\n' "$blk" | grep 'When' >/dev/null \
+      && printf '%s\n' "$blk" | grep 'Then' >/dev/null; } \
     && [[ "$(printf '%s\n' "$blk" | grep -cE '^#{1,6}[[:space:]]+user_' || true)" -lt 2 ]]; then
     scen_bad="${scen_bad} $(basename "$f")(无可识别场景)"
     continue
   fi
   printf '%s\n' "$blk" | grep -E '^#{1,6}|^[[:space:]]*Then' \
-    | grep -qiE '失败|拒绝|报错|异常|负例|非法|fail|error' \
+    | grep -iE '失败|拒绝|报错|异常|负例|非法|fail|error' >/dev/null \
     || { scen_bad="${scen_bad} $(basename "$f")(无失败路径场景)"; continue; }
   cur_fp="$(printf '%s' "$blk" | shasum | cut -d' ' -f1)"
   [[ "$cur_fp" == "$declared_fp" ]] \
