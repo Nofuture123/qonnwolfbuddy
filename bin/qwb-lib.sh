@@ -209,7 +209,9 @@ qwb_task_obligations() {
   printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha256_hex -0777 -e '
     my $d=decode_json(<STDIN>);
     print "claim=$d->{claim}{op_id} " if $d->{claim};
-    print "gate=$d->{gate}{verdict} pending-land-cleanup " if $d->{gate};
+    my $stage=$d->{land} ? $d->{land}{stage} : "";
+    print "gate=$d->{gate}{verdict} pending-land-cleanup " if $d->{gate} && $stage ne "closed";
+    print "land=$stage " if $d->{land} && $stage ne "closed";
     for my $k (sort keys %{$d->{questions}}) { print "key=$k " if $d->{questions}{$k}{resumed} eq "" }
     my $h=$d->{handoffs} // {};
     print "handoff=$_ " for sort grep { !$h->{$_}{handled} } keys %$h;

@@ -10,6 +10,10 @@ gate-review: op JSON（context/implementer/reviewer/standards/spec/covered/findi
 gate-verdict: op accepted，或op rework 根因 新证据；accepted仍待land/cleanup，同根因3轮无新证据转技术重诊。
 gate-candidate: op 新attempt 原候选目录 base；gate-receipt: op 候选外JSON，由qwb-test生成，不自动验收。
 gate-dispatch: op child review|rework 主控已授权工人；长门在独立命令/op下运行，不持writer锁等待。
+land-authorize: 本人claim op auth_ref main 明确授权依据 [精确受控MD路径...]；仅现主控，非自动授予。
+已prepared/landed且精确本地C存在时，新auth_ref（不带MD参数）只重新明确授权剩余收尾；先对账claim，不重开merge。
+land-prepare/land-apply/land-proof/land-close: op auth_ref；固定候选本地main短锁/现实恢复，不运行测试。
+gate-candidate: 原四参后可加integration；仅主控在旧M拒绝后登记已在原隔离副本更新的候选/当前main，须新attempt证据和新land授权。
 handoff-* 为03兼容扩展，请用 qwb-send.sh --help 查看投递/received/accept/activity/prepared/handled/reconcile；仅合法主控通道，不迁旧票。
 身份取 HERDR_PANE_ID（否则 pid:调用进程），不按正文或自声明角色授权。
 append: 一条 working:/done:/blocked:/needs-decision: 行；仅主控可写运行时行或 spec-resolved。
@@ -160,7 +164,7 @@ sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : ());
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : (), exists($data->{land}) ? 'land' : (), exists($data->{land_history}) ? 'land_history' : ());
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -202,6 +206,12 @@ sub validate {
     for my $id (keys %{$g->{dispatches}}) { fail('gate child op非法') unless exists($data->{ops}{$id}) && $g->{dispatches}{$id}=~/\A(review|rework)\z/ }
     fail('gate verdict非法') unless $data->{gate}{verdict}=~/\A(pending|rework|rediagnose|accepted)\z/;
   }
+  fail('land_history非法') if exists($data->{land_history}) && ref($data->{land_history}) ne 'ARRAY';
+  if (exists $data->{land}) {
+    my $l=$data->{land}; keys_only($l,qw(op_id auth_ref reason caller owner_fp main before after context md stage branch prepared_at landed_at closed_at));
+    fail('land授权/阶段非法') unless id_ok($l->{op_id}) && id_ok($l->{auth_ref}) && string_ok($l->{reason}) && $l->{reason} ne '' && $l->{caller} ne '' && $l->{owner_fp}=~/\A[0-9a-f]{64}\z/ && $l->{main} eq 'refs/heads/main' && $l->{stage}=~/\A(authorized|prepared|landed|closed)\z/ && ref($l->{md}) eq 'ARRAY' && ref($l->{context}) eq 'HASH';
+    fail('land OID非法') unless $l->{before}=~/\A[0-9a-f]{40,64}\z/ && $l->{after} eq $l->{context}{head};
+  }
   keys_only($data->{migration},qw(task_sha256 confirm installed));
   fail('migration摘要非法') unless $data->{migration}{task_sha256}=~/\A[0-9a-f]{64}\z/;
   keys_only($data->{migration}{confirm},qw(run wake worktree worker controller old-fds external-actions));
@@ -230,10 +240,19 @@ if ($cmd eq 'read') {
 if ($cmd eq 'metrics') {
   my @events=$data ? @{$data->{events}} : ();
   my @done=grep { $_->{kind} eq 'done' } @events;
-  print $json->encode({events=>\@events,done_at=>@done ? $done[-1]{at} : 'unknown',legacy_times=>'unknown'}),"\n"; exit;
+  my $land=$data ? $data->{land} : undef; my ($ready,$duration)=('unknown','unknown');
+  if ($land) {
+    my @ready=grep { $_->{kind} eq 'gate-verdict' && $_->{line}=~/\bverdict=accepted\b/ && $_->{line}=~/\bhead=\Q$land->{after}\E\b/ } @events;
+    if (@ready) {
+      $ready=$ready[-1]{at}; my @t=$ready=~/\A(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z\z/;
+      require Time::Local;
+      $duration=$land->{landed_at}/1000-Time::Local::timegm($t[5],$t[4],$t[3],$t[2],$t[1]-1,$t[0]) if $land->{landed_at};
+    }
+  }
+  print $json->encode({events=>\@events,done_at=>@done ? $done[-1]{at} : 'unknown',legacy_times=>'unknown',land=>$land,ready_at=>$ready,ready_to_land_seconds=>$duration,tokens=>'unknown'}),"\n"; exit;
 }
 my $dir="$root/qwbuddy";
-my $controller_guard;
+my ($controller_guard,$land_guard);
 # 同目录锁与qwb-lock共用，只包权限复核/短发布，不包外部动作。
 if (-d $dir && !-l $dir && realpath($dir) eq $dir) {
   open $controller_guard,'<',$dir or fail('主控目录不可读');
@@ -394,7 +413,135 @@ sub gate_context {
   capture('git','-C',$c,'merge-base','--is-ancestor',$b->{base},$head);
   return {task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
 }
-if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
+# land复用已accept的04证据；不授门禁新权限，不在main锁里跑门/审核。
+sub land_ready {
+  my $c=gate_context(); my $g=$data->{gate};
+  fail('未验收或验收条件已变') unless $g->{verdict} eq 'accepted' && $c->{status} eq 'clean' && @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
+  for my $id (keys %{$g->{dispatches}}) {
+    my $status=$data->{ops}{$id}{status};
+    fail('仍有在途审核/返修') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+  }
+  fail('成立缺陷/安全意见未结') if grep { $_->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ } values %{$g->{findings}};
+  for my $q (values %{$data->{questions}}) { fail('相关问题未恢复') if $q->{resumed} eq '' }
+  my $spev=''; while ($body =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+  fail('规格疑点未决') if $spev =~ /^blocked:/;
+  return $c;
+}
+sub land_identity {
+  my $l=$data->{land} // fail('缺明确land授权');
+  fail('land仅现主控本人claim；门禁未新增自主权限') unless $controller && @args==2 && $args[0] eq $l->{op_id} && $args[1] eq $l->{auth_ref} && $l->{caller} eq $actor && $l->{owner_fp} eq sha256_hex($owner_raw);
+  require_claim($args[0]) unless $cmd eq 'land-close' && $l->{stage} eq 'closed'; return $l;
+}
+sub land_main {
+  my $l=shift;
+  fail('目标不是精确main主副本') unless capture('git','-C',$root,'rev-parse','--show-toplevel') eq $root && capture('git','-C',$root,'symbolic-ref','HEAD') eq $l->{main} && capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-dir') eq capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
+  my $common=capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
+  for my $state (qw(MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply)) { fail('main有未完Git操作') if -e "$common/$state" }
+  return capture('git','-C',$root,'rev-parse',$l->{main});
+}
+sub land_md_snapshot {
+  my $l=shift; my %allowed=map { encode('UTF-8',$_)=>1 } @{$l->{md}}; my %snapshot;
+  for my $path (keys %allowed) {
+    fail('受控MD路径须精确tasks/*.md') unless $path=~m{\Atasks/[^/]+\.md\z} && $path !~ /[\x00-\x1f]/;
+    fail('受控MD或目录是symlink') if -l "$root/tasks" || -l "$root/$path";
+    my $f=safe_open("$root/$path",O_RDONLY); my $s=do { local $/; <$f> }; my @st=stat($f); close $f;
+    $snapshot{$path}=sha256_hex($s).':'.($st[2]&07777);
+  }
+  capture('git','-C',$root,'diff','--cached','--quiet');
+  for my $entry (split /\0/,capture('git','-C',$root,'ls-files','-v','-z')) {
+    fail('索引有assume-unchanged/skip-worktree，无法证明现场干净') if $entry=~/\A[a-zS] /;
+  }
+  for my $path (split /\0/,capture('git','-C',$root,'ls-files','--others','--ignored','--exclude-standard','-z','--','tasks/*.md')) {
+    fail('被忽略的MD未精确登记，不忽略tasks') unless $allowed{$path};
+  }
+  my $dirty=capture('git','-C',$root,'status','--porcelain=v1','-z','--untracked-files=all');
+  for my $row (split /\0/,$dirty) {
+    my ($state,$path)=(substr($row,0,2),substr($row,3));
+    fail('索引/产品或未登记路径dirty，拒绝land') unless ($state eq ' M' || $state eq '??') && $allowed{$path};
+  }
+  for my $path (split /\0/,capture('git','-C',$root,'diff','--name-only','-z',$l->{before},$l->{after},'--')) {
+    fail('候选触碰受控MD相关目录，拒绝覆盖') if keys(%allowed) && ($path eq 'tasks' || $path =~ m{\Atasks/});
+  }
+  return $json->encode(\%snapshot);
+}
+if ($cmd eq 'land-authorize') {
+  fail('明确本地主控授权参数非法') unless $controller && @args>=4 && id_ok($args[1]) && $args[2] eq 'main' && string_ok($args[3]) && $args[3] ne '';
+  require_claim($args[0]);
+  if (my $l=$data->{land}) {
+    # 接班须先按01对账claim；新授权仅续已发生的固定本地C，不重开merge权限。
+    fail('恢复授权仅限已landed同op、精确本地C、新auth_ref；不覆盖原授权') unless @args==4 && $l->{stage}=~/\A(prepared|landed)\z/ && $l->{op_id} eq $args[0] && $l->{auth_ref} ne $args[1] && land_main($l) eq $l->{after};
+    fail('旧auth_ref不能重复授权') if grep { $_->{auth_ref} eq $args[1] } @{$data->{land_history} // []};
+    push @{$data->{land_history}},{%$l};
+    @{$l}{qw(auth_ref reason caller owner_fp)}=($args[1],$args[3],$actor,sha256_hex($owner_raw));
+    if ($l->{stage} eq 'prepared') { $l->{stage}='landed'; $l->{landed_at}=int(time()*1000); $kind='land-apply' }
+    $op=$args[0]; $line="working: land-reauthorized op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after} remaining-cleanup-only"; append_body($line);
+  } else {
+  my $c=land_ready();
+  fail('旧auth_ref不能授权新候选') if grep { $_->{auth_ref} eq $args[1] } @{$data->{land_history} // []};
+  my $task_id=basename($file); $task_id=~s/^[0-9][0-9-]*-//; $task_id=~s/\.md$//;
+  fail('本票land只收标准独立候选目录') unless $c->{candidate} eq text("$root/.worktrees/$task_id");
+  my $branch=capture('git','-C',encode('UTF-8',$c->{candidate}),'symbolic-ref','--short','HEAD');
+  $data->{land}={op_id=>$args[0],auth_ref=>$args[1],reason=>$args[3],caller=>$actor,owner_fp=>sha256_hex($owner_raw),main=>'refs/heads/main',before=>$c->{base},after=>$c->{head},context=>$c,md=>[@args[4..$#args]],stage=>'authorized',branch=>$branch,prepared_at=>0,landed_at=>0,closed_at=>0};
+  my $l=$data->{land}; fail('main旧基线；退出交隔离candidate有界整合并新验收') unless land_main($l) eq $l->{before};
+  land_md_snapshot($l); $op=$args[0]; $line="working: land-authorized op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after}"; append_body($line);
+  }
+} elsif ($cmd =~ /\Aland-(prepare|apply|proof|close)\z/) {
+  my $l=land_identity(); $op=$l->{op_id};
+  if ($cmd eq 'land-prepare') {
+    if ($l->{stage} ne 'authorized') { print "$l->{stage}\n"; exit }
+    my $c=land_ready(); fail('land候选/验收条件已变') unless $json->encode($c) eq $json->encode($l->{context});
+    fail('main旧基线；退出交隔离candidate有界整合并新验收') unless land_main($l) eq $l->{before};
+    land_md_snapshot($l); $l->{stage}='prepared'; $l->{prepared_at}=int(time()*1000);
+  } elsif ($cmd eq 'land-apply') {
+    fail('须先prepared') unless $l->{stage}=~/\A(prepared|landed)\z/;
+    # 重采环境/命令在main锁外；锁内只复核固定OID、工作现场、owner和执行ff。
+    my $c=land_ready(); fail('land候选/验收条件已变') unless $json->encode($c) eq $json->encode($l->{context});
+    my $common=capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
+    $land_guard=safe_open("$common/qwb-land-main.lock",O_RDWR|O_CREAT);
+    flock($land_guard,LOCK_EX|LOCK_NB) or fail('repo+main短锁忙；保留候选，稍后同op重试'); inherit_guard($land_guard);
+    my $actual=land_main($l);
+    fail('main旧基线/恢复现实不明；退出锁交隔离candidate有界整合，不重merge') unless $actual eq $l->{before} || $actual eq $l->{after};
+    my $md=land_md_snapshot($l);
+    fail('锁内候选已变') unless capture('git','-C',encode('UTF-8',$c->{candidate}),'rev-parse','HEAD') eq $l->{after} && capture('git','-C',encode('UTF-8',$c->{candidate}),'status','--porcelain=v1','--untracked-files=all') eq '';
+    my $own=safe_open("$dir/.controller.lock/owner",O_RDONLY); my $current=<$own> // ''; close $own;
+    fail('锁内授权owner已变') unless $current eq $owner_raw;
+    if ($actual eq $l->{before}) {
+      fail('已landed不能重merge') if $l->{stage} eq 'landed';
+      capture('git','-C',$root,'merge','--ff-only','--no-edit','--no-overwrite-ignore',$l->{after});
+    }
+    fail('main读回不是固定C') unless land_main($l) eq $l->{after};
+    fail('受控MD字节/模式未保留，现实已变须对账') unless land_md_snapshot($l) eq $md;
+    if ($l->{stage} eq 'landed') { print "$l->{after}\n"; exit }
+    $l->{stage}='landed'; $l->{landed_at}=int(time()*1000);
+    # main_guard保持到短发布结束；发布失败仍留prepared，下次只核精确本地C补记。
+  } else {
+    if ($cmd eq 'land-close' && $l->{stage} eq 'closed') {
+      fail('已关闭收据与本地main不符') unless land_main($l) eq $l->{after}; print "$l->{after}\n"; exit;
+    }
+    fail('无精确本地main land收据') unless $l->{stage} eq 'landed' && land_main($l) eq $l->{after};
+    if ($cmd eq 'land-proof') { print $json->encode($l),"\n"; exit }
+    my $c=encode('UTF-8',$l->{context}{candidate});
+    fail('收尾未完成；候选或分支还在') if -e $c || -l $c || capture('git','-C',$root,'for-each-ref','--format=%(refname)',"refs/heads/$l->{branch}") ne '';
+    my $listing=capture('git','-C',$root,'worktree','list','--porcelain');
+    fail('候选worktree元数据仍在') if $listing =~ /^worktree \Q$c\E$/m || $listing =~ /^branch refs\/heads\/\Q$l->{branch}\E$/m;
+    my @spaces=$body=~/^worktree-space: id=(\S+) root-tab=\S+ path=[^\n]+$/mg; my $space=@spaces ? $spaces[-1] : '';
+    my ($native,$rc)=native_reply('workspace','list');
+    fail('收尾端点未知') if $rc || ref($native->{result}{workspaces}) ne 'ARRAY';
+    for my $w (@{$native->{result}{workspaces}}) {
+      fail('收尾Space身份未知') unless ref($w) eq 'HASH' && string_ok($w->{workspace_id}) && $w->{workspace_id} ne '';
+      fail('本票Space仍存在，不能verified') if $space ne '' && $w->{workspace_id} eq $space;
+      my $wt=$w->{worktree}; next unless ref($wt) eq 'HASH' && $wt->{is_linked_worktree};
+      my $path=$wt->{checkout_path}; fail('linked Space路径未知') unless string_ok($path) && $path=~m{\A/};
+      my $physical=realpath(encode('UTF-8',$path));
+      if (!defined $physical) { my $parent=realpath(dirname(encode('UTF-8',$path))); $physical="$parent/".basename(encode('UTF-8',$path)) if defined $parent }
+      fail('候选Space仍存在，不能verified') if defined($physical) && $physical eq $c;
+    }
+    fail('收尾义务/用户问题仍未结') if grep { !$_->{handled} } values %{$data->{handoffs} // {}};
+    fail('收尾问题未恢复') if grep { $_->{resumed} eq '' } values %{$data->{questions}};
+    $l->{stage}='closed'; $l->{closed_at}=int(time()*1000); $data->{claim}=undef; $data->{ops}{$op}{status}='released'; field('state','verified');
+  }
+  $line="working: $cmd op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after} stage=$l->{stage} tokens=unknown"; append_body($line);
+} elsif ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   require_claim($args[0]);
   fail('context参数非法') if $cmd eq 'gate-context' && (@args>2 || (@args==2 && $args[1] ne 'observe'));
   my $c=gate_context($cmd eq 'gate-context' && ($args[1] // '') eq 'observe');
@@ -519,9 +666,15 @@ if ($cmd eq 'gate-context' || $cmd eq 'gate-diff') {
   $line="working: gate-verdict verdict=$verdict attempt=$c->{attempt} head=$c->{head} tokens=unknown";
   $line.=' technical-owner=controller no-user-question' if $verdict eq 'rediagnose'; append_body($line);
 } elsif ($cmd eq 'gate-candidate') {
-  fail('candidate参数非法') unless @args==4; require_claim($args[0]);
+  my $integration=@args==5 && $args[4] eq 'integration';
+  fail('candidate参数非法') unless @args==4 || $integration; require_claim($args[0]);
   my ($id,$attempt,$candidate,$base)=@args; my $g=$data->{gate};
-  fail('只能在原票rework后提交新attempt') unless $g->{verdict} eq 'rework' && id_ok($attempt) && $attempt ne $g->{binding}{attempt} && $base eq $g->{binding}{base};
+  if ($integration) {
+    my $l=$data->{land} // fail('集成更新须有被旧M挡住的land授权');
+    fail('仅主控在旧M拒绝后登记原副本集成；不在main上merge/rebase') unless $controller && $l->{op_id} eq $id && $l->{stage}=~/\A(authorized|prepared)\z/ && $l->{caller} eq $actor && $l->{owner_fp} eq sha256_hex($owner_raw) && land_main($l) ne $l->{before} && $base eq land_main($l);
+    push @{$data->{land_history}},$l; delete $data->{land};
+  }
+  fail('只能提交合规新attempt/base') unless id_ok($attempt) && $attempt ne $g->{binding}{attempt} && ($integration || $g->{verdict} eq 'rework' && $base eq $g->{binding}{base});
   fail('不能切到未授权副本') unless $candidate eq $g->{binding}{candidate};
   for my $id (grep { $g->{dispatches}{$_} eq 'rework' } keys %{$g->{dispatches}}) {
     my $status=$data->{ops}{$id}{status};

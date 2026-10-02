@@ -296,13 +296,20 @@ for mode in ("worker-success", "worker-foreign-space"):
         wt = repo / ".worktrees/case"
         assert call("git", "-C", str(repo), "worktree", "add", "-qb", "case", str(wt), env=os.environ).returncode == 0
         state.write_text(str(wt))
-        child = subprocess.Popen(["sleep", "60"])
-        proof = {"pid": child.pid, "pid_start": call("ps", "-p", str(child.pid), "-o", "lstart=", env=env).stdout.strip()}
-        child.terminate(); child.wait()
-        assert proof["pid_start"], "fixture must bind an actual prior PID incarnation"
+        # Shell/idle不是死亡证明：成功夹具保存真实子进程启动时间并排空它。
+        child = subprocess.Popen(["python3", "-u", "-c", "import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            pid = int(child.stdout.readline())
+            start = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart="], text=True).strip()
+            child.communicate("exit\n", timeout=10)
+            assert child.returncode == 0
+        finally:
+            if child.poll() is None: child.terminate(); child.wait(timeout=10)
         ticket.write_text(f"state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n"
                           f"dispatch: op_id=fixture worker=pi pane=wTask:p2 dir={wt}\n"
-                          'working: worker-activity op=fixture pane=wTask:p2 evidence=' + json.dumps(proof) + '\n')
+                          "working: worker-activity op=fixture pane=wTask:p2 evidence=" +
+                          json.dumps({"pid": pid, "pid_start": start}) + "\n")
         git = base / "stub/git"
         git.write_text('#!/usr/bin/env bash\nif [[ "$*" == *"worktree remove"* ]]; then '
                        'printf \'["git", "worktree", "remove"]\\n\' >> "$QWB_TEST_HERDR_LOG"; fi\n'
