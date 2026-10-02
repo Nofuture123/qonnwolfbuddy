@@ -329,7 +329,7 @@ def main():
                 workspace = run(['bash','-c',workspace_script,'qwb-role',str(bindir/'qwb-lib.sh'),str(root),directory]).stdout.strip()
                 require(workspace, '须有唯一已登记workspace，不回退focused默认窗口')
                 r = dict(version=1,actor=a.actor,root=str(root),role=a.role,scope='single-project',
-                         allowed_actions=['status','proposal','test'] if a.role=='测试体系' else ['status','proposal'],
+                         allowed_actions=['status','proposal','test'] if a.role=='测试体系' else (['status','proposal','new','revise','dispatch-authorized'] if a.role=='规划' else ['status','proposal']),
                          worker=a.worker,argv=profile['argv'],tool='pi',provider=provider,model=model,effort=effort,
                          dir=directory,workspace=workspace,controller=owner[0],owner_fp=owner[1],incarnation=0,
                          agent_name='qwb-role-'+a.actor,checkpoint=checkpoint,pane_history=[],
@@ -339,7 +339,8 @@ def main():
                 charter.write_text(charter_text+'\n## 实际角色绑定与恢复\n'+
                                    f'actor={a.actor}，登记={target}；未处理指令={state/(a.actor+".inbox")}。\n'+
                                    f'任务与持久义务从{root}/tasks及qwb-ledger read核对。启动/恢复先读登记及原义务，不丢WIP。\n'+
-                                   '仅主控派工；闲置不造票、不调用模型、不派工、不起全项目watcher；未授权验收/合并。\n')
+                                   ('仅按主控plan-assign绑定的request/包/范围/工人/预算开票与派工；闲置不造票、不调用模型，不起全项目watcher；未授权验收/合并。\n' if a.role=='规划' else
+                                    '仅主控派工；闲置不造票、不调用模型、不派工、不起全项目watcher；未授权验收/合并。\n'))
                 r['charter'] = str(charter); r['charter_sha256'] = hashlib.sha256(charter.read_bytes()).hexdigest()
                 phase('prepared')
                 tab = herdr('tab','create','--workspace',workspace,'--cwd',directory,'--label',a.role,'--no-focus').get('root_pane')

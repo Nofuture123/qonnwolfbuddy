@@ -538,11 +538,27 @@ ts_epoch() {
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 OPEN_N=0
 collect_due() {
-  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry
+  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry plan_data plan_result plan_rc owner
   OPEN_N=0
   while IFS=$'\t' read -r f st; do
     OPEN_N=$((OPEN_N + 1))
     if [[ "$DRY" -eq 0 ]] && grep -q '^<!-- qwb-collab-v1$' "$f"; then
+      # 几十张票扫描：已派当前spec不重复派；仅发一次明确就绪事件，仍由受限授权规划/主控调用run。
+      plan_data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
+      if printf '%s' "$plan_data" | perl -MJSON::PP -0777 -e '
+        my $d=decode_json(<STDIN>); exit 1 unless $d->{planning};
+        exit 1 if $d->{claim} || $d->{planning}{pending_revision} || $d->{phase} eq "verified" || ($d->{gate} && $d->{gate}{verdict} eq "accepted");
+        exit 1 if grep { $_->{kind} eq "dispatch" && $_->{spec_rev}==$d->{spec_rev} } @{$d->{events}};
+      '; then
+        owner="$(awk 'NR==1 {print $NF}' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner")"
+        plan_rc=0
+        plan_result="$(qwb_ledger "$PROJECT_ROOT" "$f" plan-ready "$owner")" || plan_rc=$?
+        if (( plan_rc != 0 )); then
+          (( plan_rc == 1 )) && printf '%s' "$plan_result" | perl -MJSON::PP -0777 -e '
+            my $d=eval { decode_json(<STDIN>) }; exit 1 unless ref($d) eq "HASH" && ($d->{status} // "") eq "blocked";
+          ' || return 3
+        fi
+      fi
       retry="${QWB_REWAKE_MS:-$INTERVAL}"
       [[ "$retry" =~ ^[1-9][0-9]*$ ]] || retry="$INTERVAL"
       (( retry <= 86400000 )) || retry=86400000
@@ -614,8 +630,8 @@ compose_msg() {
 # 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
 # 不创建第二watcher，不替门禁确认received/handled；ready/重诊仍交主控。
 route_gate_due() {
-  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed
-  local targets=() batches=() grants=() actors=()
+  local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed role
+  local targets=() batches=() grants=() actors=() roles=()
   dir="$(mktemp -d "${TMPDIR:-/tmp}/qwb-gate-routes.XXXXXX")" || return 3
   keep="$dir/controller"; : > "$keep"
   while IFS=$'\t' read -r f st fp last lostpane; do
@@ -623,21 +639,24 @@ route_gate_due() {
     if [[ "$last" == '[qwb-handoff] '* ]]; then
       data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
+        use utf8; binmode STDOUT, ":encoding(UTF-8)";
         my $d=decode_json(<STDIN>); my $g=$d->{gate};
         if ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
-          print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}";
+          print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁";
+        } elsif (my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef)) {
+          print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
         }
       ')"
     fi
     if [[ -n "$info" ]]; then
-      IFS=$'\t' read -r actor grant target <<< "$info"
+      IFS=$'\t' read -r actor grant target role <<< "$info"
       idx=-1
       for i in "${!targets[@]}"; do [[ "${targets[i]}" != "$target" ]] || idx="$i"; done
       if (( idx < 0 )); then
-        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor")" || proof='{}'
-        proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor" "$role")" || proof='{}'
+        proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
         if [[ "$proof" == "$grant" ]]; then
-          idx="${#targets[@]}"; targets+=("$target"); grants+=("$grant"); actors+=("$actor"); batches+=("$dir/$idx")
+          idx="${#targets[@]}"; targets+=("$target"); grants+=("$grant"); actors+=("$actor"); roles+=("$role"); batches+=("$dir/$idx")
           : > "${batches[idx]}"
         fi
       fi
@@ -650,8 +669,8 @@ route_gate_due() {
   done < "$duef"
   for i in "${!targets[@]}"; do
     # 投递前再核代次；失效只交主控，不把旧pane/session当新实例。
-    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}")" || proof='{}'
-    proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}" "${roles[i]}")" || proof='{}'
+    proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
     if [[ "$proof" != "${grants[i]}" ]]; then
       cat "${batches[i]}" >> "$keep"; continue
     fi
@@ -662,11 +681,17 @@ route_gate_due() {
     done < "${batches[i]}"
     if (( failed )); then rm -rf "$dir"; return 3; fi
     compose_msg "${batches[i]}"
-    if herdr pane run "${targets[i]}" "门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"; then
+    local message
+    if [[ "${roles[i]}" == 规划 ]]; then
+      message="规划看账本：${DUE_N} 张受限原票有请求/就绪事件 →${DUE_MSG}。先received/accept/prepared，对账request映射与原话；仅按授权版本/范围/工人/预算派工，读回后handled；不改在验标准、不自动验收/合并。"
+    else
+      message="门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"
+    fi
+    if herdr pane run "${targets[i]}" "$message"; then
       while IFS=$'\t' read -r f st fp last lostpane; do
         qwb_ledger "$PROJECT_ROOT" "$f" wake "$controller" "$st" "$fp" >/dev/null || { rm -rf "$dir"; return 3; }
       done < "${batches[i]}"
-      echo "已直接门铃门禁：${DUE_N} 张票 → pane ${targets[i]}"
+      echo "已直接门铃${roles[i]}：${DUE_N} 张票 → pane ${targets[i]}"
     else
       echo "错误：门禁门铃失败（pane ${targets[i]}），03待办/有界重投预算保留" >&2
     fi

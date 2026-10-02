@@ -21,12 +21,12 @@ out=''
 while (($#)); do
   case "$1" in -o) out=$2; shift 2;; *) shift;; esac
 done
-cat >/dev/null
+cat > "$FAKE_REQUEST"
 cp "$FAKE_RESPONSE" "$out"
 printf '%s' "${FAKE_HTTP:-200}"
 SH
 chmod +x "$T/fakebin/curl"
-export FAKE_LOG="$T/log/curl" FAKE_RESPONSE="$T/response.json"
+export FAKE_LOG="$T/log/curl" FAKE_RESPONSE="$T/response.json" FAKE_REQUEST="$T/request.json"
 cat > "$FAKE_RESPONSE" <<'JSON'
 {"model":"fake","answers":{"rule":{"choice":"rule_1","confidence":0.9,"probabilities":{"rule_1":0.9,"default":0.1}}}}
 JSON
@@ -111,6 +111,8 @@ task() {
   cat > "$T/project/tasks/2099-01-01-$1.md" <<'MD'
 # routing
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 ## 验收场景
 ### user_正常
 Given ready
@@ -316,3 +318,37 @@ for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
   fi
   echo "PASS installed $agent uses $harness and fixed model/effort"
 done
+
+# 冻结06第四场景：仅意图/规格/必要约束外发；技术模糊不用用户决策，权限缺口不default扩权。
+reset_rule
+task narrow
+cat >> "$T/project/tasks/2099-01-01-narrow.md" <<'MD'
+## 原始意图
+原话：修复接口，保留指定型号。
+### 工程规格
+只改api.sh，返回版本v1。
+## 必要约束
+单机；不自动合并；没有联网部署授权。
+## 历史报告
+working: SECRET-HISTORY-SENTINEL
+延续历史：CONTINUATION-SENTINEL
+MD
+jq '.answers.rule.confidence=0.4 | .answers.rule.probabilities={rule_1:0.4,default:0.6}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
+cp "$T/project/qwbuddy/workers.sh" "$T/pinned-before"
+TYPESAFE_API_KEY=fake-key run narrow auto
+test "$(worker narrow)" = pi
+cmp -s "$T/pinned-before" "$T/project/qwbuddy/workers.sh"
+jq -e '.state.task.brief | contains("原话：修复接口") and contains("只改api.sh") and contains("没有联网部署授权") and (contains("SENTINEL") | not) and (contains("dispatch:") | not) and (contains("qwb-collab-") | not)' "$FAKE_REQUEST" >/dev/null
+echo 'PASS user_路由模糊不扩权：窄输入无累计日志，技术ambiguous默认继续，指定模型/effort配置不变'
+# 同一低置信度候选若缺权限，不得落默认；clear也不能越权。
+printf '%s\n' '{"rules":[{"when":"deploy","worker":"codex","requires":["deploy"]}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"
+for confidence in 0.4 0.9; do
+  task permission-gap
+  jq --argjson confidence "$confidence" '.answers.rule.confidence=$confidence | .answers.rule.probabilities={rule_1:$confidence,default:(1-$confidence)}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
+  TYPESAFE_API_KEY=fake-key reject_unchanged permission-gap 2 '权限'
+done
+# off也不能绕过default本身明确需要的权限。
+printf '%s\n' '{"rules":[],"default":{"worker":"pi","requires":["deploy"]}}' > "$T/project/qwbuddy/dispatch-rules.json"
+task default-gap
+reject_unchanged default-gap 2 '权限'
+echo 'PASS 权限缺口clear/ambiguous/off均非零且无Herdr/dispatch副作用'

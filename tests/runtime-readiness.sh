@@ -180,6 +180,8 @@ write_ticket() {
   cat > "$TASK" <<'EOF'
 # case
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 
 ## 1. 验收场景
 ### 正常

@@ -118,7 +118,7 @@ if grep -q '^state:' "$TASK_FILE"; then
 fi
 
 # 门禁只续接主控已授权原票，不获取主控锁、不建副本、不修改规格/场景。
-GATE_CONTEXT=""
+GATE_CONTEXT=""; PLANNER_IDENTITY="$(qwb_planner_identity "$PROJECT_ROOT")" || exit 1
 if [[ -n "$GATE_OP$GATE_KIND" ]]; then
   [[ -n "$GATE_OP" && ( "$GATE_KIND" == review || "$GATE_KIND" == rework ) && -n "$WORKTREE" && "$HERE" -eq 0 && "$CREATE_WT" -eq 0 && "$ACCEPT_NEW" -eq 0 && "$REVISE_GIVEN" -eq 0 && "$WORKER" != auto ]] \
     || { echo '错误：门禁只允许review/rework、获授权既有候选，不改场景/产品范围' >&2; exit 2; }
@@ -147,6 +147,10 @@ if [[ ${QWB_WORKER_LAUNCH+x} || ${QWB_WORKER_ARGS+x} ]]; then
   exit 1
 fi
 qwb_load_workers "$PROJECT_ROOT" || exit 1
+# 实施授权/预算/真实依赖先于分类、锁、worktree及端点；running/default不构成授权。
+if [[ -z "$GATE_OP" ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" start-check "$WORKER" >/dev/null || exit 1
+fi
 # —— auto 派工：先解析成具体工人再走下面的整词校验（opt-in；本块在任何副作用之前）——
 # clear → 解析出的工人；off/error/ambiguous → 默认工人（规则文件的 default.worker，无规则文件则 pi），
 # stderr 一行说明，不阻塞派发；qwb-dispatch 非零退出（规则文件坏等配置错误）→ 拒绝派发，不许绕过。
@@ -186,6 +190,9 @@ if [[ "$WORKER" == "auto" ]]; then
     { cat "$DP_ERR"; echo "qwb-run: auto 派工未命中（status=${DP_STATUS}${DP_REASON:+，${DP_REASON}}），按默认工人 ${WORKER} 继续派发"; } >&2
   fi
   rm -f "$DP_ERR"
+fi
+if [[ -z "$GATE_OP" ]]; then
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" start-check "$WORKER" >/dev/null || exit 1
 fi
 
 # 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(codex)' 这类都混不过）
@@ -523,7 +530,7 @@ fi
 LOCK_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lock.sh"
 SELF="${HERDR_PANE_ID:-pid:$$}"
 [[ -f "$LOCK_BIN" ]] || { echo "错误：找不到 ${LOCK_BIN}" >&2; exit 1; }
-if [[ -z "$GATE_OP" ]]; then
+if [[ -z "$GATE_OP" && "$PLANNER_IDENTITY" == '{}' ]]; then
   lock_out="$(bash "$LOCK_BIN" acquire --project "$PROJECT_ROOT" --owner "$SELF" 2>&1)" \
     || { printf '错误：主控锁获取失败，拒绝派发：\n%s\n' "$lock_out" >&2; exit 1; }
 fi
@@ -534,7 +541,7 @@ if [[ -n "$GATE_OP" ]]; then
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-dispatch "$GATE_OP" "$RUN_OP" "$GATE_KIND" "$WORKER" >/dev/null
   RUN_CLAIM=1
 elif grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
-  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$RUN_OP" >/dev/null
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" start-claim "$RUN_OP" "$WORKER" >/dev/null
   RUN_CLAIM=1
 else
   RUN_CLAIM=0

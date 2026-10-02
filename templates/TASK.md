@@ -20,6 +20,12 @@ state:    running
 
 <在已授权范围内的技术落法；规格修订留 spec_rev 与原因，不改原始意图。>
 
+动态规划票由`qwb-ledger.sh new --project <根> --task tasks/<包>.md -- <request.json>`创建，不复制第二张图。request JSON包含request_id、package_id、一次冻结的packages（包→精确票文件名）、source_task/source_event（03持久原话）、intent/spec/constraints/scenarios、paths、needs。needs的start/accept/land均为数组，每条为task/artifact/version/spec_rev/condition（available/accepted/landed），缺票、自依赖、环、歧义及旧版本不解除。
+
+主控可`plan-assign -- <02规划actor> <grant.json>`在来源票绑定该request/包/范围，grant包含request_id/source_event/packages/paths/workers/permissions/evidence/budget；预算是每票首次派工次数，不猜金额，不授权费用。`plan-authorize -- <JSON>`用于明确重授权（workers/permissions/evidence/budget）。未授权票即使state=running也不得启动。未迁旧票不自动切协议，其首次启动须主控显式头部implementation-authorized及正整数dispatch-budget，模板本身不含启动授权。
+
+`plan-artifact`由主控核name/version/ref并保存真实sha256与spec_rev；唯一监督在同票写就绪/阻塞事件及解除证据，不自动派第二次或合并。`plan-revision --expect`登记新source/spec/constraints/scenarios/needs；gate持标准须本人`revision-handoff`交回，之后新CAS的`revise -- <新source_event>`提高spec_rev、保存并失效旧证据，重新核启动授权。accepted/verified原历史不重写，新需求另开后续票。策略/required字段仍采用现有04契约，不覆盖测试体系票的策略。
+
 仅维护任务：在本节写明已合入基线、上轮覆盖与剩余项（首次写指定区间或小模块）、本轮文件范围和问题数量或可观察预算；执行者按 `roles/维护者.md` 工作。普通任务无需填写这些项。
 
 ## 1. 验收场景（先写场景，再写代码；场景冻结后才许可提交实现）

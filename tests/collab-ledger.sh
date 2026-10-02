@@ -87,6 +87,8 @@ write_ticket() {
   cat > "$1" <<'EOF'
 # 原始意图：保留使用者原话
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 ## 工程规格
 只做被授权的切片。
 ## 1. 验收场景

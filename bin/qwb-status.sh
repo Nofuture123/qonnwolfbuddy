@@ -84,6 +84,13 @@ else
         printf '%s' "$collab" | perl -MJSON::PP -0777 -e '
           my $d=decode_json(<STDIN>);
           print "       claim未释放: $d->{claim}{op_id}\n" if $d->{claim};
+          if (my $p=$d->{planning}) {
+            print "       规划: request=$p->{request_id} package=$p->{package_id} spec_rev=$d->{spec_rev} source=$p->{source}{event}\n";
+            print "       就绪: ".($p->{ready}{status} // "未扫描")." 修订=".($p->{pending_revision} ? "待显式handoff/CAS" : "无")."\n";
+            for my $stage (qw(start accept land)) {
+              print "       依赖[$stage]: $_->{task}/$_->{artifact}@$_->{version} spec_rev=$_->{spec_rev} condition=$_->{condition}\n" for @{$p->{needs}{$stage}};
+            }
+          }
           if (my $g=$d->{gate}) {
             print "       门禁: verdict=$g->{verdict} attempt=$g->{binding}{attempt} candidate=$g->{binding}{head} 待land/cleanup（不自动verified）\n";
             my $elapsed=0; $elapsed+=$_->{receipt}{elapsed_seconds} for @{$g->{receipts}};
