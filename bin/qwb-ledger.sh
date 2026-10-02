@@ -37,6 +37,9 @@ wake-check/wake: 主控目标 state fp；独立值守须主控ensure登记及原
 migrate: 停写确认JSON文件（task_sha256；confirm对象含run/wake/worktree/worker/controller/old-fds/external-actions的证据字符串）。
 仅主控确认、lsof无写FD、全部调用者/模板齐备且原字节未变才切一票；不自动迁历史票。
 read 输出版本JSON；metrics 输出真实事件时间，旧缺项 unknown。--legacy 只供已接线运行时兼容未迁票；不提供工人裸追加替代权限。
+mode-enter --project <根> -- quiet|away <原auth_ref> <原话> <限制>；仅主控，模式不是新授权。
+mode-exit --project <根> -- user|explicit <真实输入>；user仅退出away，quiet须explicit；系统门铃不得调用。
+mode-status / mode-summary --project <根>：读回完整模式历史/逐票事实，损坏不删不猜。
 EOF
   exit 0
 fi
@@ -53,11 +56,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "错误：未知账本参数 $1" >&2; exit 2 ;;
   esac
 done
+if [[ "$CMD" == mode-* ]]; then
+  [[ -z "$TASK" && "$LEGACY" -eq 0 ]] || { echo '错误：mode为项目记录，不接受task/legacy' >&2; exit 2; }
+  TASK='qwbuddy/.posture.md'
+fi
 [[ -n "$CMD" && -n "$ROOT" && -n "$TASK" ]] || { echo '错误：需要命令/project/task' >&2; exit 2; }
 ACTOR="${HERDR_PANE_ID:-pid:$PPID}"
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 IDENTITY='{}'
-if [[ "$CMD" != read && "$CMD" != metrics ]]; then
+if [[ "$CMD" != read && "$CMD" != metrics && "$CMD" != mode-* ]]; then
   # shellcheck source=/dev/null
   . "$BINDIR/qwb-lib.sh"
   if [[ "$CMD" == ci-assign || "$CMD" == ci-report ]]; then
@@ -104,13 +111,14 @@ sub fail { die "账本拒绝：$_[0]\n" }
 sub text { my $v=shift; return decode('UTF-8',$v,FB_CROAK) }
 @args=map { text($_) } @args;
 $actor=text($actor);
+my $posture=$cmd =~ /\Amode-/;
 $root=realpath($root) // fail('项目根不存在');
 $file="$root/$file" unless $file =~ m{^/};
 my $original_parent=dirname($file);
 fail('tasks符号链接非法') if -l $original_parent;
 my $parent=realpath($original_parent) // fail('tasks目录不存在');
 $file="$parent/".basename($file);
-fail('tasks/路径或符号链接非法') unless $parent eq "$root/tasks" && !-l $parent && -d $parent && realpath($parent) eq $parent;
+fail('tasks/路径或符号链接非法') unless $parent eq ($posture ? "$root/qwbuddy" : "$root/tasks") && !-l $parent && -d $parent && realpath($parent) eq $parent;
 fail('任务路径非法') unless basename($file) =~ /\.md\z/ && basename($file) !~ /[\x00-\x1f]/;
 sub safe_open {
   my ($path,$flags)=@_;
@@ -118,6 +126,14 @@ sub safe_open {
   my @s=stat($fh); my @l=lstat($path);
   fail("路径非本人常规单链接文件 $path") unless @s && @l && S_ISREG($s[2]) && $s[3]==1 && $s[4]==$< && $s[0]==$l[0] && $s[1]==$l[1];
   binmode $fh; return $fh;
+}
+# Lock order: controller directory -> posture. Task writers already hold controller
+# before their read-only posture probe; never invert that order in mode mutations.
+my $posture_controller_guard;
+if ($posture && $cmd =~ /\Amode-(enter|exit)\z/) {
+  open $posture_controller_guard,'<',$parent or fail('主控目录不可读');
+  flock($posture_controller_guard,LOCK_EX) or fail('主控目录flock失败');
+  inherit_guard($posture_controller_guard);
 }
 # 稳定 sidecar 永不 unlink/rename。锁后才打开最新票，长工具/推理不在本进程内。
 # ponytail: 每次复制整票O(n)，超大历史由后续存储迁移处理；本切片不截断事件。
@@ -132,8 +148,9 @@ sub inherit_guard {
 }
 inherit_guard($guard);
 my $creating=$cmd eq 'new' && !-e $file;
+my $absent=($posture || $creating) && !-e $file && !-l $file;
 my $raw='';
-if (!$creating) {
+unless ($absent) {
   my $in=safe_open($file,O_RDONLY);
   $raw=do { local $/; <$in> }; close $in or fail('读关闭失败');
   fail('票为空') unless defined($raw) && length($raw);
@@ -166,12 +183,6 @@ sub strict_json {
   }
   return $obj;
 }
-my $has_protocol=index($body,'<!-- qwb-collab-')>=0;
-my $data;
-if ($body =~ /\n<!-- qwb-collab-v1\n([^\n]+)\n-->\n?\z/) {
-  $data=strict_json(encode('UTF-8',$1));
-  $body=substr($body,0,$-[0]);
-} elsif (index($body,'<!-- qwb-collab-')>=0) { fail('协作区格式非法') }
 sub keys_only {
   my ($h,@keys)=@_; fail('schema对象非法') unless ref($h) eq 'HASH';
   my %ok=map { $_=>1 } @keys; my @unknown=grep { !$ok{$_} } keys %$h;
@@ -199,6 +210,122 @@ sub ci_report_ok {
   }
   fail('CI最小下一步非法') unless string_ok($r->{next_step}) && $r->{next_step} ne '' && length(encode('UTF-8',$r->{next_step}))<=4096;
 }
+# Same safe FD, stable sidecar, latest-byte check and atomic publisher for tasks and posture.
+sub publish {
+  my ($out,$atomic)=@_;
+  if ($absent) { fail('模式记录在锁内被外部创建') if -e $file || -l $file }
+  else {
+    my $check=safe_open($file,O_RDONLY); my $latest=do { local $/; <$check> }; close $check;
+    fail('票在锁内被旧writer改动，停新动作并对账') unless $latest eq $raw;
+  }
+  if (!$atomic) {
+    my $w=safe_open($file,O_RDWR); seek($w,0,0) or fail('legacy seek失败');
+    print {$w} $out or fail('legacy写失败'); truncate($w,length($out)) or fail('legacy truncate失败'); close $w or fail('legacy close失败');
+  } else {
+    my ($w,$tmp)=tempfile('.qwb-publish-XXXXXXXX',DIR=>$parent,UNLINK=>0);
+    my $ok=eval {
+      binmode $w;
+      my $mode=$absent ? 0600 : (stat($file))[2]&0777;
+      chmod($mode,$tmp) or fail('candidate chmod失败');
+      print {$w} $out or fail('candidate写失败'); $w->sync or fail('candidate sync失败'); close $w or fail('candidate close失败');
+      if ($creating) {
+        link($tmp,$file) or fail('新票不覆盖原子发布失败'); unlink($tmp) or fail('新票临时路径回收失败');
+      } else { system('mv','-f','--',$tmp,$file)==0 or fail('候选发布失败') }
+      1;
+    };
+    if (!$ok) { my $error=$@; close $w; unlink $tmp; die $error }
+  }
+}
+if ($posture) {
+  fail('mode命令/参数非法') unless $cmd =~ /\Amode-(enter|exit|status|summary)\z/ && $expect eq '' && $event eq '';
+  my $p={schema=>1,rev=>0,mode=>'online',events=>[]};
+  unless ($absent) {
+    fail('模式记录格式损坏，保留现场') unless $body =~ /\A# QW buddy 项目模式\n\n<!-- qwb-posture-v1\n([^\n]+)\n-->\n\z/;
+    $p=strict_json(encode('UTF-8',$1));
+  }
+  keys_only($p,qw(schema rev mode events));
+  fail('模式schema损坏') unless $p->{schema} eq '1' && ref($p->{events}) eq 'ARRAY' && $p->{rev}=~/\A[0-9]+\z/ && $p->{rev}==@{$p->{events}};
+  my ($current,$seq,$auth,$limits)=('online',0,'','');
+  for my $e (@{$p->{events}}) {
+    keys_only($e,qw(seq at kind from to actor words auth_ref limits));
+    fail('模式事件损坏') unless defined($e->{seq}) && !ref($e->{seq}) && $e->{seq}=~/\A[1-9][0-9]*\z/ && $e->{seq}==++$seq && $e->{at}=~/\A[1-9][0-9]*\z/ && string_ok($e->{actor}) && $e->{actor} ne '' && $e->{from} eq $current;
+    for (qw(words limits)) { fail('模式原话/限制损坏') unless defined($e->{$_}) && !ref($e->{$_}) && $e->{$_} !~ /\x00/ && length(encode('UTF-8',$e->{$_}))<=65536 }
+    fail('模式原话缺失') if $e->{words} eq '';
+    if ($e->{kind} eq 'enter') {
+      fail('模式/原授权引用损坏') unless $current eq 'online' && $e->{to}=~/\A(quiet|away)\z/ && id_ok($e->{auth_ref});
+      ($auth,$limits)=@{$e}{qw(auth_ref limits)};
+    } else {
+      fail('模式退出规则损坏') unless $current ne 'online' && $e->{kind}=~/\A(user|explicit)\z/ && $e->{to} eq ($e->{kind} eq 'explicit' || $current eq 'away' ? 'online' : 'quiet') && $e->{auth_ref} eq $auth && $e->{limits} eq $limits;
+    }
+    $current=$e->{to};
+  }
+  fail('模式快照与历史不符') unless $p->{mode} eq $current;
+  if ($cmd eq 'mode-enter' || $cmd eq 'mode-exit') {
+    # Match the ledger's existing controller owner, with the same directory lock.
+    fail('主控锁符号链接非法') if -l "$parent/.controller.lock";
+    my $own=safe_open("$parent/.controller.lock/owner",O_RDONLY); my $owner_raw=do { local $/; <$own> }; close $own;
+    my ($owner)=$owner_raw =~ /^\S+\s+(\S+)\s*\z/;
+    fail('模式变更仅现有主控；同UID防误用，不是OS沙箱') unless defined($owner) && $owner eq $actor;
+    my ($kind,$to,$words);
+    if ($cmd eq 'mode-enter') {
+      fail('enter需quiet|away、原auth_ref、原话、限制；先显式退出旧模式') unless @args==4 && $current eq 'online' && $args[0]=~/\A(quiet|away)\z/ && id_ok($args[1]);
+      ($to,$auth,$words,$limits)=@args; $kind='enter';
+    } else {
+      fail('exit仅接受真实user返回或explicit退出，系统门铃不是返回') unless @args==2 && $current ne 'online' && $args[0]=~/\A(user|explicit)\z/;
+      ($kind,$words)=@args; $to=$kind eq 'explicit' || $current eq 'away' ? 'online' : 'quiet';
+    }
+    for ($words,$limits) { fail('原话/限制非法') unless defined($_) && !ref($_) && !/\x00/ && length(encode('UTF-8',$_))<=65536 }
+    fail('原话不能为空') if $words eq '';
+    push @{$p->{events}},{seq=>++$p->{rev},at=>int(time()*1000),kind=>$kind,from=>$current,to=>$to,actor=>$actor,words=>$words,auth_ref=>$auth,limits=>$limits};
+    $p->{mode}=$to;
+    publish(encode('UTF-8',"# QW buddy 项目模式\n\n<!-- qwb-posture-v1\n").$json->encode($p)."\n-->\n",1);
+  } else { fail('status/summary不接受参数') if @args }
+  if ($cmd eq 'mode-summary') {
+    # Never hold posture while taking task locks: land reads posture under task lock.
+    flock($guard,LOCK_UN) or fail('模式读锁释放失败');
+    my @tasks;
+    fail('summary tasks目录非法') if -l "$root/tasks";
+    opendir my $tasks,"$root/tasks" or fail('summary tasks目录不可读');
+    my @names=sort grep { /\.md\z/ } readdir $tasks; closedir $tasks;
+    for my $name (@names) {
+      my $t="$root/tasks/$name";
+      my $row={task=>text($t)};
+      my $ok=eval {
+        my $fh=safe_open($t,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+        if ($s !~ /^state:/m) { $row->{non_task}=1 } else {
+        my $pid=open(my $probe,'-|'); defined($pid) or fail('无法启动逐票reader');
+        if (!$pid) { exec('bash',"$bindir/qwb-ledger.sh",'read','--project',$root,'--task',$t) or exit 255 }
+        my $out=do { local $/; <$probe> }; close $probe or fail('逐票协议损坏/不可读');
+        my $d=strict_json($out);
+        $row->{phase}=$d->{phase}; $row->{legacy}=$d->{schema} eq '0' ? 1 : 0;
+        $row->{verdict}=$d->{gate} ? $d->{gate}{verdict} : 'unknown';
+        $row->{failed_checks}=[grep { $_->{receipt}{rc}!=0 } @{$d->{gate}{receipts} // []}];
+        $row->{findings}=$d->{gate}{findings} // {};
+        $row->{land}=$d->{land};
+        $row->{delivery}=$d->{land} && $d->{land}{stage}=~/\A(landed|closed)\z/ ? 'landed' : 'not-proven';
+        $row->{cleanup}=$d->{land} ? ($d->{land}{stage} eq 'closed' ? 'closed' : 'pending') : 'unknown';
+        $row->{implementation_done}=[grep { $_->{kind} eq 'done' } @{$d->{events}}];
+        $row->{failures}=[grep { $_->{kind}=~/\A(blocked|not-sent)\z/ } @{$d->{events}}];
+        $row->{decisions}={map { $_=>$d->{questions}{$_} } grep { $d->{questions}{$_}{resumed} eq '' } keys %{$d->{questions} // {}}};
+        $row->{handoffs}=[grep { !$_->{handled} } values %{$d->{handoffs} // {}}];
+        $row->{claim}=$d->{claim};
+        }
+        1;
+      };
+      next if $row->{non_task};
+      $row->{error}=text(encode('UTF-8',$@)) unless $ok;
+      push @tasks,$row;
+    }
+    print $json->encode({posture=>$p,tasks=>\@tasks}),"\n";
+  } else { print $json->encode($p),"\n" }
+  exit;
+}
+my $has_protocol=index($body,'<!-- qwb-collab-')>=0;
+my $data;
+if ($body =~ /\n<!-- qwb-collab-v1\n([^\n]+)\n-->\n?\z/) {
+  $data=strict_json(encode('UTF-8',$1));
+  $body=substr($body,0,$-[0]);
+} elsif (index($body,'<!-- qwb-collab-')>=0) { fail('协作区格式非法') }
 sub state_of { my ($s)=$_[0]=~/^state:[ \t]*(\S+)[ \t]*$/m; return $s // '' }
 sub fp_of { my ($s)=$_[0]=~/^scenarios-fp:[ \t]*([0-9a-f]{40})[ \t]*$/m; return $s // '' }
 sub scenario {
@@ -705,6 +832,10 @@ sub spec_replace {
   fail('工程规格格式不支持安全修订') unless $body=~/^## 工程规格\n.*?^## 必要约束\n.*?^## 验收场景/ms;
   $body=~s/^## 工程规格\n.*?^## 必要约束\n.*?(?=^## 验收场景)/"## 工程规格\n$spec\n## 必要约束\n$constraints\n"/ems;
   my $old=scenario($body); $body=~s/\Q$old\E/$scenarios/; field('scenarios-fp',scen_fp($body));
+}
+# Posture never grants/revokes authority. Corrupt history only refuses affected land actions.
+if ($cmd =~ /\Aland-(authorize|prepare|apply|close)\z/ && (-e "$root/qwbuddy/.posture.md" || -l "$root/qwbuddy/.posture.md")) {
+  capture('bash',"$bindir/qwb-ledger.sh",'mode-status','--project',$root);
 }
 if ($cmd eq 'land-authorize') {
   fail('明确本地主控授权参数非法') unless $controller && @args>=4 && id_ok($args[1]) && $args[2] eq 'main' && string_ok($args[3]) && $args[3] ne '';
@@ -1456,30 +1587,8 @@ if ($data) {
   $body =~ s/\n*\z/\n/;
   $out=encode('UTF-8',$body)."\n<!-- qwb-collab-v1\n".$json->encode($data)."\n-->\n";
 } else { $out=encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',$body) }
-# 检查最新原路径，拒绝合作区外裸追加/替换；锁对象仍是同一个sidecar inode。
-if ($creating) { fail('new发布前出现既有票，先对账') if -e $file || -l $file }
-else {
-  my $check=safe_open($file,O_RDONLY); my $latest=do { local $/; <$check> }; close $check;
-  fail('票在锁内被旧writer改动，停新动作并对账') unless $latest eq $raw;
-}
-if (!$data) {
-  # legacy不换inode（持旧FD的会话还没停）；新协议安全保证只在contract后成立。
-  my $w=safe_open($file,O_RDWR); seek($w,0,0) or fail('legacy seek失败');
-  print {$w} $out or fail('legacy写失败'); truncate($w,length($out)) or fail('legacy truncate失败'); close $w or fail('legacy close失败');
-} else {
-  my ($w,$tmp)=tempfile('.qwb-publish-XXXXXXXX',DIR=>$parent,UNLINK=>0);
-  my $ok=eval {
-    binmode $w;
-    my @s=stat($file); chmod($creating ? 0600 : $s[2]&0777,$tmp) or fail('candidate chmod失败');
-    print {$w} $out or fail('candidate写失败'); $w->sync or fail('candidate sync失败'); close $w or fail('candidate close失败');
-    # 使用独立程序作发布点，测试可用PATH假mv屏障/失败；无shell/eval。
-    if ($creating) {
-      link($tmp,$file) or fail('新票不覆盖原子发布失败'); unlink($tmp) or fail('新票临时路径回收失败');
-    } else { system('mv','-f','--',$tmp,$file)==0 or fail('候选发布失败') }
-    1;
-  };
-  if (!$ok) { my $error=$@; close $w; unlink $tmp; die $error }
-}
+# Legacy retains its inode; migrated tasks and posture share the atomic publisher.
+publish($out,!!$data);
 print defined($pending_output) ? "$pending_output\n" : "$event\n" if $data;
 exit($pending_exit);
 PERL

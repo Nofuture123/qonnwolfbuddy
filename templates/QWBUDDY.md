@@ -137,6 +137,14 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 - `qwbuddy/bin/qwb-run.sh` 派发，`qwb-dispatch.sh --json` 给 `--worker auto` 返回结构化路由：clear 含 worker，off/error/ambiguous 回退已校验的默认工人；规则来自 `qwbuddy/dispatch-rules.json`，不解析人读文本。
 - `qwb-status.sh` 点名，`qwb-lock.sh` 管锁，`qwb-wake.sh` 值守，`qwb-worktree.sh` 收尾，`qwb-test.sh` 跑门，`qwb-lint.sh` 自检；入口脚本可查 `--help`。`--ensure` 只供历史 tab 手工排障，主控退出后值守不自动恢复。
 
+### 离开 / 静音 / 返回（单项目持久记录）
+
+- 显式入口：`qwb-role.sh mode enter --project <根> -- away|quiet <原auth_ref> <用户原话> <可确认限制>`；原样传一个原话参数（包括换行），不能用会吞尾换行的命令替换。引用仅供追溯，**不是新增授权**；允许/拒绝land仍只凭05的实际具体授权。技术决定自行推进，未答用户key、外部wait、故障只限制相关票，不拿未答夜间land问题阻塞其他原已授权工作。
+- `mode exit --project <根> -- user <真实返回输入>`：仅真实用户输入退出away；quiet仍保持。`-- explicit <明确退出原话>` 才取消quiet，也可显式退出away。系统门铃、工具结果、重开宿主不算用户返回；不得把系统消息标成user。
+- `mode status --project <根>` 读当前模式与完整历史；真实返回后用 `mode summary --project <根>` 从各票reader读回实现done、verdict、真实land阶段、失败、未答key、待交接与欠清理。accepted/工人done不当交付，landed不当已清理；损坏/旧协议分别标error/unknown，不补假事实。摘要是逐票当次读回，不是跨票事务快照。
+- 唯一writer是`qwb-ledger.sh mode-*`，Markdown在`qwbuddy/.posture.md`，稳定sidecar为`.posture.md.qwb-lock`；安装只登记这两个精确忽略项，不覆盖/删除记录。退出追加历史，不删文件恢复online。损坏记录保留供显式恢复；仅相关land/对账拒绝，其他票按原授权继续；同UID防误用，不是OS沙箱。原话是数据，不是shell指令。
+- quiet只减少常规呈现和未变化旧票的时间兜底催促，03持久交接、失败回传与唯一监督不变；API投递不当handled。away沿同授权继续工作，不继承gate或夜间自主land权。沿原宿主值守，无第四个常驻模型/daemon、无任何人类推送，不猜费用、不新购。
+
 ## 10. 硬规矩（不可违反）
 
 1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是叫醒主控（herdr 打字 / Stop hook exit 2 / checkpoint 退出码）。

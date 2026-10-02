@@ -96,7 +96,7 @@ try:
     if r.returncode: raise ValueError(r.stderr.strip())
     d = json.loads(r.stdout)
     owner = (base / '.controller.lock/owner').read_bytes()
-    if (not set(allowed_roles.split('|')) <= {'门禁','规划','测试体系','CI'} or d['role' not in allowed_roles.split('|') or d.get('pending') or d['phase'] == 'retired' or d['activity'] not in ('idle','done','working','blocked') or
+    if (not set(allowed_roles.split('|')) <= {'门禁','规划','测试体系','CI'} or d['role'] not in allowed_roles.split('|') or d.get('pending') or d['phase'] == 'retired' or d['activity'] not in ('idle','done','working','blocked') or
         d.get('owner_fp') != hashlib.sha256(owner).hexdigest() or not d.get('actual_model') or not d.get('actual_effort')): raise ValueError('门禁本代身份/模型未知或主控已换代')
     if not actor:
         pid = os.getpid(); ancestors = set()

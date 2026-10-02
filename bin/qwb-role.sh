@@ -3,6 +3,11 @@
 set -euo pipefail
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$PWD"
+# Project posture is Markdown owned only by the ledger writer, not role JSON.
+if [[ "${1:-}" == mode ]]; then
+  shift; MODE_COMMAND="${1:-}"; shift || true
+  exec bash "$BINDIR/qwb-ledger.sh" "mode-$MODE_COMMAND" "$@"
+fi
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   [[ "${args[i]}" != --project ]] || PROJECT_ROOT="${args[i+1]:-}"
@@ -11,6 +16,7 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   echo '用法: qwb-role.sh start|status|reconcile|retire --project <根> [--actor <id>] [--expect-gen <代次>]'
   echo 'start另需 --role 门禁|规划|测试体系|CI（按需） --worker <已配置工人> --dir <既有目录>；变更操作仅实际绑定主控。'
   echo '控制: qwb-control.sh interrupt|exit|relaunch --actor <id> --expect-gen <代次> --project <根>'
+  echo '模式: mode enter|exit|status|summary --project <根> -- <参数>；详见qwb-ledger.sh --help'
   echo 'Pi须显式配置QWB_ROLE_PI_CONTROL=verified；Claude/Codex控制未验证，拒绝。原工人派发配置不变。'
   exit 0
 fi
