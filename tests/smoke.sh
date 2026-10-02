@@ -26,7 +26,7 @@ prefix=prefix.replace('ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
                       'ROOT='+shlex.quote(sys.argv[2]))
 parts=[prefix,
        'TMP="$(mktemp -d)"'+block('TMP="$(mktemp -d)"','\nassert_file "$TMP/qwbuddy/QWBUDDY.md"'),
-       'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\nprintf \'# 假任务\\nstate: running\\n\' > "$FAKE"\n( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh'),
+       'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\nchmod +x "$STUB/herdr"\n')+'\nchmod +x "$STUB/herdr"',
        'GP="$TMP/gitp"'+block('GP="$TMP/gitp"','\nWTID="wtdemo";'),
        '# —— S4–S7 场记：'+block('# —— S4–S7 场记：','echo "== 17c.'),
        source.split('# 新节必须加在本行之前',1)[1]]

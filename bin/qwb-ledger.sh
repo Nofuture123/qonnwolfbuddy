@@ -570,7 +570,7 @@ if (!$data && $legacy && $cmd ne 'migrate' && $cmd ne 'new') {
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|start-check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate' && $cmd ne 'new') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
 my $ci_actor=$cmd eq 'ci-report' && $identity->{pane} && $identity->{pane} eq $actor && $identity->{owner_fp} eq sha256_hex($owner_raw);
-my $gate_allowed=$cmd =~ /\A(claim|release|check|dispatch|not-sent|gate-context|gate-reuse|test-request|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|revision-handoff|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
+my $gate_allowed=$cmd =~ /\A(claim|release|check|append|dispatch|not-sent|gate-context|gate-reuse|test-request|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|revision-handoff|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
 my $planner_allowed=$cmd =~ /\A(start-check|plan-ready|plan-needs|plan-revision|revise|revise-scenarios|start-claim|claim|release|prepare|append|dispatch|not-sent|handoff-send|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
 fail('角色未授权（主控/绑定工人/本代门禁/范围内规划）') unless $controller || $watcher || $ci_actor || ($test && $cmd=~/\A(test-reply|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/) || ($gate && $gate_allowed) || ($planner && $planner_allowed) || ($planner_native && $cmd eq 'new') || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate' && $cmd ne 'new');
 exit 0 if $cmd eq 'check';
@@ -1443,6 +1443,13 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'append') {
   ($line)=@args; fail('行非法') unless string_ok($line) && $line =~ /\A(working|done|blocked|needs-decision|wake|worktree|worktree-space):/;
   fail('spec-resolved仅现主控可写，规划grant不扩大权限') if !$controller && $line =~ /\Aworking:\s*spec-resolved:/;
+  if ($gate && !$controller) {
+    # 09活动绑定接04原票派工；只许本人claim下已派child，不开放普通append权限。
+    my ($child,$pane)=$line =~ /\Aworking: worker-activity op=(\S+) pane=(\S+) evidence=.+\z/;
+    fail('门禁仅可写本人已派child活动绑定') unless @args==1 && defined($child) && exists($data->{gate}{dispatches}{$child}) &&
+      $data->{ops}{$child}{owner} eq $actor && $data->{ops}{$child}{pane} eq $pane && $data->{ops}{$child}{status} eq 'dispatch';
+    require_claim($data->{claim}{op_id}); $op=$child;
+  }
   if (!$controller && $worker) {
     fail('工人不能写规格处置/运行时记录') unless $line =~ /\A(working|done|blocked|needs-decision):/ && $line !~ /\Aworking:\s*spec-resolved:/;
     $op=$data->{workers}{$actor}; fail('失败派发工人不得回报') if $data->{ops}{$op}{status} eq 'not-sent';

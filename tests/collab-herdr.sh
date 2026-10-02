@@ -276,7 +276,7 @@ for mode in ['live','missing','dead','extra-pane','no-attempt']:
     with tempfile.TemporaryDirectory(prefix='qwb-not-sent-'+mode+'-') as d:
         repo,ticket,state,log,env=project(Path(d)); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
-        state.write_text(str(wt)); pid=os.getpid()
+        state.write_text(str(wt)); log.write_text(''); pid=os.getpid()
         start=call('ps','-p',str(pid),'-o','lstart=',env=env).stdout.strip()
         evidence=dict(pid=pid,pid_start=start)
         if mode in ('dead','extra-pane'):
@@ -301,7 +301,7 @@ for mode in ['live','missing','dead','extra-pane','no-attempt']:
         closes=[x for x in log.read_text().splitlines() if json.loads(x)==['workspace','close','wTask']]
         if mode in ('live','missing','extra-pane'):
             assert result.returncode!=0 and wt.exists() and state.exists() and not closes,(mode,result.returncode,result.stdout,result.stderr)
-            reason='old launch PID/start unknown' if mode=='missing' else 'old native PID still alive or death unknown'
+            reason='旧启动代PID/start未知' if mode=='missing' else '旧启动代仍活或死亡未知'
             assert reason in result.stderr,(mode,'must hit lifetime refusal, not an unrelated fixture error',result.stderr)
             os.kill(pid,0)
             assert call('git','-C',str(repo),'show-ref','--verify','--quiet','refs/heads/case',env=env).returncode==0
@@ -356,8 +356,8 @@ for mode in ['reuse','failed-reuse','unknown-start']:
             assert sum(x[:2]==['agent','start'] for x in calls)==1 and not any(x[:2]==['tab','create'] for x in calls),calls
             # Native label can return to shell while its process still lives: must preserve original obligations.
             native.unlink(); alive=call(*finish,env=env)
-            reason='launch attempt has no matching death evidence' if mode=='unknown-start' else 'old native PID still alive or death unknown'
-            assert alive.returncode!=0 and wt.exists() and state.exists(),(mode,alive.stderr)
+            reason='启动代死亡证据缺失' if mode=='unknown-start' else '旧启动代仍活或死亡未知'
+            assert alive.returncode!=0 and '候选写入者仍持cwd/FD' in alive.stderr and wt.exists() and state.exists(),(mode,alive.stderr)
             child.terminate(); child.wait()
             ended=call(*finish,env=env)
             print('PUBLIC REUSE',mode,'native_pid=',child.pid,'ended_rc=',ended.returncode,'wt=',wt.exists(),'space=',state.exists(),'stderr=',ended.stderr,flush=True)

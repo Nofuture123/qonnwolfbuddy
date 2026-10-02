@@ -152,7 +152,17 @@ f.write_text(json.dumps(s))
     assert d['claim']['owner']=='gate-pane'
     # A原票公开run返修，验收claim不释放、不换规格；B独立accepted。
     call('qwb-run.sh','--task',t,'--worker','sol','--worktree',ca,'--gate-op','accept-A','--gate-kind','rework','--name','rework-a',actor='gate-pane')
-    assert json.loads(call('qwb-ledger.sh','read','--task',t).stdout)['claim']['op_id']=='accept-A'
+    dispatched=json.loads(call('qwb-ledger.sh','read','--task',t).stdout)
+    assert dispatched['claim']['op_id']=='accept-A'
+    child=next(iter(dispatched['gate']['dispatches'])); pane=dispatched['ops'][child]['pane']
+    assert f'working: worker-activity op={child} pane={pane} evidence=' in t.read_text()
+    before=t.read_bytes()
+    for line in ['working: arbitrary gate append',
+                 f'working: worker-activity op=impl-A pane=worker-A evidence={{}}',
+                 f'working: worker-activity op={child} pane=foreign-pane evidence={{}}']:
+        refused=call('qwb-ledger.sh','append','--task',t,'--',line,actor='gate-pane',ok=False)
+        assert '门禁仅可写本人已派child活动绑定' in refused.stderr and t.read_bytes()==before,refused.stderr
+    print('PASS 门禁run先持久记录本人child活动；任意append/他人op/错pane零写入拒绝')
     br=tmp/'B-full.json';call('qwb-test.sh','full','--project',cb,'--task',bt,'--ledger-project',p,'--op','accept-B','--report',br,actor='gate-pane')
     call('qwb-run.sh','--task',bt,'--worker','reviewer','--worktree',cb,'--gate-op','accept-B','--gate-kind','review','--name','review-b',actor='gate-pane')
     breview=tmp/'B-review.json';breview.write_text(json.dumps(dict(review,context=json.loads(br.read_text())['after'],findings=[])))
