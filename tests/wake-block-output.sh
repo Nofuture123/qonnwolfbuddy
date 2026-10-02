@@ -7,7 +7,7 @@ PROJECT="$(mktemp -d /tmp/qwb-wake-output.XXXXXXXX)"
 trap 'rm -rf "$PROJECT"' EXIT
 bash "$ROOT/bin/qwb-init.sh" "$PROJECT" >/dev/null
 if [[ -n "${QWB_TEST_WAKE_SOURCE:-}" ]]; then cp "$QWB_TEST_WAKE_SOURCE" "$PROJECT/qwbuddy/bin/qwb-wake.sh"; fi
-printf 'QWB_WAKE_INTERVAL_MS=100\nQWB_REWAKE_MS=60000\n' >> "$PROJECT/qwbuddy/config.sh"
+printf 'QWB_WAKE_INTERVAL_MS=50\nQWB_REWAKE_MS=60000\n' >> "$PROJECT/qwbuddy/config.sh"
 TICKET="$PROJECT/tasks/2099-01-01-output.md"
 FP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
 printf '# output\nstate: running\nwake: %s state=running fp=%s\n' \
@@ -18,26 +18,41 @@ once="$(env -u HERDR_PANE_ID bash "$PROJECT/qwbuddy/bin/qwb-wake.sh" --project "
 dry="$(env -u HERDR_PANE_ID bash "$PROJECT/qwbuddy/bin/qwb-wake.sh" --project "$PROJECT" --dry-run)"
 [[ "$dry" == *"跳过：2099-01-01-output.md"* ]] || { echo "FAIL --dry-run 跳过日志变化" >&2; exit 1; }
 
+# 业务间隔取一个50ms分片；假sleep推进同一假钟，读账耗时和fallback notice不消耗测试预算。
+cat > "$PROJECT/now-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+cat "$QWB_TEST_NOW"
+EOF
 cat > "$PROJECT/sleep-hook.sh" <<'EOF'
 #!/usr/bin/env bash
+now="$(cat "$QWB_TEST_NOW")"
+now=$((now + $1))
+printf '%s\n' "$now" > "$QWB_TEST_NOW"
+printf '%s\n' "$1" >> "$QWB_TEST_SLICES"
 n="$(cat "$QWB_TEST_COUNTER")"
 n=$((n + 1))
 printf '%s\n' "$n" > "$QWB_TEST_COUNTER"
 if [[ "$n" -eq 2 ]]; then printf 'done: 多轮等待后完成\n' >> "$QWB_TEST_TICKET"; fi
 EOF
-chmod +x "$PROJECT/sleep-hook.sh"
-printf '0\n' > "$PROJECT/sleep-count"
+chmod +x "$PROJECT/now-hook.sh" "$PROJECT/sleep-hook.sh"
+start_ms=$(( $(date +%s) * 1000 ))
+printf '%s\n' "$start_ms" > "$PROJECT/now-ms"
+printf '0\n' > "$PROJECT/round-count"
+: > "$PROJECT/slices"
 set +e
-out="$(env -u HERDR_PANE_ID QWB_SLEEP_CMD="$PROJECT/sleep-hook.sh" \
-  QWB_TEST_COUNTER="$PROJECT/sleep-count" QWB_TEST_TICKET="$TICKET" \
+out="$(env -u HERDR_PANE_ID QWB_NOW_MS_CMD="$PROJECT/now-hook.sh" QWB_SLEEP_CMD="$PROJECT/sleep-hook.sh" \
+  QWB_TEST_NOW="$PROJECT/now-ms" QWB_TEST_SLICES="$PROJECT/slices" \
+  QWB_TEST_COUNTER="$PROJECT/round-count" QWB_TEST_TICKET="$TICKET" \
   bash "$PROJECT/qwbuddy/bin/qwb-wake.sh" --project "$PROJECT" --block --max-ms 5000)"
 rc=$?
 set -e
-[[ "$rc" -eq 2 && "$(cat "$PROJECT/sleep-count")" -eq 2 \
+[[ "$rc" -eq 2 && "$(cat "$PROJECT/round-count")" -eq 2 \
+  && "$(cat "$PROJECT/now-ms")" -eq $((start_ms + 100)) \
+  && "$(cat "$PROJECT/slices")" == $'50\n50' \
   && "$out" == *"看账本：1 张未结项有进展"* \
   && "$out" == *"done: 多轮等待后完成"* \
   && "$out" != *"跳过："* ]] \
-  || { printf 'FAIL --block rc=%s sleeps=%s stdout=%s\n' "$rc" "$(cat "$PROJECT/sleep-count")" "$out" >&2; exit 1; }
+  || { printf 'FAIL --block rc=%s rounds=%s slices=%s stdout=%s\n' "$rc" "$(cat "$PROJECT/round-count")" "$(cat "$PROJECT/slices")" "$out" >&2; exit 1; }
 
 printf '# output\nstate: running\n' > "$TICKET"
 set +e
