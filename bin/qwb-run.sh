@@ -375,6 +375,7 @@ fi
 # working/blocked → 拒绝派发（工人还在干，别打断）；查询失败（非 not_found）→ fail-closed 拒绝。
 # 应答里 agent 名与本任务名不同或缺身份字段 → 拒绝，不猜接收者。
 REUSE_PANE=""
+REUSE_ACTIVITY=""
 TAB_ID=""
 validate_reuse() {
   local expected_dir actual_dir expected_ws caller_info pane_out pane_meta
@@ -437,6 +438,10 @@ validate_reuse() {
   [[ -n "$last_dispatch" && "$last_dispatch" == *" worker=$WORKER agent=$NAME pane=$ag_pane dir="* \
      && "$hist_dir" == "$expected_dir" ]] \
     || { echo "错误：同名工人 $NAME 没有匹配本票的既有 dispatch 身份，拒绝认领" >&2; return 1; }
+  local observed
+  REUSE_ACTIVITY="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$ag_pane" --dir "$expected_dir" --task "$TASK_FILE")" || return 1
+  observed="$(printf '%s' "$REUSE_ACTIVITY" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{activity}')" || return 1
+  [[ "$observed" == idle ]] || { echo "错误：本代真实活动为 ${observed}，不凭Herdr idle复用或中断" >&2; return 1; }
 }
 if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
   ag_out="$(herdr agent get "$NAME" 2>&1)" && ag_rc=0 || ag_rc=$?
@@ -778,10 +783,7 @@ qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" dispatch "$RUN_OP" "$PANE" "$DISPATCH_LI
   || { echo "错误：dispatch 写入失败：${TASK_FILE}" >&2; exit 1; }
 delivery_failed() {
   local step="$1" rc="$2" detail="$3"
-  if [[ -n "$TAB_ID" ]]; then
-    herdr tab close "$TAB_ID" >/dev/null 2>&1 \
-      || echo "警告：本次 tab ${TAB_ID} 关闭失败，请手工核对" >&2
-  fi
+  echo "保留未确认退出的端点：pane=${PANE} tab=${TAB_ID:-unknown}；投递失败不证明原进程已停止，不自动关窗" >&2
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" not-sent "$RUN_OP" \
     "blocked: $(date -u +%Y-%m-%dT%H:%M:%SZ) 派发投递失败 step=${step} rc=${rc} pane=${PANE}" "$DISPATCH_LINE" >/dev/null \
     || echo "警告：补偿发布失败，保留原收据与claim，需人工核对 $TASK_FILE" >&2
@@ -800,9 +802,21 @@ sleep_ms() {
   sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
 }
 
+record_worker_activity() {
+  local observation
+  # A reuse dispatch is a delivery op, not a new native start: bind its already verified incarnation.
+  observation="$REUSE_ACTIVITY"
+  if [[ -z "$observation" ]]; then
+    observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
+  fi
+  # Evidence stays in the sole MD truth, tagged to this dispatch operation; unknown is not fabricated idle.
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: worker-activity op=$RUN_OP pane=$PANE evidence=$observation" >/dev/null
+}
+
 case "$LAUNCH_MODE" in
   herdr)
     if [[ -n "$REUSE_PANE" ]]; then
+      record_worker_activity
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
       prompt_rc=0
       prompt_out="$(herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}" 2>&1)" || prompt_rc=$?
@@ -813,6 +827,7 @@ case "$LAUNCH_MODE" in
       start_out="$(qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}" 2>&1)" || start_rc=$?
       [[ "$start_rc" -eq 0 ]] || delivery_failed "herdr agent start" "$start_rc" "$start_out"
       printf '%s\n' "$start_out"
+      record_worker_activity
       prompt_rc=0
       prompt_out="$(herdr agent prompt "$NAME" "$PROMPT" 2>&1)" || prompt_rc=$?
       [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
@@ -833,6 +848,7 @@ case "$LAUNCH_MODE" in
       (( detect_left > 100 )) && detect_left=100
       sleep_ms "$detect_left"
     done
+    record_worker_activity
     rename_rc=0
     rename_out="$(herdr agent rename "$PANE" "$NAME" 2>&1)" || rename_rc=$?
     [[ "$rename_rc" -eq 0 ]] || delivery_failed "herdr agent rename" "$rename_rc" "$rename_out"

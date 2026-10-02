@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# Thin local transport/presentation helper. MD owns business facts; no watcher per role.
+set -euo pipefail
+BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+export QWB_HERDR_BINDIR="$BINDIR"
+exec python3 -B - "$@" <<'PY'
+import argparse, json, os, re, socket, subprocess, sys, time
+from pathlib import Path
+
+p=argparse.ArgumentParser(description='Herdr hints, owned Space ordering and focus-safe close')
+p.add_argument('command',choices=['subscribe','move','close','activity'])
+p.add_argument('--project',required=True); p.add_argument('--task'); p.add_argument('--space')
+p.add_argument('--index',type=int); p.add_argument('--notice'); p.add_argument('--pane'); p.add_argument('--dir')
+a=p.parse_args(); root=Path(a.project).resolve(); bindir=Path(os.environ['QWB_HERDR_BINDIR'])
+
+def require(ok,why):
+    if not ok: raise ValueError(why)
+
+def command(argv):
+    v=subprocess.run(argv,capture_output=True,text=True,timeout=2)
+    require(v.returncode==0,'query/action failed: '+(v.stderr or v.stdout).strip())
+    return v.stdout
+
+def herdr(*argv):
+    v=json.loads(command(['herdr',*argv])); require(not v.get('error') and isinstance(v.get('result'),dict),'Herdr result unknown')
+    return v['result']
+
+def socket_path():
+    v=json.loads(command(['herdr','status','--json']))['server']
+    session=os.environ.get('HERDR_SESSION')
+    require(not session or v.get('session')==session,'Herdr session mismatch')
+    path=v['socket']; require(isinstance(path,str) and Path(path).is_absolute(),'socket unknown')
+    return path
+
+# Same newline-delimited protocol as local api schema. Bounded wire reads, no new dependency.
+def connect(path):
+    s=socket.socket(socket.AF_UNIX); s.settimeout(.8)
+    try: s.connect(path)
+    except Exception: s.close(); raise
+    return s
+
+def send(s,method,params):
+    s.sendall((json.dumps(dict(id='qwb-herdr',method=method,params=params))+'\n').encode())
+
+def receive(s,buf):
+    while b'\n' not in buf:
+        chunk=s.recv(65536); require(chunk,'event stream closed'); buf.extend(chunk)
+        require(len(buf)<=4*1024*1024,'wire response too large')
+    end=buf.index(10); line=bytes(buf[:end]); del buf[:end+1]
+    return json.loads(line),buf
+
+def rpc(path,method,params):
+    with connect(path) as s:
+        send(s,method,params); v,_=receive(s,bytearray())
+        require(v.get('id')=='qwb-herdr' and not v.get('error') and isinstance(v.get('result'),dict),'wire action unconfirmed')
+        return v['result']
+
+def targets():
+    panes=set()
+    for f in sorted((root/'tasks').glob('*.md')):
+        require(not f.is_symlink(),'task symlink; subscription coverage unknown')
+        text=f.read_text()
+        if '<!-- qwb-collab-' in text:
+            d=json.loads(command(['bash',str(bindir/'qwb-ledger.sh'),'read','--project',str(root),'--task',str(f)]))
+            panes.update(d.get('workers',{}))
+        else:
+            lines=re.findall(r'^dispatch:.*$',text,re.M)
+            if lines:
+                match=re.search(r'(?:^|\s)pane=(\S+)',lines[-1])
+                if match: panes.add(match[1])
+    for f in (root/'qwbuddy/.roles').glob('*.json'):
+        require(not f.is_symlink(),'role symlink')
+        d=json.loads(f.read_text())
+        require(d.get('root')==str(root) and d.get('version')==1,'role identity unknown')
+        if d.get('phase')!='retired' and d.get('pane'): panes.add(d['pane'])
+    return sorted(panes)
+
+def subscribe():
+    notice=Path(a.notice); counter=0; previous=None
+    def signal(kind,panes):
+        nonlocal counter
+        counter+=1; tmp=notice.with_suffix('.tmp')
+        tmp.write_text(json.dumps(dict(seq=counter,phase=kind,panes=panes,at=time.time()))+'\n'); tmp.replace(notice)
+    while True:
+        panes=[]
+        try:
+            panes=targets(); require(panes,'no registered targets')
+            with connect(socket_path()) as s:
+                send(s,'events.subscribe',{'subscriptions':[dict(type='pane.agent_status_changed',pane_id=x) for x in panes]})
+                v,buf=receive(s,bytearray())
+                require(v.get('id')=='qwb-herdr' and v.get('result',{}).get('type')=='subscription_started' and not v.get('error'),'subscription not acknowledged')
+                signal('subscribed',panes); previous=None
+                print('Herdr subscription established: '+','.join(panes),file=sys.stderr,flush=True)
+                refresh=time.monotonic()+1; s.settimeout(.2)
+                while True:
+                    try:
+                        v,buf=receive(s,buf)
+                        if v.get('event')=='pane.agent_status_changed' and v.get('data',{}).get('pane_id') in panes:
+                            signal('event',panes)
+                    except socket.timeout: pass
+                    if time.monotonic()>=refresh:
+                        if targets()!=panes: break
+                        refresh=time.monotonic()+1
+        except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as e:
+            signal('fallback',panes)
+            reason=str(e)
+            if reason!=previous:
+                print('Herdr timely subscription gap; bounded MD scan: '+reason,file=sys.stderr,flush=True); previous=reason
+            time.sleep(1)
+
+# Process evidence never promotes native idle to tool death.
+def activity(pane,directory=None):
+    info=herdr('pane','get',pane).get('pane',{})
+    proc=herdr('pane','process-info','--pane',pane).get('process_info',{})
+    require(info.get('pane_id')==pane and proc.get('pane_id')==pane,'pane/process identity unknown')
+    rows=proc.get('foreground_processes'); require(isinstance(rows,list),'foreground processes unknown')
+    shell=proc.get('shell_pid'); group=proc.get('foreground_process_group_id')
+    if shell and group==shell and not info.get('agent') and any(x.get('pid')==shell and Path(x.get('argv0','')).name in ('sh','bash','zsh','fish') for x in rows):
+        return dict(activity='idle',proof='foreground-shell',pane=pane)
+    tool=info.get('agent'); native=[x for x in rows if Path(x.get('argv0','')).name==tool] if tool else []
+    require(len(native)==1 and isinstance(native[0].get('pid'),int),'native tool identity unknown')
+    n=native[0]; start=command(['ps','-p',str(n['pid']),'-o','lstart=']).strip(); require(start,'PID start unknown')
+    if directory: require(Path(n.get('cwd','')).resolve()==Path(directory).resolve(),'tool cwd mismatch')
+    # Unmatched Pi tool calls override an idle edge; all other CLI adapters remain unknown/busy.
+    ref=info.get('agent_session',{}) or {}
+    if tool=='pi' and ref.get('source')=='herdr:pi' and ref.get('kind')=='path':
+        session=Path(ref.get('value','')); require(session.is_absolute() and not session.is_symlink(),'native session unknown')
+        if not session.exists():
+            return dict(activity='unknown',proof='native-pid+unpersisted-session',pid=n['pid'],pid_start=start,session=str(session))
+        require(session.is_file(),'native session not regular')
+        entries=[json.loads(x) for x in session.read_text().splitlines() if x.strip()]
+        require(entries and entries[0].get('type')=='session' and (not directory or Path(entries[0].get('cwd','')).resolve()==Path(directory).resolve()),'session cwd/header unknown')
+        # Follow the current JSONL leaf ancestry, not abandoned branches.
+        byid={x['id']:x for x in entries if 'id' in x}; branch=[]; node=entries[-1]; seen=set()
+        while node and node.get('id') not in seen:
+            seen.add(node.get('id')); branch.append(node); node=byid.get(node.get('parentId'))
+        outstanding=set(); last=None
+        for x in reversed(branch):
+            m=x.get('message',{}); role=m.get('role')
+            if role: last=m
+            if role=='assistant':
+                outstanding.update(c['id'] for c in m.get('content',[]) if isinstance(c,dict) and c.get('type')=='toolCall' and c.get('id'))
+            elif role=='toolResult': outstanding.discard(m.get('toolCallId'))
+        active=bool(outstanding) or info.get('agent_status') in ('working','blocked')
+        settled=last is None or (last.get('role')=='assistant' and last.get('stopReason') in ('stop','error','aborted'))
+        return dict(activity='busy' if active else 'idle' if settled and info.get('agent_status') in ('idle','done') else 'unknown',
+                    proof='native-pid-start+session-branch',pid=n['pid'],pid_start=start,session=str(session),pending_tools=sorted(outstanding))
+    return dict(activity='busy' if info.get('agent_status') in ('working','blocked') else 'unknown',proof='native-pid; CLI idle not verified',pid=n['pid'],pid_start=start)
+
+def ended(pid,start):
+    require(isinstance(pid,int) and pid>0 and isinstance(start,str) and start,'old launch PID/start unknown')
+    v=subprocess.run(['ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True,timeout=2)
+    require((v.returncode==1 and not v.stdout.strip() and not v.stderr.strip()) or
+            (v.returncode==0 and v.stdout.strip() and v.stdout.strip()!=start),'old native PID still alive or death unknown')
+
+def snapshot():
+    s=herdr('api','snapshot').get('snapshot'); require(isinstance(s,dict),'snapshot missing')
+    ws=s.get('workspaces'); require(isinstance(ws,list),'workspace order unknown')
+    order=[x.get('workspace_id') for x in ws]; require(all(isinstance(x,str) and x for x in order) and len(set(order))==len(order),'workspace IDs unknown')
+    focus=(s.get('focused_workspace_id'),s.get('focused_tab_id'),s.get('focused_pane_id'))
+    require(not order or all(isinstance(x,str) and x for x in focus),'focus identity unknown')
+    return s,order,focus
+
+def presentation():
+    require(a.task and a.space,'exact task and registered Space required')
+    task=Path(a.task).resolve(); require(task.parent==root/'tasks' and not Path(a.task).is_symlink(),'task outside project')
+    text=task.read_text(); records=re.findall(r'^worktree-space: id=(\S+) root-tab=(\S+) path=(.+)$',text,re.M)
+    require(records and records[-1][0]==a.space,'unowned Space')
+    _,tab,directory=records[-1]; directory=str(Path(directory).resolve())
+    verified=command(['bash','-c','. "$1"; qwb_is_project_worktree "$2" "$3" && qwb_worktree_space "$2" "$3"','qwb-herdr',str(bindir/'qwb-lib.sh'),str(root),directory]).strip()
+    require(verified==a.space,'registered project worktree identity mismatch')
+    before,order,focus=snapshot(); require(a.space in order,'owned Space absent')
+    path=socket_path(); index=a.index
+    if a.command=='close':
+        lines=re.findall(r'^(?:dispatch|not-sent):.*$',text,re.M); allowed={tab}; attempts={}
+        current_panes={x.get('pane_id'):x for x in before.get('panes',[]) if x.get('workspace_id')==a.space}
+        for line in lines:
+            match=re.search(r'\spane=(\S+) dir=(.+)$',line); require(match,'launch receipt identity unknown')
+            if match[1] not in current_panes: continue  # Stable absent IDs are not panes this close will control.
+            require(str(Path(match[2]).resolve())==directory,'launch receipt directory mismatch')
+            op=re.search(r'\sop_id=(\S+)',line); require(op,'launch generation unknown; preserve pane')
+            attempts.setdefault(match[1],set()).add(op[1]); allowed.add(current_panes[match[1]].get('tab_id'))
+        tabs=[x for x in before.get('tabs',[]) if x.get('workspace_id')==a.space]
+        require(tabs and all(x.get('tab_id') in allowed for x in tabs),'foreign/unknown tab')
+        panes=[x for x in before.get('panes',[]) if x.get('workspace_id')==a.space]
+        require(panes,'Space panes unknown')
+        for pane in panes:
+            observation=activity(pane['pane_id'],directory)
+            require(observation['proof']=='foreground-shell','exit not confirmed; preserve Space: '+json.dumps(observation))
+            # A foreground shell cannot prove that a delivered/backgrounded CLI has died.
+            bound=re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',text,re.M)
+            by_op={op:json.loads(raw) for op,target,raw in bound if target==pane['pane_id']}
+            require(attempts.get(pane['pane_id'],set()).issubset(by_op),'launch attempt has no matching death evidence; preserve pane')
+            # Failed compensation changes transport permission, never native process lifetime.
+            # Every bound launch on every closing pane is an obligation, even without a dispatch row.
+            for evidence in by_op.values(): ended(evidence.get('pid'),evidence.get('pid_start'))
+            for record in (root/'qwbuddy/.roles').glob('*.json'):
+                require(not record.is_symlink(),'role record symlink; close ownership unknown')
+                d=json.loads(record.read_text())
+                if d.get('pane')==pane['pane_id']:
+                    require(d.get('root')==str(root) and d.get('version')==1,'role ownership unknown')
+                    candidate=d.get('pending') or d
+                    attempted=candidate.get('attempted',d.get('phase') not in ('prepared','pane-ready'))
+                    if attempted: ended(candidate.get('pid'),candidate.get('pid_start'))
+        index=len(order)-1  # Avoid Herdr close-neighbor focus bug, moving only our owned Space.
+    require(index is not None and 0<=index<len(order),'index out of range')
+    expected=[x for x in order if x!=a.space]; expected.insert(index,a.space)
+    failure=None
+    try:
+        # Herdr insert_index names a pre-removal slot, not the final ordinal (local protocol 22).
+        wire_index=index+1 if index>order.index(a.space) else index
+        rpc(path,'workspace.move',dict(workspace_id=a.space,insert_index=wire_index))
+        _,moved,_=snapshot(); require(moved==expected,'ordering readback mismatch; preserve locator')
+        if a.command=='close':
+            herdr('workspace','close',a.space)
+            _,closed,_=snapshot(); require(closed==[x for x in order if x!=a.space],'close not confirmed/order changed; preserve Git')
+    except Exception as e: failure=e
+    # Never restore a stale target over a user's concurrent focus change.
+    after,after_order,after_focus=snapshot()
+    if failure and a.command=='close' and a.space in after_order and [x for x in order if x!=a.space]==[x for x in after_order if x!=a.space]:
+        old=order.index(a.space); wire=old+1 if old>after_order.index(a.space) else old
+        rpc(path,'workspace.move',dict(workspace_id=a.space,insert_index=wire))
+        after,after_order,after_focus=snapshot(); require(after_order==order,'failed close original order restore unconfirmed')
+    if focus[2] and focus!=after_focus and focus[0] in after_order:
+        require(after_focus[0] == a.space and any(x.get('pane_id')==focus[2] and x.get('workspace_id')==focus[0] and x.get('tab_id')==focus[1] for x in after.get('panes',[])),'focus changed concurrently or old target absent; no focus overwrite')
+        rpc(path,'pane.focus',{'pane_id':focus[2]})
+        _,after_order,after_focus=snapshot(); require(after_focus==focus,'focus restore unconfirmed')
+    require(not focus[0] or focus[0]==a.space or after_focus==focus,'unrelated focus not preserved')
+    print(json.dumps(dict(before_order=order,after_order=after_order,before_focus=focus,after_focus=after_focus,space=a.space,command=a.command)))
+    if failure: raise failure
+
+try:
+    if a.command=='subscribe': require(a.notice,'notice path required'); subscribe()
+    elif a.command=='activity':
+        observed=activity(a.pane,a.dir)
+        if a.task:
+            task=Path(a.task).resolve(); require(task.parent==root/'tasks' and not Path(a.task).is_symlink(),'activity ticket outside project')
+            records=re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',task.read_text(),re.M)
+            records=[json.loads(x[2]) for x in records if x[1]==a.pane]
+            require(records and observed.get('pid') and all(observed.get(k)==records[-1].get(k) for k in ('pid','pid_start','session')),'startup incarnation/session not bound; refuse stale idle')
+        print(json.dumps(observed))
+    else: presentation()
+except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as e:
+    if a.command=='activity':
+        print(json.dumps(dict(activity='dead' if 'pane_not_found' in str(e) else 'unknown',proof='pane-not-found' if 'pane_not_found' in str(e) else 'unverified',conflict=str(e)))); sys.exit(0)
+    print('Herdr refusal/unknown: '+str(e),file=sys.stderr); sys.exit(1)
+PY

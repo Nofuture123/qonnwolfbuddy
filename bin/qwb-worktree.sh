@@ -322,7 +322,7 @@ prepare_space_close() {
   record_path="$(cd "$record_path" 2>/dev/null && pwd -P)" || record_path=""
   [[ -n "$root_tab" && "$record_path" == "$WT_PHYS" ]] \
     || { echo "拒绝：worktree Space 根 tab 或路径身份不符" >&2; return 1; }
-  last_dispatch="$(grep '^dispatch:' "$TASK_FILE" | tail -1 || true)"
+  last_dispatch="$(grep -E '^(dispatch|not-sent):' "$TASK_FILE" | tail -1 || true)"
   worker_tab=""
   if [[ -n "$last_dispatch" ]]; then
     task_pane="$(printf '%s\n' "$last_dispatch" | sed -n 's/.* pane=\([^ ]*\) dir=.*/\1/p')"
@@ -387,8 +387,9 @@ prepare_space_close() {
 close_task_space() {
   [[ -n "$SPACE_ID" ]] || return 0
   local out
-  out="$(herdr workspace close "$SPACE_ID" 2>&1)" \
-    || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭失败，Git 未动：$out" >&2; return 1; }
+  out="$(bash "$(dirname "$LIB")/qwb-herdr.sh" close --project "$PROJECT_ROOT" --task "$TASK_FILE" --space "$SPACE_ID" 2>&1)" \
+    || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭/焦点读回未确认，Git 未动：$out" >&2; return 1; }
+  printf '%s\n' "$out"
 }
 
 BL="$BRANCH"

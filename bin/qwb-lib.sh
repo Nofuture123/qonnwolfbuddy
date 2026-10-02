@@ -366,11 +366,19 @@ qwb_is_project_worktree() {
   return 1
 }
 
+# Actual native activity; unknown refuses reuse rather than trusting a Herdr idle edge.
+qwb_pane_activity() {
+  local helper data
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-herdr.sh"
+  data="$(bash "$helper" activity --project "${PROJECT_ROOT:-$PWD}" --pane "$1" --dir "$2" --task "$3")" || return 1
+  printf '%s' "$data" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{activity}'
+}
+
 # worker_lost <任务书> —— 工人丢失判定（关机/herdr 重启后 pane 没了，票还 running）
 #
 # 取该票最新一条 dispatch: 的 pane=，herdr pane get 判活：
-#   pane_not_found，或 pane 在但 agent 字段为空（工人进程已退出、pane 退回 shell）
-#     → 工人丢失：stdout 打印 pane id，返回 0
+#   pane_not_found → 端点丢失：stdout 打印 pane id，返回 0；
+#   agent 字段为空仅证明原生标签已退回，可能旧CLI仍后台存活 → unknown，不猜死亡。
 #   agent 仍在 → 未丢失，返回 1；无 dispatch 行（未派）→ 未丢失，返回 1
 #   其他查询失败 / 响应不合契约 → 无法判定：stderr 一行「无法确认工人状态」，返回 2（不当丢失，不猜）
 # 只应在有 herdr 且非 --dry-run 的路径调用（判定需要真实查询）。
@@ -397,7 +405,7 @@ worker_lost() {
   ' 2>/dev/null || true)"
   case "$v" in
     live) return 1 ;;
-    lost) printf '%s\n' "$pane"; return 0 ;;
+    lost) echo "无法确认工人状态（pane ${pane} 原生标签已退回，但原PID死亡未证明；保留现场）" >&2; return 2 ;;
     *)    echo "无法确认工人状态（herdr pane get ${pane} 响应不符合契约）" >&2; return 2 ;;
   esac
 }

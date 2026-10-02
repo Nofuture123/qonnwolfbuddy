@@ -23,7 +23,8 @@ fi
 
 echo "== 3. qwb-init.sh 装进临时假项目 =="
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+WIREPID=""
+trap '[[ -z "$WIREPID" ]] || { kill "$WIREPID" 2>/dev/null; wait "$WIREPID" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
 # 信任预置会读写 $HOME/.claude.json 与 $HOME/.codex/config.toml：全程用假 HOME，不碰真家目录。
 # seed 一份合法 codex config，让 48 节这类断言 stderr 为空的用例不被「文件不存在」预置警告污染
 mkdir -p "$TMP/home/.codex"; printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$TMP/home/.codex/config.toml"
@@ -74,6 +75,11 @@ echo "== 7. stub herdr：qwb-wake.sh --once 有未结项退出 0（回归 Bug 2�
 STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
 FIXDIR="$ROOT/tests/fixtures/herdr"
 mkdir -p "$STUB"
+WIRELOG="$TMP/herdr-wire.jsonl"
+export HERDR_TEST_SOCKET="$TMP/api.sock"
+python3 -B "$FIXDIR/wire-server.py" "$HERDR_TEST_SOCKET" "$WIRELOG" & WIREPID=$!
+for _ in {1..100}; do [[ -S "$HERDR_TEST_SOCKET" ]] && break; sleep 0.01; done
+[[ -S "$HERDR_TEST_SOCKET" ]] || bad "离线原生socket夹具未就绪"
 # 契约 stub：响应全部来自 tests/fixtures/herdr/ 真录样本（剔 # 注释行），不再硬编码 JSON。
 # 可选行为：HERDR_FAIL=run|wait|list|prompt 让对应调用按真实错误形状失败；
 #          HERDR_WAIT_BUMP_MS + QWB_FAKE_NOW_FILE 让 agent wait 把假时钟往前推（模拟等待耗时）；
@@ -88,6 +94,8 @@ DYNH="\${HERDR_DYN_DIR:-$TMP/herdr-dyn}"; mkdir -p "\$DYNH" 2>/dev/null
 san() { printf '%s' "\$1" | tr -cd 'a-zA-Z0-9'; }
 failjson() { printf '{"error":{"code":"%s","message":"%s"},"id":"cli:test"}\n' "\$1" "\$2" >&2; exit 1; }
 case "\${1:-} \${2:-}" in
+  "status --json") jq -cn --arg socket "\$HERDR_TEST_SOCKET" --arg session "\${HERDR_SESSION:-}" '{server:{socket:\$socket,session:\$session}}' ;;
+  "api snapshot") "\$0" workspace list | python3 -B "$FIXDIR/snapshot.py" "\$DYNH" ;;
   "pane run")   if [[ "\${HERDR_FAIL:-}" == *run* ]]; then fix pane-run-error.json >&2; exit 1; fi
                 # 模拟真实效果：往 shell pane 跑 qwb-wake.sh → 之后 process-info 呈现值守进程
                 # （含 --pane 目标实参；QWB_STUB_NOPROC=1 抑制写入，模拟投递后进程始终起不来）
@@ -156,6 +164,9 @@ case "\${1:-} \${2:-}" in
   "tab create") if [[ -f "\$DYNH/tab-create.json" ]]; then cat "\$DYNH/tab-create.json"; else fix tab-create.json; fi ;;
   "tab list")   if [[ -f "\$DYNH/tab-list.json" ]]; then sed '/^#/d' "\$DYNH/tab-list.json"; else failjson io_error "no mocked tab list"; fi ;;
   "workspace close") if [[ "\${HERDR_FAIL:-}" == *wsclose* ]]; then failjson io_error "mocked workspace close failure"; fi
+                if [[ -f "\$DYNH/spaces.tsv" ]]; then
+                  awk -F '\t' -v id="\$3" '\$1 != id' "\$DYNH/spaces.tsv" > "\$DYNH/spaces.next"; mv "\$DYNH/spaces.next" "\$DYNH/spaces.tsv"
+                fi
                 printf '{"id":"cli:workspace:close","result":{"type":"ok"}}\n' ;;
   "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
                 printf '{"id":"cli:tab:close","result":{"type":"ok"}}\n' ;;
@@ -261,17 +272,22 @@ FCLOG="$FCT/herdr-calls.log"
 sed "s|$STUBLOG|$FCLOG|g" "$STUB/herdr" > "$FCT/stubbin/herdr"
 chmod +x "$FCT/stubbin/herdr"
 FKN="$FCT/fake-now"; FKS="$FCT/fake-sleep.log"
-# now.sh 每次调用 +STEP；sleep.sh 不真睡，满 N 次使公开 wake 入口自停。
-mk_fakeclock() { # $1=STEP $2=截断次数
+# now.sh 只读单writer假钟；sleep.sh计入已耗与请求等待，满N个预算使公开入口自停。
+mk_fakeclock() { # $1=每轮首个等待额外耗时 $2=停止轮数
   echo 0 > "$FKN"; : > "$FKS"
   cat > "$FCT/now.sh" <<EOF
 #!/usr/bin/env bash
-cur="\$(( \$(cat "$FKN") + $1 ))"; echo "\$cur" > "$FKN"; echo "\$cur"
+cat "$FKN"
 EOF
   cat > "$FCT/sleep.sh" <<EOF
 #!/usr/bin/env bash
-echo "\$1" >> "$FKS"
-[[ "\$(wc -l < "$FKS" | tr -d ' ')" -ge $2 ]] && kill "\$PPID" 2>/dev/null
+cur=\$(cat "$FKN")
+next=\$((cur + \$1))
+# 额外耗时只算本轮一次；clock 单 writer，原子换文件，避免读到截断空值。
+if (( cur % 1000 == 0 )); then next=\$((next + $1)); fi
+printf '%s %s %s\\n' "\$cur" "\$next" "\$1" >> "$FKS"
+printf '%s\\n' "\$next" > "$FKN.next"; mv "$FKN.next" "$FKN"
+(( next >= $2 * 1000 )) && kill "\$PPID" 2>/dev/null
 exit 0
 EOF
   chmod +x "$FCT/now.sh" "$FCT/sleep.sh"
@@ -292,9 +308,9 @@ fc_stop_watchdog() {
   WD=""
 }
 fc_ready() {
-  while ! grep -q '^herdr agent wait ' "$FCLOG" 2>/dev/null; do
+  while [[ ! -s "$FKS" ]]; do
     if [[ -f "$FCT/watchdog-fired" ]] || ! kill -0 "$WPID" 2>/dev/null; then
-      bad "§12 冷态启动未到首个 wait（有界握手失败）"
+      bad "§12 冷态启动未到首个有界等待（握手失败）"
       return 1
     fi
     sleep 0.02
@@ -315,11 +331,9 @@ fc_finish() {
   fi
 }
 fc_pane_ok() {
-  if awk '/^herdr agent wait / { n++; if ($4 != "wtest:p9") wrong=1 } END { exit(!n || wrong) }' "$FCLOG"; then
-    ok "§12 实际 wait 目标为单票 wtest:p9"
-  else
-    bad "§12 wait 未到单票目标（前组污染/目标错误）"
-  fi
+  if jq -se '[.[] | select(.method=="events.subscribe")] | length>0 and all(.[]; .params.subscriptions==[{type:"pane.agent_status_changed",pane_id:"wtest:p9"}])' "$WIRELOG" >/dev/null; then
+    ok "§12 共用订阅准确覆盖单票 wtest:p9"
+  else bad "§12 订阅目标污染/目标错误"; fi
 }
 run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外环境变量
   ( cd "${1:-$FCT}" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
@@ -334,77 +348,68 @@ run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外
 # 等待预算需要一个带 dispatch: pane 的未结项，只有本票参与。
 FCF="$FCT/tasks/2099-01-20-fakeclock.md"
 printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
-all_eq() { # 全部行 == $1 且非空
-  local want="$1" l
-  [[ -s "$FKS" ]] || return 1
-  while IFS= read -r l; do [[ "$l" == "$want" ]] || return 1; done < "$FKS"; return 0
+# 原来单pane agent wait的精确补睡，迁为共用订阅的50ms分片；总预算与15秒看门狗不降低。
+fc_budget_ok() { # $1=额外耗时 $2=轮数
+  if python3 - "$FKS" "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+rows=[list(map(int,x.split())) for x in Path(sys.argv[1]).read_text().splitlines()]
+burn, rounds=map(int,sys.argv[2:])
+cur=0; slept=0
+assert rows, 'no bounded wait'
+for old,new,ms in rows:
+    assert old==cur and 0<ms<=50, (old,new,ms,cur)
+    assert ms==min(50,1000-old%1000), 'oversleep / shortened budget'
+    assert new==old+ms+(burn if old%1000==0 else 0), 'elapsed time lost or counted twice'
+    assert new<=((old//1000)+1)*1000, 'budget crossed'
+    cur=new; slept+=ms
+assert cur==rounds*1000 and slept==rounds*(1000-burn), (cur,slept)
+PY
+  then ok "共用等待预算：$2 轮实际补睡=$(( $2 * (1000-$1) ))ms，已耗只计一次、无忙循环"
+  else bad "事件等待预算失真"; cat "$FKS"; fi
+  if grep -q 'events.subscribe' "$WIRELOG"; then
+    local scans; scans="$(grep -c '^herdr pane get wtest:p9' "$FCLOG" || true)"
+    [[ "$scans" -eq "$2" ]] && ok "真实公开账本扫描恰$2轮（已耗预算不重复启动等待）" \
+      || bad "预算轮数不符：实际扫描=$scans，期望=$2"
+  fi
 }
+for burn in 250 600 0; do
+  echo "== 12. 共用订阅等待：额外耗时 ${burn}ms 纳入每轮1000ms预算 =="
+  mk_fakeclock "$burn" 3
+  : > "$FCLOG"; : > "$WIRELOG"
+  run_wake_fakeclock
+  fc_pane_ok
+  fc_budget_ok "$burn" 3
+done
 
-echo "== 12. F2 回归（假时钟）：agent wait 失败 → 每轮恰 1 次 wait + 补睡满 1×interval，无忙循环 =="
-mk_fakeclock 250 3
-: > "$FCLOG"
-HERDR_FAIL=wait run_wake_fakeclock
-fc_pane_ok
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
-[[ "$nsl" == "3" && "$nwt" == "3" ]] \
-  && ok "3 轮 = 3 次 agent wait + 3 次补睡（每轮恰一次）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
-all_eq 750 && ok "每轮补睡 750ms（interval 1000 − wait 已耗 250 = 恰 1×interval）" \
-  || { bad "补睡值不对（应全 750）:"; cat "$FKS"; }
-
-echo "== 12b. G2 回归（假时钟）：agent wait 耗时计入预算，超时路径不重复 sleep =="
-mk_fakeclock 50 3
-: > "$FCLOG"
-HERDR_WAIT_BUMP_MS=600 run_wake_fakeclock   # wait 烧掉 600ms → dt=650 → 应补睡 350，旧实现会再睡 1000
-fc_pane_ok
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
-[[ "$nsl" == "3" && "$nwt" == "3" ]] \
-  && ok "3 轮 = 3 次 wait + 3 次补睡" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
-all_eq 350 && ok "wait 耗 650ms 后只补睡 350ms（已耗计入预算；旧实现会睡满 1000）" \
-  || { bad "补睡值不对（应全 350）:"; cat "$FKS"; }
-grep -qx '1000' "$FKS" && bad "出现整睡 1000——超时路径仍重复 sleep（G2 未修）" \
-  || ok "无整睡 1000：超时路径未重复 sleep"
-
-echo "== 12c. H2 回归（假时钟）：agent wait 立即成功也计入预算，无忙循环 =="
-mk_fakeclock 1 3                          # 每次读钟仅 +1ms → wait 视为瞬时 → 应补睡 999
-: > "$FCLOG"
-run_wake_fakeclock
-fc_pane_ok
-nsl="$(wc -l < "$FKS" | tr -d ' ')"; nwt="$(grep -c 'agent wait' "$FCLOG" || true)"
-[[ "$nsl" == "3" && "$nwt" == "3" ]] \
-  && ok "3 轮 = 3 次 wait + 3 次补睡（不真睡也不忙循环）" || bad "轮次不符：wait=${nwt} sleep=${nsl}"
-all_eq 999 && ok "瞬时 wait 每轮补睡 999ms ≈1×interval（修复前实测 4.9 秒 91 轮）" \
-  || { bad "补睡值不对（应全 999）:"; cat "$FKS"; }
-
-echo "== 12d. 无 dispatch pane 路径：整睡一个 interval =="
+echo "== 12d. 无 dispatch pane：有界扫描、不猜目标、仍满预算等待 =="
 NP="$TMP/nopane"; mkdir -p "$NP/tasks" "$NP/qwbuddy"
 printf '# np\nstate: running\n' > "$NP/tasks/2099-01-21-np.md"
 cp "$TMP/qwbuddy/config.sh" "$NP/qwbuddy/config.sh"
-mk_fakeclock 100 2
-: > "$FCLOG"
+mk_fakeclock 0 2
+: > "$FCLOG"; : > "$WIRELOG"
 run_wake_fakeclock "$NP"
-if grep -q '^herdr agent wait ' "$FCLOG"; then bad "无 dispatch 夹具误选其他组 pane"; else ok "无 dispatch 夹具没有 agent wait"; fi
-all_eq 1000 && ok "无可用 pane 时每轮整睡 1000ms（=1×interval 退化等待）" \
-  || { bad "整睡值不对（应全 1000）:"; cat "$FKS"; }
+if grep -q 'events.subscribe' "$WIRELOG"; then bad "无 dispatch 夹具误订阅其他组 pane"; else ok "无 dispatch 不订阅未知目标"; fi
+fc_budget_ok 0 2
 
-echo "== 12e. 真时钟轻量冒烟：真跑一轮 =="
-# 重新构造无 wake 历史的冷态单票；启动就绪与节奏窗口分开，不改生产启动SLA。
+echo "== 12e. 真时钟轻量冒烟：共用订阅后1.3秒内扫描1..4轮 =="
 printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
-: > "$FCLOG"
+: > "$FCLOG"; : > "$WIRELOG"
 ( cd "$FCT" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
     exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
       bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 600 ) >"$FCT/runtime.log" 2>&1 &
 WPID=$!; fc_watchdog
-if fc_ready; then
-  fc_stop_watchdog
-  # 首个 wait 是就绪窗口的起点，仍计入原1≤n≤4；不清日志制造额外必需wait。
-  sleep 1.3
-fi
+while ! grep -q 'Herdr subscription established' "$FCT/runtime.log"; do
+  if [[ -e "$FCT/watchdog-fired" ]] || ! kill -0 "$WPID" 2>/dev/null; then bad "真时钟订阅握手未就绪"; break; fi
+  sleep 0.02
+done
+sleep 1.3
 kill -TERM -- "-$WPID" 2>/dev/null || true
 fc_finish
 fc_pane_ok
-n="$(grep -c 'agent wait' "$FCLOG" || true)"
+n="$(grep -c '^herdr pane get wtest:p9' "$FCLOG" || true)"
 [[ "$n" -ge 1 && "$n" -le 4 ]] \
-  && ok "就绪后1.3 秒内 ${n} 次 agent wait（真时钟真跑，节奏正常）" || bad "就绪后1.3 秒内 ${n} 次 agent wait（异常）"
+  && ok "订阅就绪后1.3秒内 ${n} 次扫描（真时钟，无忙循环）" || bad "真时钟扫描节奏异常：${n}"
 
 echo "== 13. F1 回归：主控锁 =="
 # 残留锁自动回收落地后，「锁被占用而拒绝」必须用活锁主构造：stub + dyn 片场让锁主 pane 真实存在；
@@ -627,6 +632,10 @@ rf_space="wQ$(printf '%s' "$(cd "$GP/.worktrees/rpfail" && pwd)" | shasum | cut 
 
 # —— S4–S7 场记：方案A 布局的 finish Space 场景（独立 DYN 片场）
 FD="$TMP/finish-dyn"; mkdir -p "$FD"
+# 真实启动且已排空的进程，不能用原生idle或假PID替代死亡证据。
+sleep 60 & fs_pid=$!
+fs_start="$(ps -p "$fs_pid" -o lstart= | perl -pe 's/^\s+|\s+$//g')"
+kill "$fs_pid"; wait "$fs_pid" 2>/dev/null || true
 fs_wsan() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9'; }
 fs_mkticket() { # $1=id $2=space $3=root_tab $4=worker_tab $5=worker_pane；stdout=worktree 物理路径
   local id="$1" sp="$2" tf="$GP/tasks/2099-01-17-$1.md" phys
@@ -634,16 +643,19 @@ fs_mkticket() { # $1=id $2=space $3=root_tab $4=worker_tab $5=worker_pane；stdo
   git -C "$GP" worktree add -q -b "$id" "$GP/.worktrees/$id"
   phys="$(cd "$GP/.worktrees/$id" && pwd -P)"
   printf 'worktree-space: id=%s root-tab=%s path=%s\n' "$sp" "$3" "$phys" >> "$tf"
-  printf 'dispatch: 2026-01-01T00:00:00Z worker=pi agent=qwb-%s pane=%s dir=%s\n' "$id" "$5" "$phys" >> "$tf"
+  printf 'dispatch: 2026-01-01T00:00:00Z op_id=fixture worker=pi agent=qwb-%s pane=%s dir=%s\n' "$id" "$5" "$phys" >> "$tf"
+  jq -cn --argjson pid "$fs_pid" --arg start "$fs_start" '{pid:$pid,pid_start:$start}' |
+    sed "s/^/working: worker-activity op=fixture pane=$5 evidence=/" >> "$tf"
   printf '%s\t%s\t%s\n' "$sp" "$GP" "$phys" >> "$FD/spaces.tsv"
   printf '%s' "$phys"
 }
 fs_get() { # $1=pane $2=tab $3=space $4=agent_status
-  printf '{"id":"x","result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s","agent":"pi","agent_status":"%s"}}}\n' \
-    "$1" "$2" "$3" "${4:-idle}" > "$FD/get-$(fs_wsan "$1").json"
+  jq -cn --arg pane "$1" --arg tab "$2" --arg ws "$3" --arg status "${4:-idle}" \
+    '{result:{pane:{pane_id:$pane,tab_id:$tab,workspace_id:$ws,agent:(if $status=="working" then "pi" else null end),agent_status:$status}}}' > "$FD/get-$(fs_wsan "$1").json"
+  jq -cn --arg pane "$1" '{result:{process_info:{pane_id:$pane,shell_pid:42,foreground_process_group_id:42,foreground_processes:[{pid:42,argv0:"zsh"}]}}}' > "$FD/proc-$(fs_wsan "$1").json"
 }
 fs_tabs() { local js="[" t first=1
-  for t in "$@"; do [[ $first -eq 1 ]] || js+=","; first=0; js+="{\"tab_id\":\"$t\"}"; done
+  for t in "$@"; do [[ $first -eq 1 ]] || js+=","; first=0; js+="{\"tab_id\":\"$t\",\"workspace_id\":\"${t%%:*}\"}"; done
   printf '{"id":"x","result":{"tabs":%s]}}\n' "$js" > "$FD/tab-list.json"; }
 fs_panes() { # $1=pane $2=agent_status
   printf '{"id":"x","result":{"panes":[{"pane_id":"%s","agent_status":"%s"}]}}\n' "$1" "$2" > "$FD/pane-list.json"; }
@@ -2568,8 +2580,8 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAI
 { grep -q '^not-sent: .* worker=cmd .* pane=w93:p7 ' "$LM/tasks/2099-02-01-panetimeout.md" \
    && grep -q '^blocked: .*step=pane-run 工人检测 rc=1 pane=w93:p7' "$LM/tasks/2099-02-01-panetimeout.md" \
    && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-panetimeout.md" \
-   && grep -q '^herdr tab close w93:t7' "$STUBLOG"; } \
-  && ok "pane-run 超时原位标记 not-sent、记录 blocked 并关闭新 tab" || bad "pane-run 超时失败记账或清理不对"
+   && ! grep -q '^herdr tab close' "$STUBLOG"; } \
+  && ok "pane-run 超时原位not-sent、blocked；未知退出的新tab保留" || bad "pane-run 超时失败记账或清理不对"
 [[ "$(grep -c 'pane run w93:p7' "$STUBLOG" || true)" -eq 1 ]] \
   && ok "pane-run 超时后无第二次 pane run（未发提示词）" || bad "pane-run 超时后仍发送提示词"
 
@@ -3784,7 +3796,7 @@ out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/
   && [[ -d "$GP2/.worktrees/wtfail" ]]; } \
   && ok "钩子失败：拒绝派发（退出码 3 上报）、零副作用、副本保留" || { bad "钩子失败处理不对（rc=${rc}）：${out:0:200}"; }
 
-echo "== 64. 工人丢失：status 标出、值守只叫一次、shell 算丢失、在/未知不算 =="
+echo "== 64. 工人丢失：缺pane叫一次，shell/未知保留，不猜后台死亡 =="
 WLP="$TMP/lostproj"; mkdir -p "$WLP"; bash "$ROOT/bin/qwb-init.sh" "$WLP" >/dev/null
 LFP="$(printf 'running\ndone: 完成一半' | shasum | cut -d' ' -f1)"   # 实现指纹输入无尾随换行
 mk_lost_ticket() {
@@ -3805,12 +3817,17 @@ out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pa
 { printf '%s' "$out" | grep -q '跳过：2099-01-01-lost' \
   && [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 2 ]]; } \
   && ok "第二轮指纹未变：跳过且无新 wake 行（沿用去重）" || bad "丢失后反复重叫"
-# pane 在但 agent 空（退回 shell）也算丢失
+# pane 在但 agent 空：前台shell不是旧后台PID死亡证明，必须unknown保留。
 mk_lost_ticket
 mkdir -p "$WLP/dyn"; sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" > "$WLP/dyn/get-wXp9.json"
 out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '工人丢失: pane wX:p9' \
-  && ok "pane 在但无 agent（退回 shell）→ 同样标工人丢失" || bad "shell 态未标丢失"
+printf '%s' "$out" | grep -q '工人状态未知' \
+  && ! printf '%s' "$out" | grep -q '工人丢失' \
+  && ok "退回shell但无死亡证据 → unknown，不猜工人丢失" || bad "shell未安全保持unknown"
+: > "$STUBLOG"
+( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
+[[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]] && ! grep -q '^herdr pane run' "$STUBLOG" \
+  && ok "shell未知不会新增丢失通知/消费wake" || bad "shell未知被误当死亡"
 # 工人在（带 agent 字段）→ 不算丢失；指纹与不做判定时一致（对照）
 mk_lost_ticket
 sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" | sed 's|"agent_status":"unknown"|"agent":"pi","agent_status":"idle"|' > "$WLP/dyn/get-wXp9.json"
@@ -4028,7 +4045,21 @@ sed -e 's/w8Z:pY/wX:p5/g' -e 's/w8Z:tR/wX:t5/g' -e 's/w8Z/wX/g' \
 printf '{"result":{"workspaces":[{"workspace_id":"wX","focused":true,"worktree":{"repo_root":"%s"}}]}}\n' \
   "$ru_physical" > "$RUP/dyn/workspace-list.json"
 ru_task="$RUP/tasks/2099-01-01-reuset.md"
-printf 'dispatch: historical worker=pi agent=qwb-reuset pane=wX:p5 dir=%s\n' "$ru_physical" >> "$ru_task"
+printf 'dispatch: historical op_id=fixture worker=pi agent=qwb-reuset pane=wX:p5 dir=%s\n' "$ru_physical" >> "$ru_task"
+# 原生process-info + 真实PID/start + 精确Pi session分支 + 本票绑定，不能放松生产身份迎合旧fake。
+python3 -B - "$RUP/dyn" "$ru_physical" "$$" "$ru_task" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+folder=Path(sys.argv[1]); cwd=sys.argv[2]; pid=int(sys.argv[3]); task=Path(sys.argv[4])
+session=folder/'pi.jsonl'
+session.write_text(json.dumps(dict(type='session',cwd=cwd))+'\n'+json.dumps(dict(type='message',id='ended',message=dict(role='assistant',content=[],stopReason='stop')))+'\n')
+path=folder/'get-wXp5.json'; value=json.loads(path.read_text())
+value['result']['pane']['agent_session']=dict(kind='path',source='herdr:pi',value=str(session))
+path.write_text(json.dumps(value))
+(folder/'proc-wXp5.json').write_text(json.dumps(dict(result=dict(process_info=dict(pane_id='wX:p5',shell_pid=42,foreground_process_group_id=pid,foreground_processes=[dict(pid=pid,argv0='pi',cwd=cwd)])))))
+proof=dict(pid=pid,pid_start=subprocess.check_output(['ps','-p',str(pid),'-o','lstart='],text=True).strip(),session=str(session))
+with task.open('a') as out: out.write('working: worker-activity op=fixture pane=wX:p5 evidence='+json.dumps(proof)+'\n')
+PY
 # (a) idle → 复用：无 tab create、无 agent start、有 agent prompt，dispatch pane=现有 pane
 : > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
 ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
@@ -4052,7 +4083,7 @@ ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
   && ! grep -q 'tab create' "$STUBLOG"; } \
   && ok "同名工人还在 working → 拒绝派发（无新 dispatch 行、零 herdr 副作用）" \
   || { bad "working 拒绝路径不对（rc=${ru_rc}）"; printf '%s\n' "$ru_out"; cat "$STUBLOG"; }
-# (c) 无同名工人 + agent start 失败 → 关刚建 tab、回滚 dispatch 行、exit 1 上报原始错误
+# (c) 无同名工人 + agent start 失败 → 保未确认退出tab、撤销dispatch、exit1上报原始错误
 rm "$RUP/dyn/agent-get-qwbreuset.json"   # 回到无同名工人：走新开 tab 路径
 cp "$FIXDIR/agent-get-error.json" "$RUP/dyn/agent-get-qwbrollback.err"
 cat > "$RUP/tasks/2099-01-02-rollback.md" <<'EOF'
@@ -4068,7 +4099,7 @@ Then  正常记账
 ### user_失败
 Given agent start 失败
 When  派发
-Then  回滚 tab 与 dispatch 行
+Then  撤销dispatch，未确认退出的tab保留
 EOF
 rb_task="$RUP/tasks/2099-01-02-rollback.md"
 rm -rf "$RUP/qwbuddy/.controller.lock"
@@ -4085,9 +4116,9 @@ rb_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
   && [[ "$(grep -c '^dispatch:' "$rb_task")" -eq 1 ]] \
   && [[ "$(grep -c '^not-sent:' "$rb_task")" -eq 1 ]] \
   && grep -q '^blocked: .*派发投递失败' "$rb_task" \
-  && grep -q 'tab create' "$STUBLOG" && grep -q 'tab close w93:t7' "$STUBLOG" \
+  && grep -q 'tab create' "$STUBLOG" && ! grep -q 'tab close' "$STUBLOG" \
   && ! grep -q 'agent prompt' "$STUBLOG"; } \
-  && ok "agent start 失败（agent_name_taken）→ 关本次 tab、历史 dispatch 保留、本次原位标记未投递、exit 1 原始错误上报" \
+  && ok "agent start失败 → 未确认退出的tab保留、历史dispatch保留、本次not-sent、exit1与原始错误" \
   || { bad "回滚路径不对（rc=${rb_rc}）"; printf '%s\n' "$rb_out"; cat "$STUBLOG"; }
 
 echo "== 70. 开局点名改用 qwb-status.sh（省 token）=="

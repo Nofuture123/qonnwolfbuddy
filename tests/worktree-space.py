@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import socket
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = """# Space contract
@@ -35,7 +37,20 @@ def out(result): print(json.dumps({"result": result}))
 def err(code):
     print(json.dumps({"error": {"code": code}}), file=sys.stderr)
     sys.exit(1)
-if args[:2] == ["workspace", "list"]:
+if args[:2] == ["status", "--json"]:
+    print(json.dumps({"server": {"socket": os.environ["QWB_TEST_SOCKET"], "session": os.environ.get("HERDR_SESSION")}}))
+elif args[:2] == ["api", "snapshot"]:
+    ids = ["wRoot"] + (["wTask"] if wt else [])
+    out({"snapshot": {
+        "workspaces": [{"workspace_id": i} for i in ids],
+        "tabs": [{"tab_id": "wTask:t1", "workspace_id": "wTask"}] +
+                ([{"tab_id": "wTask:t2", "workspace_id": "wTask"}] if mode in ("worker-success", "worker-foreign-space") else []),
+        "panes": [{"pane_id": "wRoot:p1", "workspace_id": "wRoot", "tab_id": "wRoot:t1"}] +
+                 ([{"pane_id": "wTask:p1", "workspace_id": "wTask", "tab_id": "wTask:t1"}] if wt else []) +
+                 ([{"pane_id": "wTask:p2", "workspace_id": "wRoot" if mode == "worker-foreign-space" else "wTask", "tab_id": "wTask:t2"}]
+                  if wt and mode in ("worker-success", "worker-foreign-space") else []),
+        "focused_workspace_id": "wRoot", "focused_tab_id": "wRoot:t1", "focused_pane_id": "wRoot:p1"}})
+elif args[:2] == ["workspace", "list"]:
     if mode == "query-fail" or (mode in ("query-fail-after-open", "close-fail-after-open") and wt): err("io_error")
     repo_root = os.environ.get("QWB_TEST_REPO_ROOT", str(root))
     spaces = [{"workspace_id": "wRoot", "focused": True, "worktree": {
@@ -66,12 +81,16 @@ elif args[:2] == ["pane", "get"]:
         out({"pane": {"pane_id": pane, "foreground_cwd": os.environ["QWB_TEST_WT"],
                       "workspace_id": "wRoot", "tab_id": "wRoot:t9"}})
     elif pane == "wTask:p2":
-        out({"pane": {"pane_id": pane, "agent": "pi", "foreground_cwd": os.environ["QWB_TEST_WT"],
+        out({"pane": {"pane_id": pane, "agent": None, "foreground_cwd": os.environ["QWB_TEST_WT"],
                       "workspace_id": "wRoot" if mode == "worker-foreign-space" else "wTask",
                       "tab_id": "wTask:t2"}})
+    elif pane == "wTask:p1":
+        out({"pane": {"pane_id": pane, "agent": None, "workspace_id": "wTask", "tab_id": "wTask:t1",
+                      "foreground_cwd": os.environ["QWB_TEST_WT"]}})
     else: err("pane_not_found")
 elif args[:2] == ["pane", "process-info"]:
-    out({"process_info": {"foreground_process_group_id": 42, "shell_pid": 42}})
+    out({"process_info": {"pane_id": args[3], "foreground_process_group_id": 42, "shell_pid": 42,
+                          "foreground_processes": [{"pid": 42, "argv0": "zsh"}]}})
 elif args[:2] == ["tab", "list"]:
     tabs = [{"tab_id": "wTask:t1"}]
     if mode == "foreign-tab": tabs.append({"tab_id": "wTask:t3"})
@@ -116,8 +135,21 @@ def project(base):
     herdr.chmod(0o755)
     state = base / "space-path"
     log = base / "herdr.jsonl"
+    # External wire boundary: confirm the move response while leaving the already-last owned Space in order.
+    # Daemon threads die with this test process; sockets belong only to each temporary fixture.
+    api = socket.socket(socket.AF_UNIX)
+    socket_path = str(base / "api.sock")
+    api.bind(socket_path); api.listen()
+    def serve():
+        while True:
+            try: c, _ = api.accept()
+            except OSError: return
+            with c:
+                request = json.loads(c.makefile("rb").readline())
+                c.sendall((json.dumps({"id": request["id"], "result": {"type": "workspace_list", "workspaces": []}}) + "\n").encode())
+    threading.Thread(target=serve, daemon=True).start()
     env = os.environ.copy()
-    env.update(PATH=f"{stub}:{env['PATH']}", HOME=str(base), HERDR_PANE_ID="wRoot:pCtl",
+    env.update(QWB_TEST_SOCKET=socket_path, PATH=f"{stub}:{env['PATH']}", HOME=str(base), HERDR_PANE_ID="wRoot:pCtl",
                HERDR_WORKSPACE_ID="wRoot", QWB_TEST_PROJECT=str(repo),
                QWB_TEST_SPACE_STATE=str(state), QWB_TEST_HERDR_LOG=str(log),
                QWB_TEST_WT=str(repo / ".worktrees/case"))
@@ -264,8 +296,13 @@ for mode in ("worker-success", "worker-foreign-space"):
         wt = repo / ".worktrees/case"
         assert call("git", "-C", str(repo), "worktree", "add", "-qb", "case", str(wt), env=os.environ).returncode == 0
         state.write_text(str(wt))
+        child = subprocess.Popen(["sleep", "60"])
+        proof = {"pid": child.pid, "pid_start": call("ps", "-p", str(child.pid), "-o", "lstart=", env=env).stdout.strip()}
+        child.terminate(); child.wait()
+        assert proof["pid_start"], "fixture must bind an actual prior PID incarnation"
         ticket.write_text(f"state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n"
-                          f"dispatch: worker=pi pane=wTask:p2 dir={wt}\n")
+                          f"dispatch: op_id=fixture worker=pi pane=wTask:p2 dir={wt}\n"
+                          'working: worker-activity op=fixture pane=wTask:p2 evidence=' + json.dumps(proof) + '\n')
         git = base / "stub/git"
         git.write_text('#!/usr/bin/env bash\nif [[ "$*" == *"worktree remove"* ]]; then '
                        'printf \'["git", "worktree", "remove"]\\n\' >> "$QWB_TEST_HERDR_LOG"; fi\n'

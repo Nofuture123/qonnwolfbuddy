@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="qwb-lifecycle-") as tmp:
     qwb = project / "qwbuddy"
     (qwb / "bin").mkdir(parents=True)
     (project / "tasks").mkdir()
-    for name in ("qwb-wake.sh", "qwb-lib.sh", "qwb-hook-claude-stop.sh"):
+    for name in ("qwb-wake.sh", "qwb-lib.sh", "qwb-herdr.sh", "qwb-ledger.sh", "qwb-hook-claude-stop.sh"):
         shutil.copy2(source / "bin" / name, qwb / "bin" / name)
     (qwb / "config.sh").write_text('QWB_WAKE_INTERVAL_MS=100\nQWB_REWAKE_MS=0\n')
     lock = qwb / ".controller.lock"

@@ -66,7 +66,7 @@ bad_shape_cli two_objects
 
 # Use the installed CLI layout and a fake Herdr process for the public run path.
 mkdir -p "$T/project/qwbuddy/bin" "$T/project/tasks"
-cp "$ROOT/bin/"qwb-{run,dispatch,lib,lock,ledger}.sh "$T/project/qwbuddy/bin/"
+cp "$ROOT/bin/"qwb-{run,dispatch,lib,lock,ledger,herdr}.sh "$T/project/qwbuddy/bin/"
 cp "$T/project/qwbuddy/bin/qwb-dispatch.sh" "$T/dispatch.real"
 export FAKE_DISPATCH_LOG="$T/log/dispatch" FAKE_DISPATCH_REAL="$T/dispatch.real"
 cat > "$T/project/qwbuddy/bin/qwb-dispatch.sh" <<'SH'
@@ -99,6 +99,8 @@ python3 -c 'import json,os,sys; open(os.environ["HERDR_LOG"]+".jsonl","a").write
 case "$1 $2" in
   'agent get') if [[ -n "${FAKE_REUSE_AGENT:-}" ]]; then cat "$FAKE_REUSE_AGENT"; exit 0; fi; echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1;;
   'pane get') cat "$FAKE_REUSE_PANE";;
+  'pane process-info') jq -cn --arg dir "$FAKE_REUSE_DIR" --argjson pid "$FAKE_REUSE_PID" \
+    '{result:{process_info:{pane_id:"ptest",shell_pid:42,foreground_process_group_id:$pid,foreground_processes:[{pid:$pid,argv0:"codex",cwd:$dir}]}}}';;
   'workspace list') echo '{"result":{"workspaces":[{"workspace_id":"wtest","focused":true}]}}';;
   'tab create') echo '{"result":{"root_pane":{"pane_id":"ptest","tab_id":"ttest"}}}';;
   'agent start'|'agent prompt') echo '{"result":{}}';;
@@ -258,14 +260,16 @@ grep -q 'agent start qwb-namedclaude --kind claude' "$HERDR_LOG"
 echo 'PASS named Claude harness drives start and trust preseed'
 
 # Reuse compares the runtime harness while the receipt still binds the named agent.
-export FAKE_REUSE_AGENT="$T/reuse-agent.json" FAKE_REUSE_PANE="$T/reuse-pane.json"
+export FAKE_REUSE_AGENT="$T/reuse-agent.json" FAKE_REUSE_PANE="$T/reuse-pane.json" FAKE_REUSE_PID="$$" FAKE_REUSE_DIR="$T/project"
 jq -cn --arg dir "$T/project" '{result:{agent:{name:"qwb-named",agent_status:"idle",pane_id:"ptest",agent:"codex",cwd:$dir,workspace_id:"wtest"}}}' > "$FAKE_REUSE_AGENT"
 jq -cn --arg dir "$T/project" '{result:{pane:{pane_id:"ptest",agent:"codex",cwd:$dir,workspace_id:"wtest"}}}' > "$FAKE_REUSE_PANE"
 : > "$HERDR_LOG"
-run named sol-high
-grep -q 'agent prompt qwb-named' "$HERDR_LOG"
-! grep -q 'agent start' "$HERDR_LOG"
-echo 'PASS named agent reuse matches explicit harness and receipt'
+before=$(shasum "$T/project/tasks/2099-01-01-named.md")
+if run named sol-high; then echo 'FAIL unverified Codex idle reused' >&2; exit 1; fi
+grep -q '本代真实活动为 unknown' "$T/err"
+test "$(shasum "$T/project/tasks/2099-01-01-named.md")" = "$before"
+! grep -q 'agent prompt\|agent start' "$HERDR_LOG"
+echo 'PASS named Codex native idle without activity proof refuses reuse'
 jq '.result.pane.agent="claude"' "$FAKE_REUSE_PANE" > "$T/next" && mv "$T/next" "$FAKE_REUSE_PANE"
 before=$(shasum "$T/project/tasks/2099-01-01-named.md")
 : > "$HERDR_LOG"

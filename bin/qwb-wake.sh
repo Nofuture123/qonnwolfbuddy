@@ -23,9 +23,9 @@ usage() {
      QWB_REWAKE_MS（>0 才启用）→ 仍再叫一次（兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
      blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过不重叫）；时间戳解析失败按超期处理。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
-等待：只取未结项任务书里时间戳最新的 dispatch: pane 做 agent wait；一轮预算 = 1×interval
-     （毫秒级计时 + 小数秒 sleep），无论 wait 成功/失败/超时，已耗时间都计入预算、
-     剩余部分补 sleep；无可用 pane 才整睡一个间隔，不得忙循环。
+等待：一个共用订阅连接覆盖全部登记工人及角色，收到subscription_started后再level reconcile。
+     事件只加速MD读回，不消费业务事实；断流/无能力每至多1秒扫描并重连，如实报缺口。
+     --block到期仍是124等待结束，不认作取消/死亡；--once/--dry-run不开订阅。
 
 选项:
   --project <根>      项目根（默认：当前目录）
@@ -735,31 +735,40 @@ sleep_ms() {
 
 sleep_interval() { sleep_ms "$INTERVAL"; }
 
+EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""
+event_mark() { [[ -z "$EVENT_DIR" ]] || head -1 "$EVENT_DIR/notice" 2>/dev/null || true; }
+event_cleanup() {
+  if [[ -n "$EVENT_PID" ]]; then
+    kill "$EVENT_PID" 2>/dev/null || true
+    wait "$EVENT_PID" 2>/dev/null || true
+  fi
+  [[ -z "$EVENT_DIR" ]] || rm -rf "$EVENT_DIR"
+}
+event_start() {
+  EVENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwb-events.XXXXXX")"
+  bash "$(dirname "$LIB")/qwb-herdr.sh" subscribe --project "$PROJECT_ROOT" --notice "$EVENT_DIR/notice" &
+  EVENT_PID=$!
+  trap event_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  local deadline=$(( $(now_ms) + 1000 ))
+  [[ -z "${block_deadline:-}" ]] || (( deadline <= block_deadline )) || deadline="$block_deadline"
+  while [[ ! -s "$EVENT_DIR/notice" ]] && kill -0 "$EVENT_PID" 2>/dev/null && (( $(now_ms) < deadline )); do sleep 0.05; done
+  [[ -s "$EVENT_DIR/notice" ]] || echo 'Herdr subscription not yet established; bounded MD reconcile fallback' >&2
+}
 wait_round() {
-  # 事件：只对未结项任务书取 dispatch 行、用时间戳最新的一条做 agent wait；
-  # 无可用 pane → 按 interval sleep 退化等待，不得忙循环
-  local f st disp p=""
-  disp="$(
-    while IFS=$'\t' read -r f st; do
-      grep -h '^dispatch:' "$f" 2>/dev/null || true
-    done < <(open_items) | sort | tail -1
-  )"
-  if [[ -n "$disp" ]]; then
-    p="$(printf '%s' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
-  fi
-  if [[ -n "$p" ]]; then
-    # 一轮预算 = 1×interval（毫秒精度）：无论 wait 成功/失败/超时，已耗时间都计入预算，
-    # 剩余部分按毫秒补小数秒 sleep；耗尽 timeout（耗时≈interval）不再额外 sleep。
-    local t0 dt
-    t0="$(now_ms)"
-    herdr agent wait "$p" --timeout "$INTERVAL" >/dev/null 2>&1 || true
-    dt=$(( $(now_ms) - t0 ))
-    if (( dt < INTERVAL )); then
-      sleep_ms "$(( INTERVAL - dt ))"
-    fi
-  else
-    sleep_interval
-  fi
+  local budget="$INTERVAL" end remaining mark
+  # ponytail: bounded whole-MD scan (1s), incremental indexing only if project size warrants it.
+  (( budget <= 1000 )) || budget=1000
+  end=$(( $(now_ms) + budget ))
+  [[ -z "${block_deadline:-}" ]] || (( end <= block_deadline )) || end="$block_deadline"
+  while :; do
+    mark="$(event_mark)"
+    [[ "$mark" == "$EVENT_SEEN" ]] || return 0
+    remaining=$(( end - $(now_ms) )); (( remaining > 0 )) || return 0
+    (( remaining <= 50 )) || remaining=50
+    sleep_ms "$remaining"
+  done
 }
 
 # —— block 模式：前台阻塞值守（Claude Code Stop hook / Codex 前台 checkpoint 的共用核心）——
@@ -859,7 +868,9 @@ if [[ "$BLOCK" -eq 1 ]]; then
   if [[ -n "$MAX_MS" ]]; then
     block_deadline=$(( $(now_ms) + MAX_MS ))
   fi
+  event_start
   while :; do
+    EVENT_SEEN="$(event_mark)"
     # 每轮判定前复核主控锁：锁不在手 = 本值守是孤儿（主控会话已退出 / 锁被新主控接管），
     # exit 0、不写任何 wake 行，不消费唤醒
     if ! block_owner_ok; then
@@ -874,11 +885,13 @@ if [[ "$BLOCK" -eq 1 ]]; then
       echo "值守：--block 到期（--max-ms ${MAX_MS}ms）无变化" >&2
       exit 124
     fi
-    sleep_interval
+    wait_round
   done
 fi
 
+if [[ "$ONCE" -eq 0 && "$DRY" -eq 0 ]]; then event_start; fi
 while :; do
+  EVENT_SEEN="$(event_mark)"
   [[ -z "${QWB_SUPERVISOR_GUARDED:-}" || "$QWB_SUPERVISOR_GUARDED" == "$PPID" ]] || { echo '值守故障：监督owner已退出，不交接新消息' >&2; exit 3; }
   roundrc=0; check_round || roundrc=$?
   if [[ "$ONCE" -eq 1 || "$DRY" -eq 1 ]]; then

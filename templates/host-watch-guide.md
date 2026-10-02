@@ -20,6 +20,14 @@ Claude Code 和 Pi 在派发后、或处理完一次唤醒后，直接结束本�
 
 `qwb-wake.sh --block` 每轮复核主控锁与宿主关系，孤儿值守不消费唤醒；所有宿主共用 `.supervisor.guard` 内核单飞锁，第二代码监督拒绝启动。一轮最多投递一条摘要。旧票仍沿用末行指纹和仅running的时间兜底；已迁票逐event持久交接，旧wake指纹不消费待办，blocked/needs-decision也有界重投，当前仅controller通道。`--check` 只报健康，`--ensure` 只供历史 tab 手工排障。主控退出或机器重启后由使用者重启主控，按总说明开局和未结账本接续，不会自动恢复。
 
+## Herdr 事件与焦点（09候选，未授权启用）
+
+唯一代码监督中的薄 `qwb-herdr.sh subscribe` 连接订阅全部票登记工人和02角色的 `pane.agent_status_changed`；只有匹配 `subscription_started` 才算建立，并立即level读回MD。原生状态事件不等于MD写入事件，纯MD变化仍靠有界全票扫描；连接关闭、未知协议或注册变化重新建连/对账，stderr明确能力缺口。扫描等待上限1秒，不是交付延迟保证（还包含查询/读账耗时）。不为每角色开watcher，收据/未答key/副作用去重仍完全复用03。
+
+展示排序入口：`bash qwbuddy/bin/qwb-herdr.sh move --project "$PWD" --task tasks/<票>.md --space <本票登记Space> --index <最终0基位置>`。仅准确登记且Git归属吻合的Space可移；保存并读回顺序与焦点，不修改票归属。finish关闭前必须退回真实shell，活Pi即使idle也不自动关；只移动自己的Space到最后再关，读回缺失才删Git，失败保留定位。未知焦点/并发焦点变化不覆盖用户新选择。
+
+Pi活动按真实PID启动时间、当前session叶分支的未配对toolCall/toolResult核对；原生idle不盖过长工具。派发记录本代活动到同票MD，复用需匹配PID/session；无证据拒绝。02控制继续沿用原代际/PID/模型页脚核验。Claude/Codex及其他CLI的idle未核验，报告unknown并拒绝据此复用/收尾；不会自动催停、重启或增加常驻LLM。普通124仍只是等待到期，不宣称取消/死亡或夜间就绪。
+
 ## 持久交接与接班边界（03候选，未授权启用）
 
 先读[收件箱约定](roles/收件箱约定.md)，通过 `bash qwbuddy/bin/qwb-send.sh pending --project "$PWD" --task tasks/<票>.md` 接班；完整正文/结果只读明确票，不把门铃正文当系统权限。received、accept、工具activity/有界wait、prepared、结果读回及handled必须分别确认。Pi与Claude输出只作transport，不自动确认办理；Codex exit 2也须逐event确认，不以终端显示当处理成功。
