@@ -3,9 +3,10 @@
 set -euo pipefail
 usage() {
   cat <<'EOF'
-用法: qwb-send.sh <send|pending|received|accept|activity|prepared|handled|reconcile|transport> --project <根> --task <票> [选项]
+用法: qwb-send.sh <send|diagnosis|pending|received|accept|activity|prepared|handled|reconcile|transport> --project <根> --task <票> [选项]
 仅合法controller通道；未开票请求须先开票，未知角色不回退主控。
 send: --corr <关联> --attempt <来源尝试> --text <单行正文> [--to controller]；corr不得以source:开头（自动来源保留）
+diagnosis: --report <本地JSON>；仅按需CI角色，来源须主控ci-assign，提案不执行、不作成功收据。
 pending: [--due] [--retry-ms <1..86400000>]，完整event集合，不使用吞中间事件的最后seq游标。
 received: --event <id>；accept/prepared: --event <id> --op <op_id>
 activity: --event <id> [--wait-ms <0..86400000> --reason <条件>]
@@ -16,7 +17,7 @@ transport: --event <id>，仅代码监督使用；不等于received/handled。
 EOF
 }
 CMD="${1:-}"; [[ "$CMD" != --help && "$CMD" != -h ]] || { usage; exit 0; }; shift || true
-ROOT="$(pwd)"; TASK=""; TO=controller; CORR=""; ATTEMPT=""; TEXT=""; EVENT=""; OP=""; RESULT=""; PROOF=""; EXPECT=""; RETRY=120000; MODE=all; WAIT=0; REASON=""
+ROOT="$(pwd)"; TASK=""; TO=controller; CORR=""; ATTEMPT=""; TEXT=""; EVENT=""; OP=""; RESULT=""; PROOF=""; EXPECT=""; RETRY=120000; MODE=all; WAIT=0; REASON=""; REPORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) ROOT="${2:?}"; shift 2 ;;
@@ -28,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     --event) EVENT="${2:?}"; shift 2 ;;
     --op) OP="${2:?}"; shift 2 ;;
     --result-ref) RESULT="${2:?}"; shift 2 ;;
+    --report) REPORT="${2:?}"; shift 2 ;;
     --proof) PROOF="${2:?}"; shift 2 ;;
     --expect) EXPECT="${2:?}"; shift 2 ;;
     --retry-ms) RETRY="${2:?}"; shift 2 ;;
@@ -41,6 +43,7 @@ done
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ARGS=()
 case "$CMD" in
+  diagnosis) exec bash "$BINDIR/qwb-ledger.sh" ci-report --project "$ROOT" --task "$TASK" --expect "$EXPECT" -- "$REPORT" ;;
   send) ARGS=("$TO" "$CORR" "$ATTEMPT" "$TEXT") ;;
   pending|transport)
     OWNER="$(awk 'NR==1 {print $NF}' "$ROOT/qwbuddy/.controller.lock/owner")"

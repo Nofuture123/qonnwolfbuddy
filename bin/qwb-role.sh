@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Visible standing roles. No dispatch, ledger mutation, watcher or automatic work.
+# Visible standing / on-demand roles. No dispatch, watcher or automatic work.
 set -euo pipefail
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$PWD"
@@ -9,7 +9,7 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   echo '用法: qwb-role.sh start|status|reconcile|retire --project <根> [--actor <id>] [--expect-gen <代次>]'
-  echo 'start另需 --role 门禁|规划|测试体系 --worker <已配置工人> --dir <既有目录>；变更操作仅实际绑定主控。'
+  echo 'start另需 --role 门禁|规划|测试体系|CI（按需） --worker <已配置工人> --dir <既有目录>；变更操作仅实际绑定主控。'
   echo '控制: qwb-control.sh interrupt|exit|relaunch --actor <id> --expect-gen <代次> --project <根>'
   echo 'Pi须显式配置QWB_ROLE_PI_CONTROL=verified；Claude/Codex控制未验证，拒绝。原工人派发配置不变。'
   exit 0
@@ -47,7 +47,7 @@ parser = argparse.ArgumentParser(description='角色与保留现场控制；同U
 parser.add_argument('command', choices=['start','status','reconcile','retire','interrupt','exit','relaunch'])
 parser.add_argument('--project')
 parser.add_argument('--actor')
-parser.add_argument('--role', choices=['门禁','规划','测试体系'])
+parser.add_argument('--role', choices=['门禁','规划','测试体系','CI'])
 parser.add_argument('--worker')
 parser.add_argument('--dir')
 parser.add_argument('--expect-gen', type=int)
@@ -241,6 +241,10 @@ def obligations(d):
             p = run(['bash',str(bindir/'qwb-ledger.sh'),'read','--project',str(root),'--task',str(task)], check=False)
             if p.returncode: found.append({'task':str(task),'kind':'protocol-unknown'}); continue
             data = json.loads(p.stdout)
+            ci = data.get('ci', {})
+            for key, request in ci.get('requests', {}).items():
+                if request['identity']['actor'] == d['actor'] and key not in ci.get('reports', {}):
+                    found.append({'task':str(task),'kind':'unreported-ci-source','corr':key})
             claim = data.get('claim')
             associated = associated or bool(panes.intersection(data.get('workers',{})))
             if claim and (associated or claim.get('owner') in panes): found.append({'task':str(task),'kind':'claim','op_id':claim['op_id']})
@@ -341,6 +345,7 @@ def main():
                 workspace = run(['bash','-c',workspace_script,'qwb-role',str(bindir/'qwb-lib.sh'),str(root),directory]).stdout.strip()
                 require(workspace, '须有唯一已登记workspace，不回退focused默认窗口')
                 r = dict(version=1,actor=a.actor,root=str(root),role=a.role,scope='single-project',
+                         kind='on-demand' if a.role=='CI' else 'standing',
                          allowed_actions=['status','proposal','test'] if a.role=='测试体系' else (['status','proposal','new','revise','dispatch-authorized'] if a.role=='规划' else ['status','proposal']),
                          worker=a.worker,argv=profile['argv'],tool='pi',provider=provider,model=model,effort=effort,
                          dir=directory,workspace=workspace,controller=owner[0],owner_fp=owner[1],incarnation=0,
