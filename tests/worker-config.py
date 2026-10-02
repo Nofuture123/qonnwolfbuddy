@@ -10,6 +10,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 TASK = """# worker config
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 
 ## 1. 验收场景
 
@@ -107,6 +109,20 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
     workers.write_text("qwb_worker pi herdr 'space value' '' '" + literal + "'\n"
                        "qwb_worker cmd pane-run fake-exec 'space value' '' '" + literal
                        + "' '~' '{a,b}' '#' \"a'b\"\n")
+    for missing in ("implementation-authorized: explicit fixture scope approval\n",
+                    "dispatch-budget: 20\n"):
+        reset()
+        ticket.write_text(TASK.replace(missing, ""))
+        before = ticket.read_bytes()
+        p = run()
+        check(p.returncode == 1 and "首次启动无明确实施授权/预算" in p.stderr,
+              f"missing authorization/budget diagnostic: {p.stderr}")
+        check(ticket.read_bytes() == before and not log.read_text() and not argv_log.exists()
+              and not (project / ".worktrees").exists()
+              and not (project / "qwbuddy/.controller.lock").exists(),
+              "missing authorization/budget side effect")
+    print("PASS public qwb-run missing authorization and missing budget refuse without side effects")
+
     reset()
     p = run()
     check(p.returncode == 0, f"herdr run failed: {p.stderr}")
