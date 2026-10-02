@@ -48,6 +48,20 @@ if [[ "$METRICS" -eq 1 ]]; then
   exit 0
 fi
 
+# Read-only presentation; damaged posture does not hide unrelated ticket facts.
+if [[ -e "$PROJECT_ROOT/qwbuddy/.posture.md" || -L "$PROJECT_ROOT/qwbuddy/.posture.md" ]]; then
+  if posture="$(bash "$(dirname "$LIB")/qwb-ledger.sh" mode-status --project "$PROJECT_ROOT")"; then
+    printf '%s' "$posture" | perl -MJSON::PP -0777 -e '
+      my $p=decode_json(<STDIN>); my $e=$p->{events}[-1];
+      print "模式: $p->{mode}（非新增授权；完整历史用qwb-role.sh mode summary）";
+      print " auth_ref=$e->{auth_ref} at_ms=$e->{at}" if $e;
+      print "\n";
+    '
+  else
+    echo '[未结] 模式记录损坏/不可读，保留现场；仅拒绝受影响落地，不阻塞其他票'
+  fi
+fi
+
 echo "== 账本：$LEDGER =="
 shopt -s nullglob
 files=("$LEDGER"/*.md)

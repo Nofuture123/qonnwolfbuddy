@@ -310,6 +310,8 @@ ignore_rules=(
   '.worktrees/'
   'qwbuddy/.controller.lock/'
   'qwbuddy/.watch'
+  'qwbuddy/.posture.md'
+  'qwbuddy/.posture.md.qwb-lock'
   'qwbuddy/.watch.lock/'
   'qwbuddy/.hook.lock/'
   'qwbuddy/.hook.err'

@@ -536,10 +536,17 @@ ts_epoch() {
 # 非 --block 模式将跳过的票往 stdout 打「跳过：…」说明；全局 OPEN_N = 未结项总数。
 # fp 输入 = state\n最后状态行（\nlost=<pane> 仅 running 票判定为工人丢失时追加）；
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
-OPEN_N=0
+OPEN_N=0; POSTURE_QUIET=0
 collect_due() {
-  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry
-  OPEN_N=0
+  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry posture
+  OPEN_N=0; POSTURE_QUIET=0
+  if [[ -e "$PROJECT_ROOT/qwbuddy/.posture.md" || -L "$PROJECT_ROOT/qwbuddy/.posture.md" ]]; then
+    if posture="$(bash "$(dirname "$LIB")/qwb-ledger.sh" mode-status --project "$PROJECT_ROOT")"; then
+      POSTURE_QUIET="$(printf '%s' "$posture" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{mode} eq "quiet" ? 1 : 0')"
+    else
+      echo '警告：模式记录不可读；不猜权限，保留现场，其他票照原授权交接' >&2
+    fi
+  fi
   while IFS=$'\t' read -r f st; do
     OPEN_N=$((OPEN_N + 1))
     if [[ "$DRY" -eq 0 ]] && grep -q '^<!-- qwb-collab-v1$' "$f"; then
@@ -570,6 +577,8 @@ collect_due() {
            } | shasum | cut -d' ' -f1)"
     lwf="$(last_wake_fp "$f")"
     if [[ -n "$lwf" && "$lwf" == "$fp" ]]; then
+      # Quiet suppresses unchanged legacy timer nudges, never new facts or durable handoffs.
+      [[ "$POSTURE_QUIET" -eq 0 ]] || continue
       # 时间兜底重叫只对 running 生效：兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
       # blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过（重叫只烧主控 token）。
       if [[ "$st" != "running" ]]; then
@@ -666,7 +675,7 @@ route_gate_due() {
       while IFS=$'\t' read -r f st fp last lostpane; do
         qwb_ledger "$PROJECT_ROOT" "$f" wake "$controller" "$st" "$fp" >/dev/null || { rm -rf "$dir"; return 3; }
       done < "${batches[i]}"
-      echo "已直接门铃门禁：${DUE_N} 张票 → pane ${targets[i]}"
+      [[ "$POSTURE_QUIET" -eq 1 ]] || echo "已直接门铃门禁：${DUE_N} 张票 → pane ${targets[i]}"
     else
       echo "错误：门禁门铃失败（pane ${targets[i]}），03待办/有界重投预算保留" >&2
     fi
@@ -684,7 +693,7 @@ check_round() {
     route_gate_due "$duef" "$PANE" || { rm -f "$duef"; return 3; }
   fi
   if [[ ! -s "$duef" ]]; then
-    (( OPEN_N == 0 )) && echo "账本无未结项"
+    if (( OPEN_N == 0 && POSTURE_QUIET == 0 )); then echo "账本无未结项"; fi
     rm -f "$duef"
     return 0
   fi
@@ -708,7 +717,7 @@ check_round() {
     while IFS=$'\t' read -r f st fp last lostpane; do
       qwb_ledger "$PROJECT_ROOT" "$f" wake "$PANE" "$st" "$fp" >/dev/null \
         || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; write_failed=1; continue; }
-      echo "已叫醒：$(basename "$f" .md) state=${st} → pane ${PANE}"
+      [[ "$POSTURE_QUIET" -eq 1 ]] || echo "已叫醒：$(basename "$f" .md) state=${st} → pane ${PANE}"
     done < "$duef"
   else
     echo "错误：投递失败（pane ${PANE}）：本轮 ${DUE_N} 张票一行 wake 都不写、保持未叫，下轮重试" >&2
