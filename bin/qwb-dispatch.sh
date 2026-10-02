@@ -140,8 +140,8 @@ rules_err=$(jq -r '
 # 不发送累计日志、验收报告、worker/model配置或03/04整个协作区。
 NARROW=$(python3 -B - "$BRIEF" <<'PY'
 import json,re,sys
-s=open(sys.argv[1],encoding='utf-8').read()
-m=re.search(r'\n<!-- qwb-collab-v1\n([^\n]+)\n-->\s*$',s)
+s=open(sys.argv[1],encoding='utf-8',newline='').read()
+m=re.search(r'\r?\n<!-- qwb-collab-v1\r?\n([^\r\n]+)\r?\n-->\s*$',s)
 d=json.loads(m[1]) if m else {}
 p=d.get('planning')
 if p:
@@ -149,14 +149,37 @@ if p:
     permissions=(p.get('authorization') or {}).get('permissions',[])
 else:
     s=s[:m.start()] if m else s
-    has_sections=bool(re.search(r'^#{1,6} .*?(原始|意图|工程规格|必要约束|硬约束)',s,re.M))
-    keep=not has_sections; lines=[]
+    section=re.compile(r'(?:\d+(?:\.\d+)*[.、]?[ \t]*)?(?:原始意图(?:与范围)?|原始需求|意图|工程规格|必要约束|硬约束)(?:[ \t]*[（(:：].*)?')
+    excluded=re.compile(r'(?:\d+(?:\.\d+)*[.、]?[ \t]*)?(?:验收场景|(?:历史|验收|审核|实现)?报告|历史(?:日志)?|日志|常驻(?:附页)?)(?:[ \t]*[（(:：].*)?')
+    parsed=[]; fence=''
     for line in s.splitlines(keepends=True):
-        if re.match(r'^(state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|review-impl|review-rev|brief-include-fp|implementation-authorized|dispatch-budget|dispatch-permissions):',line):
-            if re.match(r'^(working|done|blocked|needs-decision|dispatch|not-sent|wake|review-)',line): keep=False
+        delimiter=re.match(r'^[ \t]{0,3}(`{3,}|~{3,})(.*)',line)
+        literal=bool(fence or delimiter)
+        if delimiter:
+            if not fence: fence=delimiter[1]
+            elif delimiter[1][0]==fence[0] and len(delimiter[1])>=len(fence) and not delimiter[2].strip(): fence=''
+        heading=None if literal else re.match(r'^(#{1,6})[ \t]+(.*)',line)
+        if heading: heading=(len(heading[1]),re.sub(r'[ \t]+#+[ \t]*$','',heading[2].strip()))
+        parsed.append((line,heading,literal))
+    has_sections=any(h and section.fullmatch(h[1]) for _,h,_ in parsed)
+    keep=not has_sections; lines=[]; stack=[]; first_heading=True
+    for line,heading,literal in parsed:
+        if not literal and re.match(r'^(state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|review-impl|review-rev|brief-include-fp|implementation-authorized|dispatch-budget|dispatch-permissions):',line):
+            if re.match(r'^(?:(?:working|done|blocked|needs-decision|dispatch|not-sent|wake):|review-)',line):
+                keep=False
+                if stack: stack[-1]=(stack[-1][0],False,True)
             continue
-        if re.match(r'^#{1,6} ',line):
-            keep=bool(re.search(r'原始|意图|工程规格|必要约束|硬约束',line)) or (not has_sections and not re.search(r'验收|报告|常驻|历史|日志',line))
+        if heading:
+            level,title=heading
+            while stack and level<=stack[-1][0]: stack.pop()
+            parent_keep,parent_blocked=stack[-1][1:] if stack else (False,False)
+            selected=bool(section.fullmatch(title))
+            blocked=parent_blocked or bool(excluded.fullmatch(title)) or (not parent_keep and bool(re.search(r'验收|报告|常驻|历史|日志',title)))
+            keep=not blocked and (parent_keep or selected or not has_sections)
+            # 仅文档首H1是结构根；其正文不选中，其余未选章节连后代一起排除。
+            transparent=first_heading and level==1 and not blocked and not selected
+            stack.append((level,keep,blocked or (not keep and not transparent)))
+            first_heading=False
         if keep: lines.append(line)
     brief=''.join(lines)
     permission_header=re.search(r'^dispatch-permissions:[ \t]*([^\n]*)',s,re.M)
