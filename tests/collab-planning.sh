@@ -73,7 +73,7 @@ file.write_text(json.dumps(s))
     step=0
     def cli(script,*args,ok=True,actor='ctl'):
         global step
-        step+=1; verb=str(args[0]); label=f'{step:03}-{verb}'
+        step+=1; verb=str(args[0]) if args else 'status'; label=f'{step:03}-{verb}'
         argv=['bash',str(ROOT/'bin'/script),*map(str,args)]
         if script!='qwb-ledger.sh': argv+=['--project',str(p)]
         if diagnostic: print(f'DIAG start {label} actor={actor}',flush=True)
@@ -174,9 +174,22 @@ file.write_text(json.dumps(s))
         packages={'StageA':'StageA.md','StageB':'StageB.md'}
         stage_request=dict(request,request_id='acceptance-request',package_id='StageA',packages=packages,source_event=change)
         call('new','StageA.md','--',payload('stage-A.json',stage_request))
+        def status_dependencies(expected):
+            before={f.name:f.read_bytes() for f in (p/'tasks').glob('*.md')}
+            output=cli('qwb-status.sh').stdout
+            for stage,condition in expected.items():
+                assert f'依赖[{stage}]: StageA.md/api@v1 spec_rev=0 condition={condition}' in output, output
+            if not expected: assert '依赖[' not in output, output
+            assert before=={f.name:f.read_bytes() for f in (p/'tasks').glob('*.md')}, 'status must remain read-only'
+        status_only=os.environ.get('QWB_PLANNING_STATUS_ONLY')=='1'
+        if status_only: status_dependencies({})
         edge={'task':'StageA.md','artifact':'api','version':'v1','spec_rev':0,'condition':'accepted'}
-        stage_needs={'start':[],'accept':[edge],'land':[dict(edge,condition='landed')]}
+        stage_needs={'start':[dict(edge,condition='available')] if status_only else [],'accept':[edge],'land':[dict(edge,condition='landed')]}
         call('new','StageB.md','--',payload('stage-B.json',dict(stage_request,package_id='StageB',needs=stage_needs)))
+        status_dependencies({'start':'available','accept':'accepted','land':'landed'} if status_only else {'accept':'accepted','land':'landed'})
+        if status_only:
+            print('PASS public status: empty and nonempty start/accept/land, literal @ and frozen fields; ledger bytes unchanged')
+            return
         artifact=temp/'stage-api-v1'; artifact.write_text('stage interface v1\n')
         call('plan-artifact','StageA.md','--',payload('stage-artifact.json',{'name':'api','version':'v1','ref':str(artifact)}))
         environment=temp/'stage-environment'; environment.write_text('private fixture dependencies v1\n')
@@ -221,7 +234,7 @@ file.write_text(json.dumps(s))
             shutil.copy(log,dest/'fake-herdr.jsonl')
             (dest/'README.md').write_text('临时Git+fakeHerdr/外部Pi JSONL证据fixture；true门仅供依赖阶段契约，未跑仓库full、真实审核或生产merge。\n')
         print('PASS accept/land正向公开契约：available不等accepted、不等landed；指定版本解除证据同票保存，未merge/自动verified')
-    if os.environ.get('QWB_PLANNING_ACCEPT_LAND_ONLY')=='1':
+    if os.environ.get('QWB_PLANNING_ACCEPT_LAND_ONLY')=='1' or os.environ.get('QWB_PLANNING_STATUS_ONLY')=='1':
         accept_land_checks()
         raise SystemExit(0)
     if os.environ.get('QWB_PLANNING_REQUEST_ONLY')=='1':

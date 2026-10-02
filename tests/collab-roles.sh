@@ -50,6 +50,9 @@ elif a[:2]==['agent','start']:
  out({'type':'agent_started'})
 elif a[:2]==['pane','get']:
  if mode=='query-fail':err()
+ if mode=='empty-query':sys.exit(0)
+ if mode=='invalid-query':print('not-json');sys.exit(0)
+ if mode=='wrong-result':print(json.dumps({'result':[]}));sys.exit(0)
  ctl=a[2]=='w1:pCtl'
  pane={'pane_id':a[2],'workspace_id':'w1','tab_id':'w1:tCtl' if ctl else 'w1:tRole','terminal_id':'term-ctl' if ctl else 'term-role','foreground_cwd':os.environ['ROLE_PROJECT']}
  if ctl or s['live']:
@@ -65,10 +68,12 @@ elif a[:2]==['pane','process-info']:
  out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':pid if live else 42,'foreground_processes':[{'pid':pid,'argv0':'pi' if live else 'zsh','argv':argv,'cwd':os.environ['ROLE_PROJECT']}]}})
 elif a[:2]==['pane','read']:
  print('────────────────────\\n'+('draft obligation' if mode=='draft' else '')+'\\n────────────────────\\n$0.000 (sub) 0.0%/272k (auto)  (openai-codex) '+('wrong-model' if mode=='wrong-model' else 'gpt-6.1-sol')+' • high');sys.exit(0)
-elif a[:2]==['pane','send-keys']:out({'type':'keys_sent'})
+elif a[:2]==['pane','send-keys']:
+ if mode=='action-failed':err()
+ # Actual Herdr actions succeed with no JSON payload.
 elif a[:2]==['pane','run']:
+ if mode=='action-failed':err()
  if a[-1]=='/quit' and mode!='exit-pending':s['live']=False
- out({'type':'input_sent'})
 else:err()
 path.write_text(json.dumps(s))
 ''')
@@ -119,7 +124,7 @@ print('Thu Oct  1 00:00:00 2099')
     print('PASS public start: one bound instance, no work manufactured')
 
     # Next vertical slice: unknown/late observations never grant a replacement or advance gen.
-    for mode in ('query-fail','old-session','foreign-terminal','wrong-model'):
+    for mode in ('query-fail','empty-query','invalid-query','wrong-result','old-session','foreign-terminal','wrong-model'):
         got = call('qwb-role.sh','status','--actor','gate',extra={'ROLE_FAKE_MODE':mode})
         assert got['activity']=='unknown' and 'actual_model' not in got, (mode,got)
         call('qwb-control.sh','relaunch','--actor','gate','--expect-gen','1',ok=False,extra={'ROLE_FAKE_MODE':mode})
@@ -132,6 +137,15 @@ print('Thu Oct  1 00:00:00 2099')
     assert got['incarnation']==1 and got['activity']=='idle'
     print('PASS unknown/old generation: no replacement, no retirement, current model not fabricated')
 
+    # Nonzero actions keep partial phases; no delivery/death is fabricated or retried.
+    for verb,phase in [('interrupt','interrupt-sent'),('exit','exit-sent')]:
+        offset=len(log.read_text().splitlines())
+        rejected=call('qwb-control.sh',verb,'--actor','gate','--expect-gen','1',ok=False,extra={'ROLE_FAKE_MODE':'action-failed'})
+        assert 'io_error' in rejected.stderr and json.loads(state.read_text())['live']
+        persisted=json.loads((p/'qwbuddy/.roles/gate.json').read_text())
+        assert persisted['phase']==phase and persisted['cancel']=='unconfirmed' and persisted.get('exit')!='confirmed'
+        actions=[json.loads(x)[:2] for x in log.read_text().splitlines()[offset:]]
+        assert sum(x in (['pane','send-keys'],['pane','run']) for x in actions)==1
     # Interrupt reports delivery only; idle/done alone is not a cancellation acknowledgment.
     got=call('qwb-control.sh','interrupt','--actor','gate','--expect-gen','1')
     assert got['cancel']=='unconfirmed' and got['phase']=='interrupt-delivered'

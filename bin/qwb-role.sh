@@ -390,7 +390,7 @@ def main():
             elif a.command == 'interrupt':
                 adapter(); require(observation['activity'] != 'stopped', '原Pi已结束，不能送键到shell')
                 phase('interrupt-sent', cancel='unconfirmed')
-                herdr('pane','send-keys',r['pane'],'esc')
+                run(['herdr','pane','send-keys',r['pane'],'esc'])
                 phase('interrupt-delivered', cancel='unconfirmed')
             elif a.command == 'exit':
                 adapter()
@@ -401,7 +401,7 @@ def main():
                     require(len(borders) >= 2 and all(not s.strip() for s in visible.splitlines()[borders[-2]+1:borders[-1]]), 'composer未证实为空，拒绝覆盖/拼接未提交输入')
                     require(current(control_target)['pid'] == observation['pid'], '送退出前PID发生变化')
                     phase('exit-sent',exit='unconfirmed')
-                    herdr('pane','run',r['pane'],'/quit')
+                    run(['herdr','pane','run',r['pane'],'/quit'])
                     for _ in range(20):
                         time.sleep(.1)
                         observation = current(control_target)

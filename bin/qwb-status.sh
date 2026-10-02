@@ -102,7 +102,7 @@ else
             print "       规划: request=$p->{request_id} package=$p->{package_id} spec_rev=$d->{spec_rev} source=$p->{source}{event}\n";
             print "       就绪: ".($p->{ready}{status} // "未扫描")." 修订=".($p->{pending_revision} ? "待显式handoff/CAS" : "无")."\n";
             for my $stage (qw(start accept land)) {
-              print "       依赖[$stage]: $_->{task}/$_->{artifact}@$_->{version} spec_rev=$_->{spec_rev} condition=$_->{condition}\n" for @{$p->{needs}{$stage}};
+              print "       依赖[$stage]: $_->{task}/$_->{artifact}\@$_->{version} spec_rev=$_->{spec_rev} condition=$_->{condition}\n" for @{$p->{needs}{$stage}};
             }
           }
           if (my $g=$d->{gate}) {
