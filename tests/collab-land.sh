@@ -2,8 +2,9 @@
 # 私有临时Git + 系统边界fakeHerdr；不碰现场main/端点。
 set -euo pipefail
 export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'
-import fcntl, hashlib, json, os, shutil, subprocess, tempfile, time
+import fcntl, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_LAND_ROOT'])
 with tempfile.TemporaryDirectory(prefix='qwb-land-') as tmp:
@@ -18,7 +19,9 @@ with tempfile.TemporaryDirectory(prefix='qwb-land-') as tmp:
     (p/'product.txt').write_text('seed\n'); (p/'tasks/live.md').write_text('live seed\n')
     def git(*args,at=p): return subprocess.check_output(['git','-C',str(at),*args],text=True).strip()
     git('init','-qb','main'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
-    (stub/'lsof').write_text('#!/bin/sh\nexit 1\n')
+    # Migration examines only the stopped MD; deletion probes must hit the real OS.
+    real_lsof=shutil.which('lsof'); assert real_lsof, 'lsof required for writer death regression'
+    (stub/'lsof').write_text('#!/bin/sh\nif [ "$1" = "-Ffa" ]; then exit 1; fi\nif [ "${LAND_RESOURCE_PROBE:-}" = unknown ]; then echo "probe unknown" >&2; exit 3; fi\nexec "$LAND_REAL_LSOF" "$@"\n')
     (stub/'ps').write_text("#!/usr/bin/env python3\nimport subprocess,sys\nif sys.argv[-1]=='ppid=':sys.exit(subprocess.run(['/bin/ps',*sys.argv[1:]]).returncode)\nprint('Thu Oct 1 00:00:00 2099')\n")
     (stub/'herdr').write_text('''#!/usr/bin/env python3
 import json,os,sys
@@ -65,7 +68,7 @@ if [[ "${LAND_FAIL:-}" == publish && ! -e "$LAND_FAIL_FLAG" ]] && grep -q '\\"st
 exec "$LAND_REAL_MV" "$@"
 ''')
     for f in stub.iterdir():f.chmod(0o755)
-    env=os.environ|{'LC_ALL':'C','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','LAND_PROJECT':str(p),'LAND_PID':str(os.getpid()),'LAND_NATIVE_STATE':str(tmp/'native.json'),'LAND_NATIVE_LOG':str(tmp/'native.log'),'LAND_REAL_GIT':real_git,'LAND_REAL_MV':real_mv,'LAND_GIT_LOG':str(tmp/'git.log'),'LAND_FAIL_FLAG':str(tmp/'fail.flag')}
+    env=os.environ|{'LC_ALL':'C','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','LAND_PROJECT':str(p),'LAND_PID':str(os.getpid()),'LAND_NATIVE_STATE':str(tmp/'native.json'),'LAND_NATIVE_LOG':str(tmp/'native.log'),'LAND_REAL_GIT':real_git,'LAND_REAL_MV':real_mv,'LAND_REAL_LSOF':real_lsof,'LAND_GIT_LOG':str(tmp/'git.log'),'LAND_FAIL_FLAG':str(tmp/'fail.flag')}
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
         r=subprocess.run(['bash',str(ROOT/'bin'/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))
@@ -99,6 +102,100 @@ exec "$LAND_REAL_MV" "$@"
         ledger('gate-review',t,op,review);ledger('gate-verdict',t,op,'accepted')
         ledger('release',t,op); op='land-'+name;ledger('claim',t,op)
         return t,c,op,base,git('rev-parse','HEAD',at=c)
+    def dead_generation():
+        child=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
+                               stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        try:
+            pid=int(child.stdout.readline())
+            start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
+            child.communicate('exit\n',timeout=10); assert child.returncode==0
+            return {'pid':pid,'pid_start':start}
+        finally:
+            if child.poll() is None: child.terminate(); child.wait(timeout=10)
+    if os.environ['QWB_LAND_CASE']=='writers':
+        t,c,op,m,head=accepted('background-writer')
+        ledger('dispatch',t,op,'task-pane',f'dispatch: op_id={op} worker=sol pane=task-pane dir={c}')
+        ref='auth-background'
+        ledger('land-authorize',t,op,ref,'main','fixture explicit local land',
+               'tasks/background-writer.md','tasks/live.md')
+        def land(ok=False,extra=None):
+            return call('qwb-worktree.sh','land','background-writer','--op',op,'--auth-ref',ref,
+                        extra={'LAND_ENDPOINT':'stopped'}|(extra or {}),ok=ok)
+        def retained():
+            d=read(t)
+            assert c.is_dir() and git('rev-parse','refs/heads/background-writer')==head
+            assert git('rev-parse','main')==head and d['land']['stage']=='landed'
+            assert d['phase']!='verified' and d['claim']['op_id']==op
+            assert (tmp/'git.log').read_text().splitlines().count(head)==1
+        for mode in ['cwd+fd','fd-only','cwd-only']:
+            code="import os,sys; f=open('product.txt','r+') if sys.argv[1]!='cwd-only' else None; "
+            code+="os.chdir(sys.argv[2]) if sys.argv[1]=='fd-only' else None; print(os.getpid(),flush=True); "
+            code+="sys.stdin.readline(); print('NLINK='+str(os.fstat(f.fileno()).st_nlink) if f else 'PATH_READ='+str(os.path.isfile('product.txt')),flush=True)"
+            writer=subprocess.Popen(['python3','-u','-c',code,mode,str(tmp)],cwd=c,
+                                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            try:
+                pid=int(writer.stdout.readline()); assert writer.poll() is None
+                probe=subprocess.run([real_lsof,'-nP','-Fpfan','+D',str(c)],capture_output=True,text=True)
+                assert probe.returncode in (0,1) and f'p{pid}\n' in probe.stdout,(probe.returncode,probe.stdout,probe.stderr)
+                print('OS_PROBE '+mode+' '+probe.stdout.replace('\n',' | '),flush=True)
+                result=land(); assert '候选写入者' in result.stderr,result.stderr
+                retained(); assert writer.poll() is None
+                writer.stdin.write('continue\n'); writer.stdin.flush()
+                actual=writer.stdout.readline().strip()
+                assert actual==('PATH_READ=True' if mode=='cwd-only' else 'NLINK=1'),actual
+                assert writer.wait(timeout=10)==0
+                print('PASS real writer '+mode+' alive refuses; barrier '+actual,flush=True)
+            finally:
+                if writer.poll() is None: writer.terminate(); writer.wait(timeout=10)
+        # No resources remaining is NOT a proof that an unbound/older launch died.
+        result=land(); assert '启动代死亡证据缺失' in result.stderr,result.stderr; retained()
+        old=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
+                             cwd=tmp,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        try:
+            pid=int(old.stdout.readline())
+            start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
+            def bind(raw): ledger('append',t,f'working: worker-activity op={op} pane=task-pane evidence='+json.dumps(raw))
+            bind({'pid':pid,'pid_start':start})
+            # A newer dead launch must not hide an older live launch on the same pane.
+            ledger('append',t,'working: worker-activity op=newer-dead pane=task-pane evidence='+json.dumps(dead_generation()))
+            result=land(); assert '旧启动代仍活或死亡未知' in result.stderr,result.stderr; retained()
+            old.stdin.write('continue\n'); old.stdin.flush(); assert old.wait(timeout=10)==0
+            result=land(extra={'LAND_RESOURCE_PROBE':'unknown'})
+            assert '候选写入者资源探针未知' in result.stderr,result.stderr; retained()
+            land(ok=True)
+            d=read(t); assert not c.exists() and d['phase']=='verified' and d['land']['stage']=='closed'
+            assert (tmp/'git.log').read_text().splitlines().count(head)==1
+            assert len([e for e in d['events'] if e['kind']=='land-apply'])==1
+            print('PASS old alive/missing proof refuse; actual exit same op closes without remerge',flush=True)
+        finally:
+            if old.poll() is None: old.terminate(); old.wait(timeout=10)
+        # 共用finish的merged/archive都守资源与未知启动代，不只修land表象。
+        for action in ['--merged','--archive']:
+            name='legacy-'+action[2:]; wc=p/'.worktrees'/name
+            git('worktree','add','-qb',name,str(wc),'main')
+            ticket=p/'tasks'/f'{name}.md'; ticket.write_text('state: blocked\n')
+            child=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
+                                   cwd=wc,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            try:
+                pid=int(child.stdout.readline())
+                start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
+                result=call('qwb-worktree.sh','finish',name,action,ok=False)
+                assert '候选写入者' in result.stderr and wc.is_dir(),result.stderr
+                child.communicate('exit\n',timeout=10); assert child.returncode==0
+                ticket.write_text(f'state: blocked\ndispatch: op_id=legacy worker=sol pane=task-pane dir={wc}\n')
+                result=call('qwb-worktree.sh','finish',name,action,ok=False)
+                assert '启动代死亡证据缺失' in result.stderr and wc.is_dir(),result.stderr
+                ticket.write_text(ticket.read_text().replace('dispatch:','not-sent:')+'working: worker-activity op=legacy pane=task-pane evidence='+json.dumps({'pid':pid})+'\n')
+                result=call('qwb-worktree.sh','finish',name,action,ok=False)
+                assert 'PID/start未知' in result.stderr and wc.is_dir(),result.stderr
+                # 私有legacy夹具准确补齐启动时已实际读取的start，不改协作票历史。
+                ticket.write_text(f'state: blocked\ndispatch: op_id=legacy worker=sol pane=task-pane dir={wc}\nworking: worker-activity op=legacy pane=task-pane evidence='+json.dumps({'pid':pid,'pid_start':start})+'\n')
+                call('qwb-worktree.sh','finish',name,action)
+                assert not wc.exists()
+                print('PASS shared finish '+action+' live/missing PID/start refuses; actual dead succeeds')
+            finally:
+                if child.poll() is None: child.terminate(); child.wait(timeout=10)
+        sys.exit(0)
     t,c,op,m,head=accepted('A')
     status=subprocess.run(['bash',str(ROOT/'bin/qwb-status.sh'),'--project',str(p)],env=env,capture_output=True,text=True)
     assert status.returncode==0 and '本地land:' not in status.stdout and 'Use of uninitialized' not in status.stderr,(status.stdout,status.stderr)
@@ -173,6 +270,7 @@ exec "$LAND_REAL_MV" "$@"
         if failure=='endpoint':
             ledger('dispatch',t,op,'task-pane',f'dispatch: op_id={op} worker=sol pane=task-pane dir={c}')
             ledger('append',t,f'worktree-space: id=task-space root-tab=task-tab path={c}')
+            ledger('append',t,f'working: worker-activity op={op} pane=task-pane evidence='+json.dumps(dead_generation()))
         authorize(t,op,ref)
         flag=Path(env['LAND_FAIL_FLAG']);flag.unlink(missing_ok=True)
         extra={'LAND_FAIL':'publish' if failure=='publish-reauthorize' else failure}

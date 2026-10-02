@@ -35,6 +35,8 @@ usage() {
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
   先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
   worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
+  共同删除接缝用真实lsof核候选cwd/FD，并逐一核全部dispatch/not-sent的PID/start死亡证据。
+  缺证、旧代仍活或探针未知保留候选/分支；agent=null/前台回shell不代替死亡证明。
   有本票登记的 Herdr Space 时，须确认无活动工人或外来 tab 才关闭；查询未知或关闭失败不删 Git。
 
 前提：收尾前确认该 worktree 的写入者已停止——删前复核与删除是两次 Git 调用，之间
@@ -198,8 +200,63 @@ land_writers_stopped() {
   done <<< "$panes"
 }
 
+# 复用09固定40c8761的PID/start与全部启动代协议，不搬其订阅/展示平台。
+# shell/null只是端点前置条件；所有删树调用再核本票真实资源及历史死亡义务。
+writers_stopped() {
+  [[ "$ACTION" != keep ]] || return 0
+  python3 -B - "$TASK_FILE" "$WT_DIR" "${1:-}" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+try:
+    task, directory, rows=sys.argv[1:]
+    def require(ok,why):
+        if not ok: raise ValueError(why)
+    # 保守拒绝任何候选cwd/打开文件（包括只读FD）；只读误拒可等实际退出再恢复。
+    if Path(directory).is_dir():
+        probe=subprocess.run(['lsof','-nP','-Fpfan','+D',directory],capture_output=True,text=True,timeout=10)
+        require(probe.returncode in (0,1) and not probe.stderr.strip(),'候选写入者资源探针未知')
+        require(not probe.stdout.strip(),'候选写入者仍持cwd/FD，保留成果')
+        require(probe.returncode==1,'候选写入者资源探针空响应未知')
+    text=Path(task).read_text(); attempts={}; bound={}
+    for line in re.findall(r'^(?:dispatch|not-sent):.*$',text,re.M):
+        match=re.search(r'\spane=(\S+) dir=(.+)$',line)
+        op=re.search(r'\sop_id=(\S+)',line)
+        require(match and op,'启动代死亡证据缺失；保留候选')
+        require(str(Path(match[2]).resolve())==directory,'启动代目录不符；保留候选')
+        attempts.setdefault(match[1],set()).add(op[1])
+    for op,pane,raw in re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',text,re.M):
+        # 同op收据必须始终指向同一代，不能用后来的死PID遮掉旧活代。
+        evidence=json.loads(raw); key=(pane,op)
+        require(key not in bound or bound[key]==evidence,'启动代死亡证据冲突')
+        bound[key]=evidence
+    def ended(evidence):
+        pid=evidence.get('pid'); start=evidence.get('pid_start')
+        require(type(pid) is int and pid>0 and isinstance(start,str) and start,'旧启动代PID/start未知')
+        # 不使用模型状态或测试用owner ps替身证明工具死亡。
+        v=subprocess.run(['/bin/ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True,timeout=2)
+        require(not v.stderr.strip() and ((v.returncode==1 and not v.stdout.strip()) or
+                (v.returncode==0 and v.stdout.strip() and v.stdout.strip()!=start)),
+                '旧启动代仍活或死亡未知')
+    for pane,ops in attempts.items():
+        require(all((pane,op) in bound for op in ops),'启动代死亡证据缺失；保留候选')
+    for evidence in bound.values(): ended(evidence)
+    panes=set(attempts)|{key[0] for key in bound}|{r.split('\t')[0] for r in rows.splitlines()}
+    for record in (Path(task).parent.parent/'qwbuddy/.roles').glob('*.json'):
+        require(not record.is_symlink(),'角色退出身份未知')
+        d=json.loads(record.read_text())
+        if d.get('pane') in panes:
+            require(d.get('version')==1 and d.get('root')==str(Path(task).parent.parent),'角色归属未知')
+            candidate=d.get('pending') or d
+            if candidate.get('attempted',d.get('phase') not in ('prepared','pane-ready')): ended(candidate)
+except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as e:
+    print('拒绝：'+str(e),file=sys.stderr); sys.exit(1)
+PY
+}
+
 WT_DIR="$WT_BASE/$TASK_ID"
 land_writers_stopped || exit 1
+# 已删树的partial也须核历史启动代；尚在的目录先核物理身份再探资源。
+if [[ ! -d "$WT_DIR" ]]; then writers_stopped || exit 1; fi
 cleanup_branch_config() {
   local keys key found=0 command_text
   if ! keys="$(git -C "$PROJECT_ROOT" config --local --list --name-only 2>/dev/null)"; then
@@ -391,6 +448,7 @@ partial_fail() {
 prepare_space_close() {
   local record root_tab record_path last_dispatch dispatch_path task_pane pane_out pane_meta worker_tab
   local tabs_out tab_ids tab_id panes_out pane_rows pane_id state proc
+  writers_stopped || return 1
   SPACE_ID="$(qwb_worktree_space "$PROJECT_ROOT" "$WT_DIR")" || return 1
   [[ -n "$SPACE_ID" ]] || return 0
   record="$(grep '^worktree-space:' "$TASK_FILE" | tail -1 || true)"
@@ -471,6 +529,7 @@ prepare_space_close() {
         ;;
     esac
   done <<< "$pane_rows"
+  writers_stopped "$pane_rows" || return 1
 }
 
 close_task_space() {
@@ -511,6 +570,7 @@ case "$ACTION" in
     prepare_space_close || exit 1
     close_task_space || exit 1
     check_unchanged || partial_fail head-changed-after-space-close
+    writers_stopped || partial_fail writers-not-stopped
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
     if [[ "$DETACHED" -eq 1 ]]; then
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD ${HEAD_OID}，无分支可删）"
@@ -552,6 +612,7 @@ case "$ACTION" in
       git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID" || partial_fail tag-create
     fi
     check_unchanged "标签 ${TAG}（→ ${HEAD_OID}）已打且保留；" || partial_fail head-changed-after-tag
+    writers_stopped || partial_fail writers-not-stopped
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
     if [[ "$DETACHED" -eq 1 ]]; then
       kept=""
