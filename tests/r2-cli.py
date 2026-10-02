@@ -11,6 +11,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 TASK = """# case
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 
 ## 验收场景
 ### 正常

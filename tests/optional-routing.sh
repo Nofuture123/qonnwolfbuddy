@@ -21,12 +21,12 @@ out=''
 while (($#)); do
   case "$1" in -o) out=$2; shift 2;; *) shift;; esac
 done
-cat >/dev/null
+cat > "$FAKE_REQUEST"
 cp "$FAKE_RESPONSE" "$out"
 printf '%s' "${FAKE_HTTP:-200}"
 SH
 chmod +x "$T/fakebin/curl"
-export FAKE_LOG="$T/log/curl" FAKE_RESPONSE="$T/response.json"
+export FAKE_LOG="$T/log/curl" FAKE_RESPONSE="$T/response.json" FAKE_REQUEST="$T/request.json"
 cat > "$FAKE_RESPONSE" <<'JSON'
 {"model":"fake","answers":{"rule":{"choice":"rule_1","confidence":0.9,"probabilities":{"rule_1":0.9,"default":0.1}}}}
 JSON
@@ -34,6 +34,67 @@ dispatch() { bash "$ROOT/bin/qwb-dispatch.sh" "$T/project/brief.md" --project "$
 TYPESAFE_API_KEY=fake-key dispatch > "$T/out" 2> "$T/err"
 jq -e '.status == "clear" and .worker == "codex" and .default_worker == "pi"' "$T/out" >/dev/null
 echo 'PASS JSON clear'
+# 06 R1/R2: actual public requests, literal expected bytes; no parser-internal assertions.
+QWB_ROUTING_TEST_ROOT="$ROOT" QWB_ROUTING_TEST_PROJECT="$T/project" python3 -B - <<'PY'
+import json, os, subprocess
+from pathlib import Path
+root=Path(os.environ['QWB_ROUTING_TEST_ROOT']); project=Path(os.environ['QWB_ROUTING_TEST_PROJECT'])
+cases=[
+    ('nested intent/spec children',
+     '## 原始意图\n用户需求\n### 输入输出\nMUST_KEEP_INPUT_OUTPUT\n## 工程规格\n实现内容\n### 安全边界\nMUST_KEEP_SECURITY\n## 必要约束\n不部署\n',
+     '## 原始意图\n用户需求\n### 输入输出\nMUST_KEEP_INPUT_OUTPUT\n## 工程规格\n实现内容\n### 安全边界\nMUST_KEEP_SECURITY\n## 必要约束\n不部署\n'),
+    ('history descendants cannot reopen',
+     '## 原始意图\n当前需求\n## 工程规格\n当前规格\n## 历史报告\n旧报告\n### 工程规格复盘\nMUST_NOT_SEND_HISTORY\n#### 原始意图\nMUST_NOT_SEND_DEEP_HISTORY\n## 必要约束\n当前约束\n',
+     '## 原始意图\n当前需求\n## 工程规格\n当前规格\n## 必要约束\n当前约束\n'),
+    ('unselected descendants cannot reopen',
+     '## 工程规格\n当前规格\n## 附加材料\nMUST_NOT_SEND_APPENDIX\n### 工程规格\nMUST_NOT_SEND_APPENDIX_CHILD\n## 硬约束\n不部署\n',
+     '## 工程规格\n当前规格\n## 硬约束\n不部署\n'),
+    ('document root and numbered sections',
+     '# 任务书\nMUST_NOT_SEND_PREAMBLE\n## 0. 原始意图与范围\n当前意图\n### 工程规格（与原始意图区分）\n当前规格\n#### 安全边界\n当前边界\n## 1. 验收场景\nMUST_NOT_SEND_SCENARIOS\n### 原始意图\nMUST_NOT_SEND_SCENARIO_CHILD\n## 2. 硬约束\n不部署\n',
+     '## 0. 原始意图与范围\n当前意图\n### 工程规格（与原始意图区分）\n当前规格\n#### 安全边界\n当前边界\n## 2. 硬约束\n不部署\n'),
+    ('authorization metadata is not a runtime event',
+     'scenarios-fp: 0000000000000000000000000000000000000000\n# routing\nstate: blocked\nimplementation-authorized: explicit fixture approval\ndispatch-budget: 20\ndispatch-permissions: read\n## 原始意图\n当前意图\n## 工程规格\n当前规格\n',
+     '## 原始意图\n当前意图\n## 工程规格\n当前规格\n'),
+    ('runtime events do not reopen through children',
+     '## 工程规格\n当前规格\nworking: MUST_NOT_SEND_RUNTIME\n### 工程规格\nMUST_NOT_SEND_RUNTIME_CHILD\n## 必要约束\n当前约束\n',
+     '## 工程规格\n当前规格\n## 必要约束\n当前约束\n'),
+    ('closing ATX markers do not admit preamble',
+     '# 任务书\nMUST_NOT_SEND_PREAMBLE\n## 工程规格 ##\n当前规格\n### 安全边界 ###\n当前边界\n## 旧报告 ##\nMUST_NOT_SEND_HISTORY\n',
+     '## 工程规格 ##\n当前规格\n### 安全边界 ###\n当前边界\n'),
+    ('selected code literal preserved',
+     '## 工程规格\n当前规格\n```markdown\n## 历史报告\nworking: literal specification example\n```\n### 日志格式\n合法规格子节\n',
+     '## 工程规格\n当前规格\n```markdown\n## 历史报告\nworking: literal specification example\n```\n### 日志格式\n合法规格子节\n'),
+    ('excluded code headings cannot escape',
+     '## 工程规格\n当前规格\n## 历史报告\n```markdown\n## 工程规格\nMUST_NOT_SEND_FENCED_HISTORY\n```\n~~~markdown\n## 原始意图\nMUST_NOT_SEND_TILDE_HISTORY\n~~~\n## 必要约束\n当前约束\n',
+     '## 工程规格\n当前规格\n## 必要约束\n当前约束\n'),
+    ('pure LF brief keeps trailing empty line',
+     'original first line\nsecond line\n\n', 'original first line\nsecond line\n\n'),
+    ('pure CRLF brief keeps trailing empty line',
+     'original first line\r\nsecond line\r\n\r\n', 'original first line\r\nsecond line\r\n\r\n'),
+    ('selected CRLF lines retain bytes',
+     '## 原始意图\r\n当前需求\r\n### 输入输出\r\n当前接口\r\n\r\n## 历史报告\r\nMUST_NOT_SEND_HISTORY\r\n### 工程规格复盘\r\nMUST_NOT_SEND_HISTORY_CHILD\r\n',
+     '## 原始意图\r\n当前需求\r\n### 输入输出\r\n当前接口\r\n\r\n'),
+]
+evidence=os.environ.get('QWB_ROUTING_INPUT_EVIDENCE_DIR')
+if evidence:
+    evidence=Path(evidence); evidence.mkdir(parents=True,exist_ok=False)
+for index,(name,raw,expected) in enumerate(cases):
+    task=project/'input-contract.md'; task.write_bytes(raw.encode())
+    result=subprocess.run(['bash',str(root/'bin/qwb-dispatch.sh'),str(task),'--project',str(project),'--json'],
+                          env=os.environ|{'TYPESAFE_API_KEY':'fake-input-key'},capture_output=True,timeout=10)
+    request=Path(os.environ['FAKE_REQUEST']).read_bytes()
+    sent=json.loads(request)['state']['task']['brief'].encode()
+    print('RC input contract:',name,result.returncode)
+    if evidence:
+        prefix=f'{index:02}'
+        (evidence/(prefix+'.input')).write_bytes(raw.encode()); (evidence/(prefix+'.expected')).write_bytes(expected.encode())
+        (evidence/(prefix+'.request.json')).write_bytes(request)
+        (evidence/(prefix+'.stdout')).write_bytes(result.stdout); (evidence/(prefix+'.stderr')).write_bytes(result.stderr)
+    assert result.returncode==0 and json.loads(result.stdout)['status']=='clear',(name,result.returncode,result.stderr)
+    assert sent==expected.encode(),(name,sent,expected.encode())
+    assert task.read_bytes()==raw.encode(), 'router rewrote input'
+    print('PASS input contract:',name)
+PY
 # Human display remains available, and one validated snapshot supplies fallback.
 TYPESAFE_API_KEY=fake-key bash "$ROOT/bin/qwb-dispatch.sh" "$T/project/brief.md" --project "$T/project" > "$T/out" 2> "$T/err"
 grep -q '^  status: clear' "$T/out"
@@ -113,6 +174,8 @@ task() {
   cat > "$T/project/tasks/2099-01-01-$1.md" <<'MD'
 # routing
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 20
 ## 验收场景
 ### user_正常
 Given ready
@@ -320,3 +383,37 @@ for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
   fi
   echo "PASS installed $agent uses $harness and fixed model/effort"
 done
+
+# 冻结06第四场景：仅意图/规格/必要约束外发；技术模糊不用用户决策，权限缺口不default扩权。
+reset_rule
+task narrow
+cat >> "$T/project/tasks/2099-01-01-narrow.md" <<'MD'
+## 原始意图
+原话：修复接口，保留指定型号。
+### 工程规格
+只改api.sh，返回版本v1。
+## 必要约束
+单机；不自动合并；没有联网部署授权。
+## 历史报告
+working: SECRET-HISTORY-SENTINEL
+延续历史：CONTINUATION-SENTINEL
+MD
+jq '.answers.rule.confidence=0.4 | .answers.rule.probabilities={rule_1:0.4,default:0.6}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
+cp "$T/project/qwbuddy/workers.sh" "$T/pinned-before"
+TYPESAFE_API_KEY=fake-key run narrow auto
+test "$(worker narrow)" = pi
+cmp -s "$T/pinned-before" "$T/project/qwbuddy/workers.sh"
+jq -e '.state.task.brief | contains("原话：修复接口") and contains("只改api.sh") and contains("没有联网部署授权") and (contains("SENTINEL") | not) and (contains("dispatch:") | not) and (contains("qwb-collab-") | not)' "$FAKE_REQUEST" >/dev/null
+echo 'PASS user_路由模糊不扩权：窄输入无累计日志，技术ambiguous默认继续，指定模型/effort配置不变'
+# 同一低置信度候选若缺权限，不得落默认；clear也不能越权。
+printf '%s\n' '{"rules":[{"when":"deploy","worker":"codex","requires":["deploy"]}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"
+for confidence in 0.4 0.9; do
+  task permission-gap
+  jq --argjson confidence "$confidence" '.answers.rule.confidence=$confidence | .answers.rule.probabilities={rule_1:$confidence,default:(1-$confidence)}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
+  TYPESAFE_API_KEY=fake-key reject_unchanged permission-gap 2 '权限'
+done
+# off也不能绕过default本身明确需要的权限。
+printf '%s\n' '{"rules":[],"default":{"worker":"pi","requires":["deploy"]}}' > "$T/project/qwbuddy/dispatch-rules.json"
+task default-gap
+reject_unchanged default-gap 2 '权限'
+echo 'PASS 权限缺口clear/ambiguous/off均非零且无Herdr/dispatch副作用'

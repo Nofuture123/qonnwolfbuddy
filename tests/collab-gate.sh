@@ -2,7 +2,7 @@
 # 真入口+临时Git；仅Herdr/ps/lsof系统边界替身，不调用现场端点。
 set -euo pipefail
 export QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-python3 -B - <<'PY'
+python3 -u -B - <<'PY'
 import hashlib, json, os, shutil, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_GATE_TEST_ROOT'])
@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='qwb-gate-') as tmp:
     (p/'qwbuddy/config.sh').write_text(f"QWB_WORKERS='sol reviewer astra unknown-reviewer'\nQWB_WORKSPACE='ws'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='{integration}'\nQWB_GATE_FAST='true'\nQWB_GATE_FULL='true'\n")
     (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_worker astra herdr pi -- --provider openai-codex --model gpt-6-astra --thinking low\nqwb_worker unknown-reviewer herdr pi -- --provider anthropic --model claude-unconfirmed --thinking low\n')
     (p/'safety.sh').write_text('#!/bin/sh\n# fixture defect: unresolved request wrongly accepted\nexit 0\n')
-    (p/'tasks').mkdir(); (p/'.gitignore').write_text('qwbuddy/.roles/\nqwbuddy/.controller.lock/\ntasks/\n')
+    (p/'tasks').mkdir(); (p/'.gitignore').write_text('qwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\ntasks/\n')
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
     # 仅本测试私有Git的候选，不是共享lane/池；TemporaryDirectory随测试回收。
@@ -106,6 +106,9 @@ f.write_text(json.dumps(s))
     delivery=[a for a in calls if a[:2]==['pane','run']]
     assert routed.returncode==124 and len(delivery)==1 and delivery[0][2]=='gate-pane', (routed.returncode,delivery,routed.stderr)
     print('PASS Pi宿主block同样路由门禁，不以rc2逐轮唤主控；唯一监督与有界重投不变')
+    if os.environ.get('QWB_GATE_ROUTES_ONLY')=='1':
+        print('PASS 仅04/06直接门铃接缝窄验；未执行后段candidate/full fixture检查')
+        raise SystemExit(0)
     batch=[]
     for ticket in [t,bt]:batch+=json.loads(call('qwb-send.sh','pending','--task',ticket,actor='gate-pane').stdout)
     assert any(h['payload']=='done: 候选A交回' for h in batch) and any(h['payload']=='done: 候选B交回' for h in batch)

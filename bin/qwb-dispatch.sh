@@ -6,7 +6,7 @@
 #
 # 用法:
 #   qwb-dispatch.sh <brief文件> [--project <项目根>] [--json]
-#     <brief文件>   任务简报（通常就是任务书路径；全文作为 state.task.brief 发给模型）
+#     <brief文件>   任务书路径；仅原话、工程规格与必要约束作为 state.task.brief
 #     --project     项目根（默认当前目录）：规则在 <项目根>/qwbuddy/dispatch-rules.json，
 #                   key 可在 <项目根>/.env；state.task.project 用项目根的目录名
 #
@@ -19,7 +19,7 @@
 #   存在但不合 schema → exit 2（配置错误，不许被绕过或静默跳过）。
 #   agents 可选，形如 {"implement":["pi","codex"]}；worker 命中 key 时解析角色，
 #   否则原样作为字面工人名。候选须在 config.sh + workers.sh 注册，不在 agents_disabled，
-#   且 quota-axi --json 的 weekly（无则 session）余量 >= QWB_QUOTA_FLOOR（默认 10）。
+#   显式 QUOTA_AXI_SNAPSHOT 本地快照的 weekly（无则 session）余量须 >= QWB_QUOTA_FLOOR（默认 10）。
 #   quota 不可用时明确降级；无 key 时不查询额度。候选不可用的 default/命中角色 exit 2，
 #   逐候选说明原因；agents 不递归。具名工人的模型/推理级由 workers.sh 的 argv 固化。
 #   QWB_TYPESAFE_BASE 仅供本地假 server 测试覆盖 API 地址，默认 https://api.typesafe.ai。
@@ -127,6 +127,7 @@ rules_err=$(jq -r '
   elif any(.rules[]; (worker_ok(.worker) | not)) then "每条规则需要合法 worker（非空、无空白/控制字符）"
   elif ((.default | type) != "object") then "default 必须是对象"
   elif (worker_ok(.default.worker) | not) then "default 需要合法 worker（非空、无空白/控制字符）"
+  elif any((.rules[]), .default; has("requires") and ((.requires | type) != "array" or any(.requires[]; worker_ok(.) | not))) then "requires 必须是合法权限名数组"
   elif has("agents") and (.agents | type) != "object" then "agents 必须是对象"
   elif any((.agents // {})[]; type != "array") then "agents 值必须是非空候选数组"
   elif any((.agents // {})[]; length == 0 or any(.[]; worker_ok(.) | not)) then "agents 候选需要合法 worker（非空、无空白/控制字符）"
@@ -136,6 +137,60 @@ rules_err=$(jq -r '
   else empty end
 ' "$RULES" 2>/dev/null) || die "规则文件不是合法 JSON: ${RULES_PATH}"
 [ -z "$rules_err" ] || die "规则文件不合 schema: ${RULES_PATH} - ${rules_err}"
+# 不发送累计日志、验收报告、worker/model配置或03/04整个协作区。
+NARROW=$(python3 -B - "$BRIEF" <<'PY'
+import json,re,sys
+s=open(sys.argv[1],encoding='utf-8',newline='').read()
+m=re.search(r'\r?\n<!-- qwb-collab-v1\r?\n([^\r\n]+)\r?\n-->\s*$',s)
+d=json.loads(m[1]) if m else {}
+p=d.get('planning')
+if p:
+    brief='原话: '+p['source']['text']+'\n意图: '+p['intent']+'\n工程规格: '+p['spec']+'\n必要约束: '+p['constraints']+'\n指定依赖: '+json.dumps(p['needs'],ensure_ascii=False)
+    permissions=(p.get('authorization') or {}).get('permissions',[])
+else:
+    s=s[:m.start()] if m else s
+    section=re.compile(r'(?:\d+(?:\.\d+)*[.、]?[ \t]*)?(?:原始意图(?:与范围)?|原始需求|意图|工程规格|必要约束|硬约束)(?:[ \t]*[（(:：].*)?')
+    excluded=re.compile(r'(?:\d+(?:\.\d+)*[.、]?[ \t]*)?(?:验收场景|(?:历史|验收|审核|实现)?报告|历史(?:日志)?|日志|常驻(?:附页)?)(?:[ \t]*[（(:：].*)?')
+    parsed=[]; fence=''
+    for line in s.splitlines(keepends=True):
+        delimiter=re.match(r'^[ \t]{0,3}(`{3,}|~{3,})(.*)',line)
+        literal=bool(fence or delimiter)
+        if delimiter:
+            if not fence: fence=delimiter[1]
+            elif delimiter[1][0]==fence[0] and len(delimiter[1])>=len(fence) and not delimiter[2].strip(): fence=''
+        heading=None if literal else re.match(r'^(#{1,6})[ \t]+(.*)',line)
+        if heading: heading=(len(heading[1]),re.sub(r'[ \t]+#+[ \t]*$','',heading[2].strip()))
+        parsed.append((line,heading,literal))
+    has_sections=any(h and section.fullmatch(h[1]) for _,h,_ in parsed)
+    keep=not has_sections; lines=[]; stack=[]; first_heading=True
+    for line,heading,literal in parsed:
+        if not literal and re.match(r'^(state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space|review-impl|review-rev|brief-include-fp|implementation-authorized|dispatch-budget|dispatch-permissions):',line):
+            if re.match(r'^(?:(?:working|done|blocked|needs-decision|dispatch|not-sent|wake):|review-)',line):
+                keep=False
+                if stack: stack[-1]=(stack[-1][0],False,True)
+            continue
+        if heading:
+            level,title=heading
+            while stack and level<=stack[-1][0]: stack.pop()
+            parent_keep,parent_blocked=stack[-1][1:] if stack else (False,False)
+            selected=bool(section.fullmatch(title))
+            blocked=parent_blocked or bool(excluded.fullmatch(title)) or (not parent_keep and bool(re.search(r'验收|报告|常驻|历史|日志',title)))
+            keep=not blocked and (parent_keep or selected or not has_sections)
+            # 仅文档首H1是结构根；其正文不选中，其余未选章节连后代一起排除。
+            transparent=first_heading and level==1 and not blocked and not selected
+            stack.append((level,keep,blocked or (not keep and not transparent)))
+            first_heading=False
+        if keep: lines.append(line)
+    brief=''.join(lines)
+    permission_header=re.search(r'^dispatch-permissions:[ \t]*([^\n]*)',s,re.M)
+    permissions=permission_header[1].split() if permission_header else []
+print(json.dumps({'brief':brief,'permissions':permissions},ensure_ascii=False))
+PY
+) || die '原话/规格分类输入非法'
+PERMISSIONS=$(jq -c '.permissions' <<<"$NARROW") || die '本地权限非法'
+if ! jq -e --argjson permissions "$PERMISSIONS" 'all(.default.requires[]?; . as $p | $permissions | index($p))' "$RULES" >/dev/null; then
+  die '默认规则权限未授权，禁止default兜底'
+fi
 # 先判定开关；off 仍解析 default，但不调用可能联网的 quota-axi。
 if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
   TYPESAFE_API_KEY_PRIVATE=$(env_get TYPESAFE_API_KEY "${PROJECT_ROOT}/.env")
@@ -189,7 +244,9 @@ if jq -e '(.agents // {} | length) > 0' "$RULES" >/dev/null; then
   if [ -n "$TYPESAFE_API_KEY_PRIVATE" ]; then
     if ! command -v quota-axi >/dev/null 2>&1; then
       QUOTA_NOTE='quota-axi 未安装，降级为注册+禁名单'
-    elif ! QUOTA=$(quota-axi --json 2>/dev/null); then
+    elif [ -z "${QUOTA_AXI_SNAPSHOT:-}" ] || [ ! -f "$QUOTA_AXI_SNAPSHOT" ]; then
+      QUOTA_NOTE='未提供本地额度快照，降级为注册+禁名单；不联网探额度'
+    elif ! QUOTA=$(quota-axi --json --no-credential-refresh 2>/dev/null); then
       QUOTA='null'; QUOTA_NOTE='quota-axi 失败，降级为注册+禁名单'
     elif ! jq -se 'length == 1 and (.[0] |
       (.schemaVersion == 5 or .schemaVersion == 6) and (.providers | type) == "array" and
@@ -268,15 +325,15 @@ if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
 fi
 [ -r "$BRIEF" ] || die "brief 文件不可读: ${BRIEF}"
 
-# ---- 请求：与上游同形。state 只带 project 名 + brief 全文；一个 choice 问题，
+# ---- 请求：与上游同形。state 只带 project 名 + 原话/规格/必要约束；一个 choice 问题，
 # 选项 = 每条规则的 when + 固定 default 选项。模型看不到 worker 名。 ----
-REQUEST=$(jq -n --rawfile brief "$BRIEF" --arg project "$(basename "$PROJECT_ROOT")" --arg model "$TS_MODEL" \
+REQUEST=$(jq -n --argjson narrow "$NARROW" --arg project "$(basename "$PROJECT_ROOT")" --arg model "$TS_MODEL" \
   --arg none_criterion "$DEFAULT_WHEN" --slurpfile rules "$RULES" '
   ($rules[0]) as $cfg |
   ($cfg.rules | to_entries | map({key: ("rule_" + ((.key + 1) | tostring)), value: .value.when}) | from_entries) as $criteria |
   {
     model: $model,
-    state: {task: {project: $project, brief: $brief}},
+    state: {task: {project: $project, brief: $narrow.brief}},
     questions: {
       rule: {
         type: "choice",
@@ -314,7 +371,7 @@ jq -e --slurpfile rules "$RULES" '
 
 # ---- 后处理（纯 jq，无模型参与）：choice 不在选项集 / 低置信度 / 命中规则 / default ----
 RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" \
-  --argjson resolutions "$RESOLUTIONS" --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" '
+  --argjson resolutions "$RESOLUTIONS" --argjson permissions "$PERMISSIONS" --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" '
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($r.answers.rule) as $a |
   ($a.choice) as $choice |
   (if ($choice | test("^rule_[1-9][0-9]*$"))
@@ -330,6 +387,10 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   } as $ev |
   if $choice != "default" and $rule == null then
     $ev + {status: "error", reason: ("rule " + $choice + " 不在规则文件里")}
+  elif any(($rule // $cfg.default).requires[]?; . as $permission | $permissions | index($permission) | not) then
+    $ev + {status:"denied",reason:"命中规则所需权限未授权，不可用default兜底"}
+  elif $a.confidence < ($floor | tonumber) and any($cfg.rules | to_entries[]; (.key + 1 | tostring) as $n | ($a.probabilities["rule_"+$n] > 0) and any(.value.requires[]?; . as $permission | $permissions | index($permission) | not)) then
+    $ev + {status:"denied",reason:"模糊候选存在未授权权限，不可用default兜底"}
   elif $a.confidence < ($floor | tonumber) then
     $ev + {status: "ambiguous", reason: ("confidence " + ($a.confidence | tostring) + " 低于门槛 " + $floor)}
   elif $choice == "default" then
@@ -337,6 +398,9 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   else
     $ev + $resolutions.rules[$rule_number - 1] + {status: "clear", note: "规则命中"}
   end') || emit_error "解析失败"
+if jq -e '.status == "denied"' <<<"$RESULT" >/dev/null; then
+  die "$(jq -r '.reason' <<<"$RESULT")"
+fi
 if jq -e '.status == "clear" and has("reason")' <<<"$RESULT" >/dev/null; then
   die "$(jq -r '.reason' <<<"$RESULT")"
 fi

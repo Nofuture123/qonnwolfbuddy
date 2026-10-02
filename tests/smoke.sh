@@ -87,7 +87,7 @@ fi
 
 echo "== 6. qwb-wake.sh --dry-run 未结项判定 =="
 FAKE="$TMP/tasks/2099-01-01-fake.md"
-printf '# 假任务\nstate: running\n' > "$FAKE"
+printf '# 假任务\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$FAKE"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 printf '%s' "$out" | grep -q '2099-01-01-fake' && ok "state=running 列为未结项" || bad "state=running 未列为未结项"
 grep -q '^wake:' "$FAKE" && bad "dry-run 写了 wake 行" || ok "dry-run 无副作用（无 wake 行）"
@@ -208,7 +208,7 @@ exit 0
 EOF
 chmod +x "$STUB/herdr"
 
-printf '# 假任务\nstate: running\n' > "$FAKE"
+printf '# 假任务\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$FAKE"
 ( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null \
   && ok "wake --once 有未结项退出 0" || bad "wake --once 有未结项非 0"
 grep -q '^wake:' "$FAKE" && ok "已写 wake: 去重行" || bad "未写 wake: 去重行"
@@ -237,6 +237,8 @@ DISP="$TMP/tasks/2099-01-02-disp.md"
 cat > "$DISP" <<'EOF'
 # 派发测试
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -265,7 +267,7 @@ grep -qF "$DISP" "$STUBLOG" && ok "prompt 参数含任务书绝对路径" || bad
 
 echo "== 10. F3 回归：工人追加 done: → 进展指纹变 → 再次叫醒 =="
 F3F="$TMP/tasks/2099-01-03-f3.md"
-printf '# F3\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=0000oldfp\n' > "$F3F"
+printf '# F3\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running fp=0000oldfp\n' > "$F3F"
 printf 'done: 工人完成，附检查证据\n' >> "$F3F"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-03-f3' \
@@ -277,14 +279,14 @@ printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-03-f3' \
   && bad "进展未变仍重复叫" || ok "写下新指纹后进展未变→不再叫"
 # 兼容旧格式：无 fp= 的 wake 行视为指纹不同 → 允许再叫
 F3O="$TMP/tasks/2099-01-05-f3old.md"
-printf '# 旧格式\nstate: running\nwake: 2026-01-01T00:00:00Z state=running\n' > "$F3O"
+printf '# 旧格式\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running\n' > "$F3O"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-05-f3old' \
   && ok "无 fp= 的旧 wake 行→仍列为未结项" || bad "无 fp= 的旧 wake 行被误跳过"
 
 echo "== 11. F4 回归：投递失败不终止值守、不写 wake 行 =="
 F4F="$TMP/tasks/2099-01-04-f4.md"
-printf '# F4\nstate: running\n' > "$F4F"
+printf '# F4\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$F4F"
 ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_FAIL=run bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null 2>&1 \
   && ok "投递失败时 --once 退出码 0" || bad "投递失败时 --once 非 0"
 grep -q '^wake:' "$F4F" && bad "投递失败仍写了 wake 行" || ok "投递失败未写 wake 行"
@@ -372,7 +374,7 @@ run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外
 }
 # 等待预算需要一个带 dispatch: pane 的未结项，只有本票参与。
 FCF="$FCT/tasks/2099-01-20-fakeclock.md"
-printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
+printf '# fc\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
 # 原来单pane agent wait的精确补睡，迁为共用订阅的50ms分片；总预算与15秒看门狗不降低。
 fc_budget_ok() { # $1=额外耗时 $2=轮数
   if python3 - "$FKS" "$1" "$2" <<'PY'
@@ -409,7 +411,7 @@ done
 
 echo "== 12d. 无 dispatch pane：有界扫描、不猜目标、仍满预算等待 =="
 NP="$TMP/nopane"; mkdir -p "$NP/tasks" "$NP/qwbuddy"
-printf '# np\nstate: running\n' > "$NP/tasks/2099-01-21-np.md"
+printf '# np\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$NP/tasks/2099-01-21-np.md"
 cp "$TMP/qwbuddy/config.sh" "$NP/qwbuddy/config.sh"
 mk_fakeclock 0 2
 : > "$FCLOG"; : > "$WIRELOG"
@@ -418,7 +420,7 @@ if grep -q 'events.subscribe' "$WIRELOG"; then bad "无 dispatch 夹具误订阅
 fc_budget_ok 0 2
 
 echo "== 12e. 真时钟轻量冒烟：共用订阅后1.3秒内扫描1..4轮 =="
-printf '# fc\nstate: running\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
+printf '# fc\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndispatch: 2026-01-01T00:00:00Z worker=codex agent=qwb-fc pane=wtest:p9 dir=/tmp\n' > "$FCF"
 : > "$FCLOG"; : > "$WIRELOG"
 ( cd "$FCT" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
     exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
@@ -509,7 +511,7 @@ WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
 qwb_finish() { PATH="$STUB:$PATH" bash "$WTB" finish "$@"; }
 
 WTID="wtdemo"; WTF="$GP/tasks/2099-01-07-${WTID}.md"
-printf '# demo\nstate: running\n' > "$WTF"
+printf '# demo\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTF"
 git -C "$GP" worktree add -q -b "$WTID" "$GP/.worktrees/$WTID"
 out="$(bash "$WTB" list --project "$GP")"
 printf '%s' "$out" | grep -q "未结项.*${WTID}" && ok "list 标出未结项 worktree" || bad "list 未标出未结项"
@@ -543,7 +545,7 @@ grep -q 'tag=archive/' "$WTF" && ok "worktree: 行含 tag" || bad "worktree: 行
 
 # 脏 worktree：--archive 拒绝，不动
 WTD="wtdirty"; WTDF="$GP/tasks/2099-01-08-${WTD}.md"
-printf '# dirty\nstate: running\n' > "$WTDF"
+printf '# dirty\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTDF"
 git -C "$GP" worktree add -q -b "$WTD" "$GP/.worktrees/$WTD"
 echo x > "$GP/.worktrees/$WTD/dirty.txt"
 if qwb_finish "$WTD" --archive --project "$GP" >/dev/null 2>&1; then
@@ -561,7 +563,7 @@ grep -q '^worktree: keep' "$WTDF" && ok "--keep 记账成功" || bad "--keep 未
 
 # --merged 放行路径：分支合并进 HEAD 后正常收尾
 WTM="wtmerged"; WTMF="$GP/tasks/2099-01-09-${WTM}.md"
-printf '# merged\nstate: running\n' > "$WTMF"
+printf '# merged\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTMF"
 git -C "$GP" worktree add -q -b "$WTM" "$GP/.worktrees/$WTM"
 git -C "$GP/.worktrees/$WTM" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
 git -C "$GP" -c user.email=t@t.t -c user.name=t merge -qm m "$WTM"
@@ -574,6 +576,8 @@ git -C "$GP" show-ref --verify --quiet "refs/heads/$WTM" && bad "merged 后分�
 cat > "$GP/tasks/2099-01-10-wtnew.md" <<'EOF'
 # new
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -596,6 +600,8 @@ echo "== 17b. 方案A：隔离派发直落根 pane；finish --root-tab-missing �
 cat > "$GP/tasks/2099-01-17-rootpane.md" <<'EOF'
 # rootpane
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -631,6 +637,8 @@ ra_space="wQ$(printf '%s' "$ra_dir" | shasum | cut -c1-8)"
 cat > "$GP/tasks/2099-01-17-rpfail.md" <<'EOF'
 # rpfail
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -664,7 +672,7 @@ kill "$fs_pid"; wait "$fs_pid" 2>/dev/null || true
 fs_wsan() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9'; }
 fs_mkticket() { # $1=id $2=space $3=root_tab $4=worker_tab $5=worker_pane；stdout=worktree 物理路径
   local id="$1" sp="$2" tf="$GP/tasks/2099-01-17-$1.md" phys
-  printf '# %s\nstate: running\n' "$id" > "$tf"
+  printf '# %s\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' "$id" > "$tf"
   git -C "$GP" worktree add -q -b "$id" "$GP/.worktrees/$id"
   phys="$(cd "$GP/.worktrees/$id" && pwd -P)"
   printf 'worktree-space: id=%s root-tab=%s path=%s\n' "$sp" "$3" "$phys" >> "$tf"
@@ -799,6 +807,8 @@ FD2="$TMP/finish-dyn2"; mkdir -p "$FD2"
 cat > "$GP/tasks/2099-01-17-wtnopane.md" <<'EOF'
 # wtnopane
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -826,7 +836,7 @@ wn_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wn HERDR_DYN_DIR="
 printf '{"id":"x","result":{"tabs":[]}}\n' > "$FD/tab-list.json"   # 按指令给空列表：Space 已关时 finish 根本不会查
 printf '{"id":"x","result":{"panes":[]}}\n' > "$FD/pane-list.json"
 SPF="$GP/tasks/2099-01-17-wtpartial.md"
-printf '# wtpartial\nstate: running\n' > "$SPF"
+printf '# wtpartial\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$SPF"
 git -C "$GP" worktree add -q -b wtpartial "$GP/.worktrees/wtpartial"
 SP_PHYS="$(cd "$GP/.worktrees/wtpartial" && pwd -P)"
 SP_OID="$(git -C "$GP/.worktrees/wtpartial" rev-parse HEAD)"
@@ -920,6 +930,8 @@ ad_task() { # $1=项目根 $2=任务 id
   cat > "$1/tasks/2099-05-01-$2.md" <<EOF
 # $2
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -997,7 +1009,7 @@ rm -rf "$AD" "$ADS" "$ADQ"
 echo "== 18. G1：detached HEAD 下归档/落地以实际 HEAD OID 为准 =="
 # 场景：分支 wtdet 在 A；checkout --detach 后提交 B（分支仍指 A）
 WTG="wtdet"; WTGF="$GP/tasks/2099-01-12-${WTG}.md"
-printf '# det\nstate: running\n' > "$WTGF"
+printf '# det\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTGF"
 git -C "$GP" worktree add -q -b "$WTG" "$GP/.worktrees/$WTG"
 AOID="$(git -C "$GP/.worktrees/$WTG" rev-parse HEAD)"
 git -C "$GP/.worktrees/$WTG" checkout -q --detach
@@ -1033,7 +1045,7 @@ exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$GSTUB/git"
 WTS="wtstf"; WTSF="$GP/tasks/2099-01-13-${WTS}.md"
-printf '# stf\nstate: running\n' > "$WTSF"
+printf '# stf\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTSF"
 git -C "$GP" worktree add -q -b "$WTS" "$GP/.worktrees/$WTS"
 if PATH="$GSTUB:$PATH" qwb_finish "$WTS" --archive --project "$GP" >/dev/null 2>&1; then
   bad "git status 失败时 --archive 竟放行（G1b 未修）"
@@ -1097,7 +1109,7 @@ chmod +x "$GSTUB2/git"
 
 # 22a：--archive 打标签之后、remove 之前 HEAD 被推进 → 拒绝删除，已打标签保留
 WTI="wtinj"; WTIF="$GP/tasks/2099-01-14-${WTI}.md"
-printf '# inj\nstate: running\n' > "$WTIF"
+printf '# inj\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTIF"
 git -C "$GP" worktree add -q -b "$WTI" "$GP/.worktrees/$WTI"
 : > "$GITLOG"
 if PATH="$GSTUB2:$PATH" INJ_MODE=posttag INJ_WT="$GP/.worktrees/$WTI" qwb_finish "$WTI" --archive --project "$GP" >/dev/null 2>&1; then
@@ -1114,7 +1126,7 @@ git -C "$GP" show-ref --verify --quiet "refs/heads/$WTI" && ok "分支保留" ||
 
 # 22b：--merged 核实通过之后、remove 之前 HEAD 被推进 → 同样拒绝
 WTJ="wtinjm"; WTJF="$GP/tasks/2099-01-15-${WTJ}.md"
-printf '# injm\nstate: running\n' > "$WTJF"
+printf '# injm\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTJF"
 git -C "$GP" worktree add -q -b "$WTJ" "$GP/.worktrees/$WTJ"
 : > "$GITLOG"
 if PATH="$GSTUB2:$PATH" INJ_MODE=postmerge INJ_WT="$GP/.worktrees/$WTJ" qwb_finish "$WTJ" --merged --project "$GP" >/dev/null 2>&1; then
@@ -1127,7 +1139,7 @@ grep -q 'worktree remove' "$GITLOG" && bad "仍调用了 worktree remove" || ok 
 
 # 22c：分支身份读取失败 → 拒绝，不回退成任务 id 继续删
 WTK="wtinjb"; WTKF="$GP/tasks/2099-01-16-${WTK}.md"
-printf '# injb\nstate: running\n' > "$WTKF"
+printf '# injb\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTKF"
 git -C "$GP" worktree add -q -b "$WTK" "$GP/.worktrees/$WTK"
 : > "$GITLOG"
 if PATH="$GSTUB2:$PATH" INJ_MODE=branchread qwb_finish "$WTK" --archive --project "$GP" >/dev/null 2>&1; then
@@ -1469,6 +1481,8 @@ DISP2="$TMP/tasks/2099-01-22-disp2.md"
 cat > "$DISP2" <<'EOF'
 # d2
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1488,7 +1502,7 @@ grep -qF 'pane=contract:p99' "$DISP2" \
 echo "== 27. F1 回归：工人无新账本行时的时间兜底重叫 =="
 # 场景：任务已叫醒过一次，此后工人挂起/崩溃不再追加任何行（指纹永不变）
 RWF="$TMP/tasks/2099-01-23-rewake.md"
-printf '# rw\nstate: running\nworking: 工人在干活\n' > "$RWF"
+printf '# rw\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: 工人在干活\n' > "$RWF"
 ( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
 [[ "$(grep -c '^wake:' "$RWF")" == "1" ]] && ok "首轮叫醒写下 wake 行" || bad "首轮未写 wake 行"
 # 指纹未变 + 默认 QWB_REWAKE_MS=1800000 未超期 → 不叫
@@ -1523,6 +1537,8 @@ F2T="$TMP/tasks/2099-01-24-f2race.md"
 cat > "$F2T" <<'EOF'
 # f2race
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1629,7 +1645,7 @@ lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$HX" 2>&1)"; rc=$?
 
 echo "== 31. M1：验收场景门（派发前必须有场景 + 失败路径 + 冻结指纹）=="
 # 31a 负例：无场景块的任务书 → 派发必须被拒且提示补场景
-NSF="$TMP/tasks/2099-01-31-noscen.md"; printf '# ns\nstate: running\n' > "$NSF"
+NSF="$TMP/tasks/2099-01-31-noscen.md"; printf '# ns\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$NSF"
 nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task noscen --worker codex --here 2>&1 )"; nrc=$?
 { [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '补验收场景'; } \
   && ok "无场景任务书派发被拒（rc=${nrc}）" || bad "无场景任务书竟派发成功（M1 未修，rc=${nrc}）"
@@ -1639,6 +1655,8 @@ HPF="$TMP/tasks/2099-01-31-happyonly.md"
 cat > "$HPF" <<'EOF'
 # happy
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1661,6 +1679,8 @@ MPT="$MP/tasks/2099-01-32-mscen.md"
 cat > "$MPT" <<'EOF'
 # mscen
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1692,6 +1712,8 @@ M6T="$GP/tasks/2099-01-33-m6def.md"
 cat > "$M6T" <<'EOF'
 # m6def
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1759,6 +1781,8 @@ DISP3="$TMP/tasks/2099-01-40-disp3.md"
 cat > "$DISP3" <<'EOF'
 # d3
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1786,6 +1810,8 @@ DISP4="$TMP/tasks/2099-01-41-disp4.md"
 cat > "$DISP4" <<'EOF'
 # d4
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1834,6 +1860,8 @@ MPT2="$MP/tasks/2099-01-33-mscen2.md"
 cat > "$MPT2" <<'EOF'
 # mscen2
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1899,6 +1927,8 @@ SGT="$SG/tasks/2099-01-50-sdgate.md"
 cat > "$SGT" <<'EOF'
 # sdgate
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -1958,14 +1988,14 @@ printf '%s' "$out" | grep -q '规格疑点未处理' \
 # 39b：对照——最后相关事件是 spec-resolved 的票不标
 SG2="$TMP/specgate2"; mkdir -p "$SG2"
 bash "$ROOT/bin/qwb-init.sh" "$SG2" >/dev/null
-printf '# sgres\nstate: running\nblocked: spec-defect: 旧疑点\nworking: spec-resolved: spec；已改票\ndone: 完成\n' \
+printf '# sgres\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nblocked: spec-defect: 旧疑点\nworking: spec-resolved: spec；已改票\ndone: 完成\n' \
   > "$SG2/tasks/2099-01-51-sgres.md"
 out="$( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
 printf '%s' "$out" | grep -q '规格疑点未处理' \
   && bad "已处置疑点仍被标未处理" || ok "对照：spec-resolved 后不再标未处理"
 # 39c：现有值守接收 blocked: spec-defect 行——它是 blocked 状态行，改变进展指纹 → 叫醒主控
 SGW="$SG2/tasks/2099-01-52-sgwake.md"
-printf '# sgwake\nstate: running\nworking: 工人开工\n' > "$SGW"
+printf '# sgwake\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: 工人开工\n' > "$SGW"
 ( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
 out="$( cd "$SG2" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
 printf '%s' "$out" | grep -q '跳过.*sgwake' \
@@ -1980,6 +2010,8 @@ SGR="$SG/tasks/2099-01-53-sgrev.md"
 cat > "$SGR" <<'EOF'
 # sgrev
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2073,6 +2105,8 @@ SGR2="$SG/tasks/2099-01-54-sgrev-nofp.md"
 cat > "$SGR2" <<'EOF'
 # sgrev-nofp
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2108,6 +2142,8 @@ SGI="$SG3/tasks/2099-01-60-sgidem.md"
 cat > "$SGI" <<'EOF'
 # sgidem
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2147,6 +2183,8 @@ SG5="$SG3/tasks/2099-01-61-sgdirty.md"
 cat > "$SG5" <<'EOF'
 # sgdirty
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2453,6 +2491,8 @@ SGP="$SG3/tasks/2099-01-62-sgpwt.md"
 cat > "$SGP" <<'EOF'
 # sgpwt
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2560,6 +2600,8 @@ mk_launch_task() {
   cat > "$LM/tasks/2099-02-01-${id}.md" <<EOF
 # ${id}
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -2685,6 +2727,8 @@ mk_ws_task() { # $1=任务 id（唯一；避免互为前缀，--task 是按 id �
   cat > "${WST}$1.md" <<EOF
 # $1
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -3019,6 +3063,8 @@ AUT="$TMP/tasks/2099-01-50-autodisp.md"
 cat > "$AUT" <<'EOF'
 # autodisp
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -3092,6 +3138,8 @@ BI_T="$TMP/tasks/2099-01-06-binc.md"
 cat > "$BI_T" <<'EOF'
 # 附页测试
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 验收场景
 
@@ -3184,6 +3232,8 @@ mp_task() { # $1=任务 id（短小写，便于断言 agent 名 qwb-<id>）
   cat > "${MPXT}$1.md" <<EOF
 # $1
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -3463,7 +3513,7 @@ echo "== 53. qwb-wake.sh --block：exit 2/0/124 + REWAKE 兑底（值守隐形�
 BP="$TMP/block-proj"; mkdir -p "$BP/tasks"; cp -R "$TMP/qwbuddy" "$BP/qwbuddy"
 cp "$ROOT/templates/config.sh" "$BP/qwbuddy/config.sh"   # $TMP 的 config 已被第 27 节负例追加 QWB_REWAKE_MS=0，覆盖回干净模板
 BLK="$BP/tasks/2099-01-07-blk.md"
-printf '# block\nstate: running\ndone: 工人完成 block 场景\n' > "$BLK"
+printf '# block\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 工人完成 block 场景\n' > "$BLK"
 : > "$STUBLOG"
 blk_out="$( cd "$BP" && PATH="$STUB:$PATH" env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 5000 2>&1 )"; blk_rc=$?
 { [[ "$blk_rc" -eq 2 ]] \
@@ -3489,7 +3539,7 @@ cp "$BLK" "$BLK_SNAP"   # 快照取在改 state 之后：断言的是 --block �
 #   → rc 124、票字节不变、假时钟推进 ≥500ms、sleep 调用有上界（不忙循环）
 BLKFP="$(printf '%s\n' 'running' | shasum | cut -d' ' -f1)"
 BLKC="$BP/tasks/2099-01-08-blkc.md"
-printf '# c\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKC"
+printf '# c\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKC"
 BLKNOW="$BP/blk-now"; BLKSLEEP="$BP/blk-sleep.log"
 echo 0 > "$BLKNOW"; : > "$BLKSLEEP"
 cat > "$BP/blk-now.sh" <<EOF
@@ -3514,7 +3564,7 @@ blk_sleeps="$(wc -l < "$BLKSLEEP" | tr -d ' ')"
 
 # 场景：指纹一致但该 wake 时间戳距假时钟"现在"≥ QWB_REWAKE_MS → 仍 rc 2 + 追加新 wake 行
 BLKD="$BP/tasks/2099-01-09-blkd.md"
-printf '# d\nstate: running\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKD"
+printf '# d\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running fp=%s\n' "$BLKFP" > "$BLKD"
 printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$BP/blk-far.sh"; chmod +x "$BP/blk-far.sh"
 ( cd "$BP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$BP/blk-far.sh" \
     env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 999999999 ) >/dev/null 2>&1; blk_rc=$?
@@ -3532,7 +3582,7 @@ printf 'QWB_HOOK_MAX_MS=4000\n' >> "$HP/qwbuddy/config.sh"
 mkdir -p "$HP/qwbuddy/.controller.lock"
 printf '2026-01-01T00:00:00Z wtest:ctl\n' > "$HP/qwbuddy/.controller.lock/owner"
 HOOK="$HP/tasks/2099-01-10-hook.md"
-printf '# hook\nstate: running\ndone: hook 场景可动作变化\n' > "$HOOK"
+printf '# hook\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: hook 场景可动作变化\n' > "$HOOK"
 hook_run() { ( cd "$HP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$HP/blk-far.sh" HERDR_PANE_ID="$1" \
     bash qwbuddy/bin/qwb-hook-claude-stop.sh </dev/null 2>&1 ); }   # </dev/null：模拟 Claude Code 写完 stdin 即关闭
 
@@ -3670,6 +3720,8 @@ echo "== 58. 模板残留半行不误拒 + lint 第 8 项警告 =="
 cat > "$TPLP/tasks/2099-01-01-t3.md" <<'EOF'
 # 半行残留票
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
   blocked:  spec-defect: <票的哪一条条款；反例或证据路径；继续照做会错在哪里>
 
@@ -3687,7 +3739,7 @@ EOF
 out="$( cd "$TPLP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task t3 --worker pi --here 2>&1 )"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "缩进的模板半行不触发疑点门（派发 rc=0）" || bad "缩进半行仍被疑点门拒绝（rc=${rc}）：$(printf '%s' "$out" | tail -2)"
 # 对照：列首占位行 → lint 第 8 项警告（stderr 含文件名与「占位状态行」），但退出码仍 0
-printf '# 占位票\nstate: running\nworking: spec-resolved: <impl|spec>\n' > "$TPLP/tasks/2099-01-01-t4.md"
+printf '# 占位票\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: spec-resolved: <impl|spec>\n' > "$TPLP/tasks/2099-01-01-t4.md"
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$TPLP/qwbuddy/config.sh"
 lint_err="$( cd "$TPLP" && bash qwbuddy/bin/qwb-lint.sh 2>&1 >/dev/null )"; lint_rc=$?
 { [[ "$lint_rc" -eq 0 ]] && printf '%s' "$lint_err" | grep -q '2099-01-01-t4.md' \
@@ -3736,7 +3788,7 @@ out="$( cd "$LP" && PATH='/usr/bin:/bin' bash qwbuddy/bin/qwb-lock.sh acquire --
 echo "== 60. 孤儿 --block 不消费唤醒（主控锁复核）=="
 OP="$TMP/orphanproj"; mkdir -p "$OP"; bash "$ROOT/bin/qwb-init.sh" "$OP" >/dev/null
 mkdir "$OP/qwbuddy/.controller.lock"; printf '2020-01-01T00:00:00Z wX:p1\n' > "$OP/qwbuddy/.controller.lock/owner"
-mk_orphan_ticket() { printf '# o\nstate: running\ndone: 新进展待消费\n' > "$OP/tasks/2099-01-01-orphan.md"; }
+mk_orphan_ticket() { printf '# o\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 新进展待消费\n' > "$OP/tasks/2099-01-01-orphan.md"; }
 mk_orphan_ticket
 ( cd "$OP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wX:p2 bash qwbuddy/bin/qwb-wake.sh --project "$OP" --block --max-ms 5000 ) >/dev/null 2>&1; rc=$?
 { [[ "$rc" -eq 0 ]] && ! grep -q '^wake:' "$OP/tasks/2099-01-01-orphan.md"; } \
@@ -3753,7 +3805,7 @@ mk_orphan_ticket
 echo "== 61. 一轮一条投递 + 投递失败一行不写 =="
 BP2="$TMP/batchproj"; mkdir -p "$BP2"; bash "$ROOT/bin/qwb-init.sh" "$BP2" >/dev/null
 for i in 1 2 3; do
-  printf '# b%s\nstate: running\ndone: 批量票 %s 的进展行\n' "$i" "$i" > "$BP2/tasks/2099-01-0$i-b$i.md"
+  printf '# b%s\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 批量票 %s 的进展行\n' "$i" "$i" > "$BP2/tasks/2099-01-0$i-b$i.md"
 done
 : > "$STUBLOG"
 ( cd "$BP2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
@@ -3779,7 +3831,7 @@ echo "== 62. REWAKE 兜底只对 running（blocked/needs-decision 等裁决不�
 RWP="$TMP/rewakeproj"; mkdir -p "$RWP"; bash "$ROOT/bin/qwb-init.sh" "$RWP" >/dev/null
 RUNFP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
 NDFP="$(printf 'needs-decision\n' | shasum | cut -d' ' -f1)"
-printf '# rw-r\nstate: running\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
+printf '# rw-r\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
 printf '# rw-n\nstate: needs-decision\nwake: 2000-01-01T00:00:00Z state=needs-decision fp=%s\n' "$NDFP" > "$RWP/tasks/2099-01-02-rwn.md"
 printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$RWP/far.sh"; chmod +x "$RWP/far.sh"
 out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"
@@ -3793,7 +3845,7 @@ printf '%s' "$runline" | grep -q '2099-01-01-rwr' && ! printf '%s' "$runline" | 
   && ok "重叫投递文本只含 running 票" || bad "重叫文本混入 needs-decision"
 # --block 同一构造：exit 2 且摘要只含 running 那张（「跳过：… 等裁决」说明行合法存在，
 # 只断言「看账本：」摘要行本身不含 needs-decision 那张）
-printf '# rw-r\nstate: running\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
+printf '# rw-r\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
 blk_out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" env -u HERDR_PANE_ID bash qwbuddy/bin/qwb-wake.sh --project "$RWP" --block --max-ms 999999999 2>&1 )"; rc=$?
 blk_summary="$(printf '%s\n' "$blk_out" | grep '^看账本：' | tail -1)"
 { [[ "$rc" -eq 2 ]] && printf '%s' "$blk_summary" | grep -q '2099-01-01-rwr' \
@@ -3808,6 +3860,8 @@ mk_wt_task() { # $1=id
 cat > "$GP2/tasks/2099-01-01-$1.md" <<EOF
 # $1
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -3851,7 +3905,7 @@ WLP="$TMP/lostproj"; mkdir -p "$WLP"; bash "$ROOT/bin/qwb-init.sh" "$WLP" >/dev/
 LFP="$(printf 'running\ndone: 完成一半' | shasum | cut -d' ' -f1)"   # 实现指纹输入无尾随换行
 mk_lost_ticket() {
   # 种子 wake 行用新鲜时间戳：2020 年会被 REWAKE 超期判定合法重叫，破坏「指纹一致不重叫」的对照
-  printf '# lost\nstate: running\ndone: 完成一半\ndispatch: 2020-01-01T00:00:00Z worker=pi agent=qwb-lost pane=wX:p9 dir=/tmp\nwake: %s state=running fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LFP" > "$WLP/tasks/2099-01-01-lost.md"
+  printf '# lost\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 完成一半\ndispatch: 2020-01-01T00:00:00Z worker=pi agent=qwb-lost pane=wX:p9 dir=/tmp\nwake: %s state=running fp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LFP" > "$WLP/tasks/2099-01-01-lost.md"
 }
 mk_lost_ticket
 out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
@@ -3902,6 +3956,8 @@ mk_foo_task() { # $1=id
 cat > "$GP2/tasks/2099-01-02-$1.md" <<EOF
 # $1
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -3939,6 +3995,8 @@ mk_an_task() { # $1=id
 cat > "$ANP/tasks/2099-01-01-$1.md" <<EOF
 # $1
 state: running
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -4070,6 +4128,8 @@ RUP="$TMP/reuse"; mkdir -p "$RUP"; bash "$ROOT/bin/qwb-init.sh" "$RUP" >/dev/nul
 cat > "$RUP/tasks/2099-01-01-reuset.md" <<'EOF'
 # reuset
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -4139,6 +4199,8 @@ cp "$FIXDIR/agent-get-error.json" "$RUP/dyn/agent-get-qwbrollback.err"
 cat > "$RUP/tasks/2099-01-02-rollback.md" <<'EOF'
 # rollback
 state: blocked
+implementation-authorized: explicit fixture scope approval
+dispatch-budget: 1000
 
 ## 1. 验收场景
 
@@ -4372,7 +4434,7 @@ echo "== 86. JEV agents 角色层：本地 HTTP 全链路 =="
 jev_roles_smoke() (
   FAILS=0
   JR="$TMP/jev-roles"
-  mkdir -p "$JR/qwbuddy" "$JR/bin"
+  mkdir -p "$JR/qwbuddy" "$JR/bin" "$JR/tasks"
   cp "$ROOT/templates/config.sh" "$JR/qwbuddy/config.sh"
   printf 'QWB_WORKERS="$QWB_WORKERS sol sol-herdr"\n' >> "$JR/qwbuddy/config.sh"
   cp "$ROOT/templates/workers.sh" "$JR/qwbuddy/workers.sh"
@@ -4380,7 +4442,7 @@ jev_roles_smoke() (
   cat > "$JR/bin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$JR/quota-calls"
-[[ "$*" == "--json" ]] || exit 3
+[[ "$*" == "--json --no-credential-refresh" ]] || exit 3
 [[ -z "${TYPESAFE_API_KEY:-}${TYPESAFE_API_KEY_PRIVATE:-}" ]] || { touch "$JR/quota-secret-leak"; exit 4; }
 [[ "$(cat "$JR/quota-mode")" != fail ]] || exit 1
 cat "$JR/quota.json"
@@ -4465,7 +4527,7 @@ PY
   }
   jr_run() {
     JR_OUT=$(env -u TYPESAFE_API_KEY ${JR_KEY:+TYPESAFE_API_KEY=$JR_KEY} \
-      QWB_TYPESAFE_BASE="$JR_BASE" bash "$ROOT/bin/qwb-dispatch.sh" \
+      QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" bash "$ROOT/bin/qwb-dispatch.sh" \
       "$JR/brief.md" --project "$JR" "$@" 2>"$JR/stderr")
     JR_RC=$?
   }
@@ -4607,16 +4669,17 @@ PY
     grep -q 'claude（agents_disabled' "$JR/stderr"; } \
     && ok "JEV 命中角色耗尽 exit 2，逐候选说明原因" || bad "JEV 候选耗尽错误契约失败"
   jr_auto() {
-    cp "$JR/brief.md" "$JR/brief-before.md"
+    { printf '# 任务书\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n## 工程规格\n'; cat "$JR/brief.md"; } > "$JR/tasks/2099-01-01-jev.md"
+    cp "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"
     : > "$JR/herdr-calls"
-    JR_OUT=$(TYPESAFE_API_KEY="$JR_KEY" QWB_TYPESAFE_BASE="$JR_BASE" \
-      bash "$ROOT/bin/qwb-run.sh" --task "$JR/brief.md" --project "$JR" --worker auto --here 2>"$JR/stderr")
+    JR_OUT=$(TYPESAFE_API_KEY="$JR_KEY" QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" \
+      bash "$ROOT/bin/qwb-run.sh" --task "$JR/tasks/2099-01-01-jev.md" --project "$JR" --worker auto --here 2>"$JR/stderr")
     JR_RC=$?
   }
   jr_auto
   { [[ "$JR_RC" -eq 2 ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
     [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
-    cmp -s "$JR/brief.md" "$JR/brief-before.md"; } \
+    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
     && ok "JEV auto 耗尽拒派，无 Herdr/锁/worktree/账本副作用" || bad "JEV auto 耗尽仍派发或有副作用"
   jr_edit '.default.worker = "cross_module"'
   jr_before=$(wc -l < "$JR/requests")
@@ -4632,7 +4695,7 @@ PY
   jr_auto
   { [[ "$JR_RC" -eq 1 ]] && grep -q '不在 config.sh 的 QWB_WORKERS' "$JR/stderr" &&
     [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
-    cmp -s "$JR/brief.md" "$JR/brief-before.md"; } \
+    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
     && ok "JEV auto 拒绝未注册字面名且零副作用" || bad "JEV auto 字面名未拒绝"
   jr_reset
   jr_edit '.agents.cross_module = ["sol", "claude"]'
@@ -4663,7 +4726,7 @@ PY
   done
   # 构建无 quota-axi 的 PATH，不能移走替身后意外跑到宿主真额度命令。
   mkdir -p "$JR/noquota"
-  for jr_cmd in env bash jq cp chmod mktemp rm grep tail cat basename perl; do
+  for jr_cmd in env bash jq cp chmod mktemp rm grep tail cat basename perl python3; do
     ln -s "$(command -v "$jr_cmd")" "$JR/noquota/$jr_cmd"
   done
   ln -s "$JR/bin/curl" "$JR/noquota/curl"
@@ -4676,8 +4739,8 @@ PY
     { [[ "$JR_RC" -eq 2 ]] && grep -q 'QWB_QUOTA_FLOOR' "$JR/stderr"; } \
       && ok "JEV 非法额度阈值拒绝：${jr_floor}" || bad "JEV 非法额度阈值被接受：${jr_floor}"
   done
-  { [[ ! -e "$JR/quota-secret-leak" ]] && ! grep -vx -- '--json' "$JR/quota-calls"; } \
-    && ok "JEV quota 调用只有 --json 且子进程无 key" || bad "JEV quota argv/key 契约失败"
+  { [[ ! -e "$JR/quota-secret-leak" ]] && ! grep -vx -- '--json --no-credential-refresh' "$JR/quota-calls"; } \
+    && ok "JEV quota 仅本地快照、禁credential刷新且子进程无 key" || bad "JEV quota argv/key 契约失败"
   jr_quota_before=$(wc -l < "$JR/quota-calls")
   jr_reset
   # off/配置错都不得碰网络；与前面真实请求成功形成正负对照。
