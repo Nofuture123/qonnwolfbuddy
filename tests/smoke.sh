@@ -11,6 +11,31 @@ chk()  { if "$@" >/dev/null 2>&1; then ok "$*"; else bad "$*"; fi; }
 assert_file() { [[ -f "$1" ]] && ok "存在 $1" || bad "缺文件 $1"; }
 assert_dir()  { [[ -d "$1" ]] && ok "存在 $1" || bad "缺目录 $1"; }
 
+# ROOT_TAB_ONLY_BEGIN：窄入口执行原S4–S10与原公共脚本，不复制断言/替换产品。
+if [[ "${1:-}" == root-tab-missing ]]; then
+  python3 -B - "$ROOT/tests/smoke.sh" "$ROOT" <<'PY'
+import shlex, subprocess, sys
+from pathlib import Path
+source=Path(sys.argv[1]).read_text()
+prefix=source.split('# ROOT_TAB_ONLY_BEGIN',1)[0]
+source=source.split('\n# ROOT_TAB_ONLY_END\n',1)[1]
+def block(start,end):
+    assert source.count(start)==1 and source.count(end)==1,(start,end)
+    return source.split(start,1)[1].split(end,1)[0]
+prefix=prefix.replace('ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+                      'ROOT='+shlex.quote(sys.argv[2]))
+parts=[prefix,
+       'TMP="$(mktemp -d)"'+block('TMP="$(mktemp -d)"','\nassert_file "$TMP/qwbuddy/QWBUDDY.md"'),
+       'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\nprintf \'# 假任务\\nstate: running\\n\' > "$FAKE"\n( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh'),
+       'GP="$TMP/gitp"'+block('GP="$TMP/gitp"','\nWTID="wtdemo";'),
+       '# —— S4–S7 场记：'+block('# —— S4–S7 场记：','echo "== 17c.'),
+       source.split('# 新节必须加在本行之前',1)[1]]
+sys.exit(subprocess.run(['bash'],input='\n'.join(parts),text=True,cwd=sys.argv[2]).returncode)
+PY
+  exit "$?"
+fi
+# ROOT_TAB_ONLY_END
+
 echo "== 1. bash -n 语法检查 =="
 for s in "$ROOT"/bin/qwb-*.sh; do chk bash -n "$s"; done
 
@@ -634,7 +659,26 @@ fs_mkticket() { # $1=id $2=space $3=root_tab $4=worker_tab $5=worker_pane；stdo
   git -C "$GP" worktree add -q -b "$id" "$GP/.worktrees/$id"
   phys="$(cd "$GP/.worktrees/$id" && pwd -P)"
   printf 'worktree-space: id=%s root-tab=%s path=%s\n' "$sp" "$3" "$phys" >> "$tf"
-  printf 'dispatch: 2026-01-01T00:00:00Z worker=pi agent=qwb-%s pane=%s dir=%s\n' "$id" "$5" "$phys" >> "$tf"
+  printf 'dispatch: 2026-01-01T00:00:00Z op_id=fixture-%s worker=pi agent=qwb-%s pane=%s dir=%s\n' "$id" "$id" "$5" "$phys" >> "$tf"
+  # idle片场只描述Herdr边界；真实进程先记录启动时间并排空，不能伪造死PID。
+  python3 -B - "$phys" "$tf" "fixture-$id" "$5" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+child=subprocess.Popen(['python3','-u','-c','import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()'],
+                       cwd=sys.argv[1],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+try:
+    pid=int(child.stdout.readline())
+    start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
+    assert start and child.poll() is None
+    child.communicate('exit\n',timeout=10); assert child.returncode==0
+    evidence=json.dumps({'pid':pid,'pid_start':start})
+    with Path(sys.argv[2]).open('a') as f:
+        f.write(f'working: worker-activity op={sys.argv[3]} pane={sys.argv[4]} evidence={evidence}\n')
+    print(f'FIXTURE {sys.argv[3]} actual-exit rc=0 evidence={evidence}',file=sys.stderr)
+finally:
+    if child.poll() is None: child.terminate(); child.wait(timeout=10)
+PY
+  [[ "$?" -eq 0 ]] || { bad "${id} 真实启动代夹具失败" >&2; return 1; }
   printf '%s\t%s\t%s\n' "$sp" "$GP" "$phys" >> "$FD/spaces.tsv"
   printf '%s' "$phys"
 }
@@ -652,11 +696,15 @@ fs_panes() { # $1=pane $2=agent_status
 fs_mkticket wtmiss wFm wFm:t1 wFm:t2 wFm:p2 >/dev/null
 fs_get wFm:p2 wFm:t2 wFm idle; fs_tabs wFm:t2; fs_panes wFm:p2 idle
 : > "$STUBLOG"
-if HERDR_DYN_DIR="$FD" qwb_finish wtmiss --archive --project "$GP" >/dev/null 2>&1; then
+fm_reject="$(HERDR_DYN_DIR="$FD" qwb_finish wtmiss --archive --project "$GP" 2>&1)"; fm_reject_rc=$?
+if [[ "$fm_reject_rc" -eq 0 ]]; then
   bad "S4 根 tab 缺失：不带参数竟放行"
 else
   ok "S4 根 tab 缺失：不带参数被拒（本票根 tab 已不存在）"
 fi
+[[ "$fm_reject_rc" -ne 0 && "$fm_reject" == *"本票根 tab 已不存在"* ]] \
+  && ok "S4 精确拒绝原因：缺根tab，不是启动代缺证" \
+  || { bad "S4 未到达缺根tab守卫"; printf '%s\n' "$fm_reject"; }
 { [[ -d "$GP/.worktrees/wtmiss" ]] && ! grep -q 'workspace close' "$STUBLOG" \
   && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtmiss" \
   && ! grep -q 'root-tab-missing' "$GP/tasks/2099-01-17-wtmiss.md"; } \
@@ -674,11 +722,15 @@ HERDR_DYN_DIR="$FD" qwb_finish wtmiss --archive --root-tab-missing --project "$G
 fs_mkticket wtforeign wFn wFn:t1 wFn:t2 wFn:p2 >/dev/null
 fs_get wFn:p2 wFn:t2 wFn idle; fs_tabs wFn:t2 wFn:t9; fs_panes wFn:p2 idle
 : > "$STUBLOG"
-if HERDR_DYN_DIR="$FD" qwb_finish wtforeign --archive --root-tab-missing --project "$GP" >/dev/null 2>&1; then
+ff_reject="$(HERDR_DYN_DIR="$FD" qwb_finish wtforeign --archive --root-tab-missing --project "$GP" 2>&1)"; ff_reject_rc=$?
+if [[ "$ff_reject_rc" -eq 0 ]]; then
   bad "S5 外来 tab 竞被 --root-tab-missing 放行"
 else
   ok "S5 根 tab 缺失但有外来 tab：带参数仍拒绝（非本票 tab）"
 fi
+[[ "$ff_reject_rc" -ne 0 && "$ff_reject" == *"非本票 tab wFn:t9"* ]] \
+  && ok "S5 精确拒绝原因：外来tab，不是启动代缺证" \
+  || { bad "S5 未到达外来tab守卫"; printf '%s\n' "$ff_reject"; }
 { [[ -d "$GP/.worktrees/wtforeign" ]] && ! grep -q 'workspace close' "$STUBLOG" \
   && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtforeign" \
   && git -C "$GP" show-ref --verify --quiet "refs/heads/wtforeign" \
