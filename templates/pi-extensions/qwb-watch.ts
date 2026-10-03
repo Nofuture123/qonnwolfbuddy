@@ -65,7 +65,6 @@ export function createWatchCore(d: WatchCoreDeps) {
   const wakeBin = resolve(d.root, "qwbuddy", "bin", "qwb-wake.sh");
   const cap = Math.max(d.intervalMs * 8, 1); // 退避上限：interval × 8
   let child: WatchChildLike | null = null;
-  let childIsProbe = false;
   let restartTimer: { cancel(): void } | null = null;
   let failures = 0;
   let warned = false; // 退避到顶告警只发一次
@@ -97,7 +96,17 @@ export function createWatchCore(d: WatchCoreDeps) {
     // 登记与单飞位置在 close 后释放；kill() 只发信号，不能证明进程已退出。
   }
 
-  function startChild(args: string[], isProbe: boolean, onStdout?: (text: string) => void) {
+  function resetState() {
+    generation += 1; // 迟来的 exit 回调全部作废
+    if (restartTimer) { restartTimer.cancel(); restartTimer = null; }
+    killChild();
+    idleAfterZero = false;
+    awaitingSettled = false;
+    pendingWakeText = null;
+    durableMonitoring = false;
+  }
+
+  function startChild(args: string[], isProbe: boolean) {
     if (stopped || (!agentIdle && !durableMonitoring) || !ownsLock() || child) return;
     generation += 1;
     const gen = generation;
@@ -107,7 +116,6 @@ export function createWatchCore(d: WatchCoreDeps) {
       cwd: d.root, env: { ...process.env, QWB_WATCH_PARENT_PID: String(process.pid), QWB_WATCH_INSTANCE: instanceId },
     });
     child = c;
-    childIsProbe = isProbe;
     if (!isProbe) {
       d.writeWatch(d.root, c.pid, `bash ${wakeBin} ${args.join(" ")}`.trim());
     }
@@ -122,11 +130,10 @@ export function createWatchCore(d: WatchCoreDeps) {
       child = null;
       const wasRetiring = retiring;
       retiring = false;
-      childIsProbe = false;
       if (!isProbe) d.clearWatch(d.root, c.pid);
       if (stopped || !ownsLock()) return;
       if (wasRetiring || gen !== generation) { startBlock(); return; }
-      onExit(closeCode ?? exitCode ?? -1, isProbe, out);
+      onExit(closeCode ?? exitCode ?? -1, out);
     };
     c.stdout?.on("data", (chunk: string) => {
       out += chunk;
@@ -150,7 +157,6 @@ export function createWatchCore(d: WatchCoreDeps) {
       }
       if (ownsLock()) fail(-1, `spawn 失败：${err?.message ?? err}`);
     });
-    if (onStdout) onStdout(out);
   }
 
   function startBlock() {
@@ -214,7 +220,7 @@ export function createWatchCore(d: WatchCoreDeps) {
     }
   }
 
-  function onExit(code: number, wasProbe: boolean, out: string) {
+  function onExit(code: number, out: string) {
     if (code === 2) {
       failures = 0;
       warned = false;
@@ -224,15 +230,8 @@ export function createWatchCore(d: WatchCoreDeps) {
       deliverWake();
       return;
     }
-    if (wasProbe) {
-      // 空闲探测：2 已按普通唤醒处理；0 = 无未结项；124 = 有未结项。
-      if (code === 124) startBlock();
-      else if (code === 0) idleAfterZero = true;
-      else fail(code);
-      return;
-    }
     if (code === 124) {
-      // 正常周期到期，不记故障；close/管道排空后只接一个监督周期。
+      // 周期到期（普通值守）或空闲探测有未结项：不记故障；close/管道排空后只接一个监督周期。
       startBlock();
       return;
     }
@@ -259,13 +258,7 @@ export function createWatchCore(d: WatchCoreDeps) {
       agentIdle = true;
       if (stopped) return;
       if (!ownsLock()) {
-        generation += 1;
-        if (restartTimer) { restartTimer.cancel(); restartTimer = null; }
-        killChild();
-        idleAfterZero = false;
-        awaitingSettled = false;
-        pendingWakeText = null;
-        durableMonitoring = false;
+        resetState();
         return;
       }
       if (child || restartTimer || pendingWakeText) return; // 值守在跑、待投递或退避等待中：不动
@@ -279,24 +272,11 @@ export function createWatchCore(d: WatchCoreDeps) {
     },
     shutdown() {
       stopped = true;
-      generation += 1; // 迟来的 exit 回调全部作废
-      if (restartTimer) {
-        restartTimer.cancel();
-        restartTimer = null;
-      }
-      killChild();
-      idleAfterZero = false;
-      awaitingSettled = false;
-      pendingWakeText = null;
-      durableMonitoring = false;
-      childIsProbe = false;
+      resetState();
     },
     // 测试观察用
     get child() {
       return child;
-    },
-    get childIsProbe() {
-      return childIsProbe;
     },
     get failures() {
       return failures;
