@@ -2,6 +2,9 @@
 
 一行一条，详情见 `lessons/<主题>.md`。每次踩坑先在这里加一行，再写详情文件。
 
+- [本轮产品范围不借辅助工具扩张](lessons/按场景验收而非按机制数量验收.md#2026-10-03-产品范围纠正) —— 2026-10-03：产品始终是 QW buddy；辅助 Firstmate 发布或 CI 不列为本轮前置，已实测的 QW 控制/收尾缺陷仍在本票最小返修。
+- [工人在同 Space 独立 Tab](lessons/主控窗口与当日模型路由.md#2026-10-03-同-space-布局纠正) —— 2026-10-03：本轮工人均在主控当前 Space 的独立中文 Tab，不创建新 Space；迁端点保持原 terminal/native/WIP。
+
 - [左侧Space不是顶部Tab](lessons/左侧Space不是顶部Tab.md) —— 2026-10-01 纠正：Tab改名、Unicode树标签或平铺Space都不是原生worktree树；须核同repo_key、父非linked/子linked、身份连续性及meta新端点。
 
 | 日期 | 一句话 | 详情 |
