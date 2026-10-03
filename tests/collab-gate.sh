@@ -134,12 +134,68 @@ f.write_text(json.dumps(s))
     call('qwb-ledger.sh','gate-receipt','--task',t,'--','accept-A',old,actor='gate-pane',ok=False)
     print('PASS candidate-bound收据，rc0不等于accepted，dirty/旧head拒绝')
     # 第三切片：独立会话证据、原finding保留、偏好不阻断、未决不放行。
-    def session(name,model):
-        f=tmp/(name+'.jsonl'); f.write_text(json.dumps({'type':'session','id':name,'cwd':str(p)})+'\n'+json.dumps({'type':'model_change','provider':'openai-codex' if model.startswith('gpt-') else 'anthropic','modelId':model})+'\n'+json.dumps({'type':'thinking_level_change','thinkingLevel':'high' if model=='gpt-6.1-sol' else 'low'})+'\n')
-        return {'model':model,'family':'gpt' if model.startswith('gpt-') else 'claude','session':name,'evidence':str(f)}
+    def session(name,model,sid=None):
+        sid=sid or name
+        f=tmp/(name+'.jsonl'); f.write_text(json.dumps({'type':'session','id':sid,'cwd':str(p)})+'\n'+json.dumps({'type':'model_change','provider':'openai-codex' if model.startswith('gpt-') else 'anthropic','modelId':model})+'\n'+json.dumps({'type':'thinking_level_change','thinkingLevel':'high' if model=='gpt-6.1-sol' else 'low'})+'\n')
+        return {'model':model,'family':'gpt' if model.startswith('gpt-') else 'claude','session':sid,'evidence':str(f)}
     impl=session('implementation','gpt-6.1-sol'); reviewer=session('review','claude-opus-4-6')
     reviewfile=tmp/'review.json'
     review={'context':receipt['after'],'implementer':impl,'reviewer':reviewer,'standards':'pass','spec':'pass','covered':['user_good','user_failure'],'findings':[{'id':'F1','original':'真实安全缺陷：允许未决放行','classification':'unresolved','root':'safety','evidence':'反例已复现'}]}
+    # 本轮例外复用真实question/answer/resume；仅stub系统边界，不能冒充原生现场。
+    et=p/'tasks/Scoped-review.md';et.write_text('# 本轮审核授权\nstate: running\n'+frozen+'\n')
+    m.write_text(json.dumps({'task_sha256':hashlib.sha256(et.read_bytes()).hexdigest(),'confirm':{k:'fixture stopped; no actions' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}}))
+    call('qwb-ledger.sh','migrate','--task',et,'--',m)
+    request.write_text(json.dumps(dict(brequest,candidate=str(cc),workers={'review':'astra','rework':'sol'})))
+    call('qwb-ledger.sh','gate-assign','--task',et,'--','gate',request)
+    call('qwb-ledger.sh','claim','--task',et,'--','accept-scoped',actor='gate-pane')
+    ctx=json.loads(call('qwb-ledger.sh','gate-context','--task',et,'--','accept-scoped',actor='gate-pane').stdout)
+    scoped={'context':ctx,'implementer':impl,'reviewer':session('scoped-astra','gpt-6-astra'),'standards':'pass','spec':'pass','covered':['user_good','user_failure'],'findings':[]}
+    scopedfile=tmp/'scoped-review.json';scopedfile.write_text(json.dumps(scoped))
+    denied=call('qwb-ledger.sh','gate-review','--task',et,'--','accept-scoped',scopedfile,actor='gate-pane',ok=False)
+    assert '同family审核冲突' in denied.stderr,denied.stderr
+    grant={'schema':'qwb-sol-astra-review-v1','context':ctx,'implementer_session':impl['session'],'reviewer_session':scoped['reviewer']['session'],'owner_fp':hashlib.sha256((p/'qwbuddy/.controller.lock/owner').read_bytes()).hexdigest(),'approval':'fixture user explicitly approved only this object and independent Sol/Astra sessions'}
+    call('qwb-ledger.sh','question','--task',et,'--','scoped-review','本对象Sol/Astra独立会话同family审核是否获批？')
+    call('qwb-ledger.sh','answer','--task',et,'--','scoped-review',json.dumps(grant))
+    call('qwb-ledger.sh','resume','--task',et,'--','scoped-review','恢复此对象审核；不授予land')
+    scoped['authorization']='scoped-review';scopedfile.write_text(json.dumps(scoped))
+    call('qwb-ledger.sh','gate-review','--task',et,'--','accept-scoped',scopedfile,actor='gate-pane')
+    stored=json.loads(call('qwb-ledger.sh','read','--task',et).stdout)
+    assert stored['gate']['reviews'][-1]['review']['authorization']=='scoped-review'
+    assert stored['gate']['reviews'][-1]['review']['reviewer']['family']=='gpt' and stored['gate']['verdict']=='pending'
+    print('PASS 默认同family拒绝；本票精确批准后独立Sol/Astra通过，真实family及授权引用保留；非自动accepted')
+    def denied_review(r,reason):
+        snapshot=et.read_bytes();scopedfile.write_text(json.dumps(r))
+        result=call('qwb-ledger.sh','gate-review','--task',et,'--','accept-scoped',scopedfile,actor='gate-pane',ok=False)
+        assert reason in result.stderr and et.read_bytes()==snapshot,result.stderr
+    denied_review(dict(scoped,authorization='absent'), '审核无本票用户授权')
+    noauth=dict(scoped);noauth.pop('authorization')
+    denied_review(noauth,'同family审核冲突') # 同票有批准仍须显式引用，不能变默认规则。
+    call('qwb-ledger.sh','question','--task',et,'--','not-resumed','待批准本对象')
+    denied_review(dict(scoped,authorization='not-resumed'),'审核批准尚未答复/恢复')
+    call('qwb-ledger.sh','answer','--task',et,'--','not-resumed',json.dumps(grant))
+    denied_review(dict(scoped,authorization='not-resumed'),'审核批准尚未答复/恢复')
+    call('qwb-ledger.sh','resume','--task',et,'--','not-resumed','测试后恢复问题；不授予land')
+    for key,changed in [
+        ('wrong-object',dict(grant,context=dict(ctx,head='0'*40,tree='0'*40))),
+        ('wrong-task',dict(grant,context=dict(ctx,task=str(bt)))),
+        ('wrong-attempt',dict(grant,context=dict(ctx,attempt='other-round'))),
+        ('wrong-controller',dict(grant,owner_fp='0'*64)),
+    ]:
+        call('qwb-ledger.sh','question','--task',et,'--',key,'fixture mismatch must fail')
+        call('qwb-ledger.sh','answer','--task',et,'--',key,json.dumps(changed))
+        call('qwb-ledger.sh','resume','--task',et,'--',key,'恢复问题不代表匹配审核')
+        denied_review(dict(scoped,authorization=key),'审核批准范围/对象/身份不匹配')
+    denied_review(dict(scoped,reviewer=session('different-astra','gpt-6-astra')),'审核批准范围/对象/身份不匹配')
+    denied_review(dict(scoped,implementer=session('different-sol','gpt-6.1-sol')),'审核批准范围/对象/身份不匹配')
+    denied_review(dict(scoped,reviewer=session('same-native','gpt-6-astra',sid=impl['session'])),'同原生会话审核冲突')
+    denied_review(dict(scoped,reviewer=session('gate-native','gpt-6-astra',sid=stored['gate']['identity']['session_id'])),'同原生会话审核冲突')
+    denied_review(dict(scoped,reviewer=dict(scoped['reviewer'],family='claude')),'原生模型family未可靠确认')
+    call('qwb-ledger.sh','answer','--task',et,'--','absent','yes',actor='gate-pane',ok=False)
+    call('qwb-ledger.sh','gate-verdict','--task',et,'--','accept-scoped','accepted',actor='gate-pane',ok=False)
+    print('PASS 无授权/未恢复/其他对象票轮次代际/其他真实session/同session与门禁自审/假family零写入拒绝；无质量收据仍拒绝accepted')
+    if os.environ.get('QWB_GATE_REVIEW_AUTH_ONLY')=='1':
+        print('PASS 仅授权公开入口窄验；不是现场模型/E2E/full')
+        raise SystemExit(0)
     assert subprocess.run(['bash',str(ca/'safety.sh'),'unresolved']).returncode==0, 'A真实fixture缺陷未复现（预期拒绝7，实际接受0）'
     reviewfile.write_text(json.dumps(review))
     call('qwb-ledger.sh','gate-review','--task',t,'--','accept-A',reviewfile,actor='gate-pane')

@@ -1122,7 +1122,7 @@ if ($cmd eq 'land-authorize') {
   $line="working: gate-receipt attempt=$c->{attempt} head=$c->{head} gate=$r->{gate} rc=$r->{rc} elapsed=$r->{elapsed_seconds} tokens=unknown"; append_body($line);
 } elsif ($cmd eq 'gate-review') {
   fail('review参数非法') unless @args==2; require_claim($args[0]);
-  my ($r,$sha)=json_file($args[1]); keys_only($r,qw(context implementer reviewer standards spec covered findings));
+  my ($r,$sha)=json_file($args[1]); keys_only($r,qw(context implementer reviewer standards spec covered findings), exists($r->{authorization}) ? 'authorization' : ());
   my $c=gate_context();
   fail('审核不是当前精确对象') unless $c->{status} eq 'clean' && $json->encode($r->{context}) eq $json->encode($c);
   for my $kind (qw(implementer reviewer)) {
@@ -1142,7 +1142,18 @@ if ($cmd eq 'land-authorize') {
     fail('原生模型family未可靠确认') unless $family ne 'unknown' && $id->{family} eq $family;
     $id->{evidence_sha256}=sha256_hex(join('',map { $json->encode($_) } @records));
   }
-  fail('同原生会话/同family审核冲突；保留现有身份门') if $r->{implementer}{session} eq $r->{reviewer}{session} || $r->{implementer}{family} eq $r->{reviewer}{family} || $r->{reviewer}{session} eq $data->{gate}{identity}{session_id};
+  fail('同原生会话审核冲突；保留现有身份门') if $r->{implementer}{session} eq $r->{reviewer}{session} || $r->{reviewer}{session} eq $data->{gate}{identity}{session_id};
+  my $authorized=0;
+  if (exists $r->{authorization}) {
+    fail('审核授权key非法') unless id_ok($r->{authorization});
+    my $q=$data->{questions}{$r->{authorization}} // fail('审核无本票用户授权');
+    fail('审核批准尚未答复/恢复') unless $q->{answer} ne '' && $q->{resumed} ne '';
+    my $a=strict_json(encode('UTF-8',$q->{answer}));
+    keys_only($a,qw(schema context implementer_session reviewer_session owner_fp approval));
+    fail('审核批准范围/对象/身份不匹配') unless $a->{schema} eq 'qwb-sol-astra-review-v1' && $json->encode($a->{context}) eq $json->encode($c) && $a->{implementer_session} eq $r->{implementer}{session} && $a->{reviewer_session} eq $r->{reviewer}{session} && $a->{owner_fp} eq sha256_hex($owner_raw) && string_ok($a->{approval}) && $a->{approval} ne '' && $r->{implementer}{model} eq 'gpt-6.1-sol' && $r->{reviewer}{model} eq 'gpt-6-astra';
+    $authorized=1;
+  }
+  fail('同family审核冲突；保留现有身份门') if $r->{implementer}{family} eq $r->{reviewer}{family} && !$authorized;
   fail('审核两轴/场景/意见非法') unless $r->{standards}=~/\A(pass|fail)\z/ && $r->{spec}=~/\A(pass|fail)\z/ && ref($r->{covered}) eq 'ARRAY' && ref($r->{findings}) eq 'ARRAY';
   my %seen;
   for my $f (@{$r->{findings}}) {
