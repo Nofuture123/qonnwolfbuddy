@@ -798,15 +798,16 @@ sleep_ms() {
 }
 
 EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""
-# 事件通知首行：内建 read 代替 head -1，等待期每拍不再起子进程。逐字节等价：
-# EVENT_DIR 为空时无输出；文件不存在时无输出、不报错、返回 0（重定向错误经 2>/dev/null 吞掉，
-# 故 2> 写在 < 前）；首行无结尾换行时 read 返回非 0 但内容已存入变量，仍输出该行；
-# IFS= 保留首尾空白，与 head -1 取到的内容一致。
+# 内建 read 保留首行原有换行；IFS= 保留首尾空白与反斜杠。
+# 先重定向 stderr，缺文件时也安静返回 0；无结尾换行时仍输出已读内容。
 event_mark() {
   if [[ -z "$EVENT_DIR" ]]; then return 0; fi
   local line=""
-  IFS= read -r line 2>/dev/null < "$EVENT_DIR/notice" || true
-  printf '%s' "$line"
+  if IFS= read -r line 2>/dev/null < "$EVENT_DIR/notice"; then
+    printf '%s\n' "$line"
+  else
+    printf '%s' "$line"
+  fi
 }
 event_cleanup() {
   if [[ -n "$EVENT_PID" ]]; then

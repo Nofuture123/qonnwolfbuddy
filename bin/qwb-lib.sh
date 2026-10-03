@@ -158,13 +158,9 @@ qwb_ledger_utf8_ok() {
   ' "$1" >/dev/null 2>&1
 }
 
-# 单遍扫描任务书：整个调用只起一个 perl 进程，按参数顺序逐文件输出一行
-# 「路径<TAB>utf8ok<TAB>collab<TAB>state」。语义与逐文件调 qwb_task_state /
-# qwb_ledger_utf8_ok / grep -q '<!-- qwb-collab-' 完全等价（含边界：无列首 state: 行的
-# 文件不输出；文件打不开时视为无 state: 行静默跳过——与旧 grep 失败 continue 一致）。
-# state 可能是空串，而制表符 IFS 会合并连续空字段，故 state 固定放最后一列：
-# read 对行尾缺位的末字段仍赋空串，前面的列永不缺位；state 值已删全部空白，绝不含 TAB。
-# 路径含 TAB 或换行会破坏输出格式：整体 stderr 报错、非 0 退出（现有账本不存在这种文件名）。
+# 一次 perl 扫描；按参数顺序输出「路径<TAB>utf8ok<TAB>collab<TAB>state」。
+# state 已删全部空白且可能为空；放最后一列，避免 TAB IFS 合并空字段导致错位。
+# 无列首 state: 行不输出；缺失路径跳过，读取错误保持旧 grep 的诊断。
 qwb_ledger_scan() {
   perl -MEncode=decode,FB_CROAK -e '
     my $marker = "<!-- qwb-collab-";
@@ -174,28 +170,27 @@ qwb_ledger_scan() {
         exit 1;
       }
       next unless -e $file;
-      my $data;
-      if (open my $fh, "<", $file) {
-        local $/; $data = <$fh>; $data = "" unless defined $data;
-      }
-      unless (defined $data) {
-        # 与旧实现 grep/sed 打不开文件时的 stderr 文案一致，然后同样按无 state: 行跳过。
+      open my $fh, "<:raw", $file or do {
         print STDERR "grep: $file: $!\n";
         next;
+      };
+      my $data;
+      {
+        local $/; local $!;
+        $data = <$fh>;
+        if (!defined($data) && $!) {
+          print STDERR "grep: $file: $!\n";
+          next;
+        }
       }
-      my $state = "";
-      if ($data =~ /^(state:[^\n]*)/m) {
-        $state = $1;
-        $state =~ s/^state:[[:space:]]*//;
-        $state =~ s/[[:space:]]//g;
-      } else {
-        next;
-      }
-      # 注意：decode 会就地清空传入的标量（本机 Encode 实测），故必须喂副本，
-      # 否则后面的 collab 检测拿到的是空串。
-      my $tmp = $data;
-      my $ok = eval { decode("UTF-8", $tmp, FB_CROAK); 1 } ? 1 : 0;
+      close $fh;
+      $data = "" unless defined $data;
+      next unless $data =~ /^state:([^\n]*)/m;
+      my $state = $1;
+      $state =~ s/[[:space:]]//g;
+      # FB_CROAK 会消耗源标量；所有原始字节匹配须先于 decode。
       my $collab = index($data, $marker) >= 0 ? 1 : 0;
+      my $ok = eval { decode("UTF-8", $data, FB_CROAK); 1 } ? 1 : 0;
       print "$file\t$ok\t$collab\t$state\n";
     }
   ' "$@"
