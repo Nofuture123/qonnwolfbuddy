@@ -11,6 +11,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 TASK = """# worker config
 state: blocked
 implementation-authorized: explicit fixture scope approval
@@ -40,6 +45,7 @@ def check(ok, message):
 
 
 with tempfile.TemporaryDirectory(prefix="qwb-worker-config-") as tmp:
+    os.environ["TMPDIR"] = tmp
     base = Path(tmp)
     project = base / "project"
     project.mkdir()

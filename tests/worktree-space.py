@@ -12,6 +12,11 @@ import socket
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 TASK = """# Space contract
 state: blocked
 implementation-authorized: explicit fixture scope approval
@@ -161,7 +166,8 @@ def project(base):
     return repo, ticket, state, log, env
 
 
-with tempfile.TemporaryDirectory(prefix="qwb-space-dispatch-") as d:
+with tempfile.TemporaryDirectory(prefix='s-') as d:
+    os.environ["TMPDIR"] = d
     repo, ticket, state, log, env = project(Path(d))
     dispatch = ["bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
                 "--task", "case", "--worker", "pi"]
@@ -208,7 +214,8 @@ with tempfile.TemporaryDirectory(prefix="qwb-space-dispatch-") as d:
     print("SPACE DISPATCH PASS: open/list failure, duplicate, retry fingerprint, foreign/missing pane Space")
 
 for mode in ("unowned", "foreign-tab", "busy", "query-fail", "close-fail", "tag-exists", "partial"):
-    with tempfile.TemporaryDirectory(prefix=f"qwb-space-{mode}-") as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         base = Path(d)
         repo, ticket, state, log, env = project(base)
         wt = repo / ".worktrees/case"
@@ -239,7 +246,8 @@ print("SPACE FINISH PASS: unowned, foreign tab, busy agent, query/close failure,
 
 # 审点 1：打开成功后任何身份核对失败，都不能留下无主 Space。
 for mode in ("query-fail-after-open", "open-missing-root-tab", "close-fail-after-open"):
-    with tempfile.TemporaryDirectory(prefix=f"qwb-r1-open-{mode}-") as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         repo, ticket, state, log, env = project(Path(d))
         before = ticket.read_bytes()
         result = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
@@ -255,7 +263,8 @@ for mode in ("query-fail-after-open", "open-missing-root-tab", "close-fail-after
 print("R1 OPEN CLEANUP PASS: failed post-open query/root tab closes Space; close failure names manual command")
 
 # 项目根不是 Git 主工作树根时，派发应在建树前拒绝；收尾必须看见 linked checkout 并拒绝身份不符。
-with tempfile.TemporaryDirectory(prefix="qwb-r1-nested-") as d:
+with tempfile.TemporaryDirectory(prefix='s-') as d:
+    os.environ["TMPDIR"] = d
     base = Path(d)
     repo, ticket, state, log, env = project(base)
     main = base / "main"
@@ -295,7 +304,8 @@ print("R1 NESTED ROOT PASS: dispatch refuses before creation and finish preserve
 
 # 审点 2：公开 finish 路径必须认根 tab 与最后派发工人 tab，并先关 Space 后删 Git。
 for mode in ("worker-success", "worker-foreign-space"):
-    with tempfile.TemporaryDirectory(prefix=f"qwb-r1-finish-{mode}-") as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         base = Path(d)
         repo, ticket, state, log, env = project(base)
         wt = repo / ".worktrees/case"
@@ -341,7 +351,8 @@ print("R1 WORKER FINISH PASS: own worker tab closes once before Git; foreign wor
 
 # 审点 3：一次性 Git 失败留下 OID 收据；同 OID 归档可重跑，删分支失败给可执行条件命令。
 for stage in ("worktree-remove", "branch-delete"):
-    with tempfile.TemporaryDirectory(prefix=f"qwb-r1-partial-{stage}-") as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         base = Path(d)
         repo, ticket, state, log, env = project(base)
         wt = repo / ".worktrees/case"

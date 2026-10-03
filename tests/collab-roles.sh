@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Public role/control entrances; Herdr alone is a fixture, never a live pane.
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -11,6 +14,7 @@ from pathlib import Path
 
 root = Path(os.environ['QWB_ROLES_TEST_ROOT'])
 with tempfile.TemporaryDirectory(prefix='qwb-roles-') as tmp:
+    os.environ["TMPDIR"] = tmp
     tmp = str(Path(tmp).resolve())
     p = Path(tmp) / 'project'; p.mkdir()
     (p / 'qwbuddy/.controller.lock').mkdir(parents=True)

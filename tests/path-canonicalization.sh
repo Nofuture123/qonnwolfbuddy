@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # 仅检查本地路径语义，不调用账本/身份/进程探针或 Herdr。
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 perl -MCwd=realpath -MFile::Temp=tempdir -e '
-  my $t=tempdir(CLEANUP=>1);
+  my $t=tempdir(DIR=>$ENV{TMPDIR}, CLEANUP=>1);
   mkdir "$t/bin" or die "mkdir: $!\n";
   for my $name (qw(qwb-wake.sh other.sh)) {
     open my $f, ">", "$t/bin/$name" or die "fixture: $!\n";

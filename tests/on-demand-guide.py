@@ -9,6 +9,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 INIT = ROOT / "bin/qwb-init.sh"
 DOCS = ("ci-guide.md", "host-watch-guide.md", "worker-launch-guide.md")
 
@@ -31,6 +36,7 @@ def check_links(project):
 
 
 with tempfile.TemporaryDirectory() as tmp:
+    os.environ["TMPDIR"] = tmp
     base = Path(tmp)
     project = base / "project"
     project.mkdir()

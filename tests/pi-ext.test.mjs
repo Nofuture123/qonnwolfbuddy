@@ -3,14 +3,19 @@
 // 由 tests/smoke.sh 调用；node ≥23.6 直跑，旧 node 退回 --experimental-strip-types，或 bun。
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { createWatchCore, WAKE_PREFIX } from "../templates/pi-extensions/qwb-watch.ts";
 
 // Keep any real child process away from the host Herdr endpoint.
 process.env.HERDR_SOCKET_PATH = "/dev/null/qwb-test.sock";
 
-const root = mkdtempSync(join(tmpdir(), "qwb-watch-test-"));
+const tempRoot = fileURLToPath(new URL("../.qwb-tmp/", import.meta.url));
+mkdirSync(tempRoot, { recursive: true });
+process.env.GIT_CEILING_DIRECTORIES = tempRoot;
+const root = mkdtempSync(join(tempRoot, "qwb-watch-test-"));
+process.env.TMPDIR = root;
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 mkdirSync(join(root, "qwbuddy", "bin"), { recursive: true });
 writeFileSync(join(root, "qwbuddy", "bin", "qwb-wake.sh"), "#!/usr/bin/env bash\nexit 0\n");
 
@@ -292,7 +297,8 @@ function ok(name) {
 
 // 场景 9：.pi-watch.err 默认实现真实落盘（文件级冒烟）
 {
-  const r = mkdtempSync(join(tmpdir(), "qwb-watch-file-"));
+  const r = mkdtempSync(join(tempRoot, "qwb-watch-file-"));
+  process.on("exit", () => rmSync(r, { recursive: true, force: true }));
   mkdirSync(join(r, "qwbuddy"), { recursive: true });
   const { appendFileSync } = await import("node:fs");
   appendFileSync(join(r, "qwbuddy", ".pi-watch.err"), "x exit=1\n");

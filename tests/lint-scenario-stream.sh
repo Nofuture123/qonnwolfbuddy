@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Real public lint, private fixture only. No network, model or Herdr calls.
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_STREAM_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -11,6 +14,7 @@ from pathlib import Path
 
 root = Path(os.environ['QWB_STREAM_TEST_ROOT'])
 with tempfile.TemporaryDirectory(prefix='qwb-lint-stream-') as tmp:
+    os.environ["TMPDIR"] = tmp
     project = Path(tmp).resolve()
     (project/'templates').mkdir(); (project/'tasks').mkdir()
     shutil.copytree(root/'bin', project/'bin')

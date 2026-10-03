@@ -9,6 +9,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 fixture = runpy.run_path(str(ROOT / "tests/r2-cli.py"))["fixture"]
 
 
@@ -19,6 +24,7 @@ def cli(*args, env):
 
 for location in ("state", "after-state", "done", "working", "scenario", "spec-defect", "verified-invalid"):
     with tempfile.TemporaryDirectory(prefix=f"qwb-invalid-{location}-") as d:
+        os.environ["TMPDIR"] = d
         repo, ticket, env, log = fixture(Path(d))
         body = ticket.read_bytes().replace(b"state: blocked", b"state: running")
         if location == "state":

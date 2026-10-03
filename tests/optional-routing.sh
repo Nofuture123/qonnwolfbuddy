@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Public CLI contract for optional routing. All projects, keys and processes are fake.
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-T="$(mktemp -d)"
+T="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
+export TMPDIR="$T"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/project/qwbuddy" "$T/fakebin" "$T/log"
 export HOME="$T/home" PATH="$T/fakebin:$PATH"

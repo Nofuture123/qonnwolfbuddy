@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 公开入口 + 私有项目/系统边界替身；绝不触碰真实Herdr。
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_PLANNING_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -13,6 +16,7 @@ if fixture:
     fixture=Path(fixture); fixture.mkdir(mode=0o700,parents=True,exist_ok=False)
 manager=contextlib.nullcontext(str(fixture)) if fixture else tempfile.TemporaryDirectory(prefix='qwb-planning-')
 with manager as temp:
+    os.environ["TMPDIR"] = str(temp)
     temp=Path(temp).resolve(); p=temp/'project'; p.mkdir(); stub=temp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')
     for name in ['TASK.md','QWBUDDY.md']: shutil.copy(ROOT/'templates'/name,p/'qwbuddy'/name)

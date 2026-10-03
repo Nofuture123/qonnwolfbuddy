@@ -6,6 +6,9 @@
 #   user_身份未知不伪装通过           → unknown/缺字段/缺证据 → 报缺证据不通过
 #   user_无审核要求的普通票不额外烧token → 无 review-required 标记 → 不启用检查
 set -uo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
@@ -14,7 +17,8 @@ FAILS=0
 ok()  { echo "PASS  $1"; }
 bad() { echo "FAIL  $1"; FAILS=$((FAILS+1)); }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
+export TMPDIR="$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
 # 健康项目骨架：真安装（与 smoke 同法），让 lint 其余各节全绿，专测「审核身份」一节

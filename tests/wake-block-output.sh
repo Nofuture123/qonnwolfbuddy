@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # 公开 CLI：--block 多轮等待只交最终摘要；人读模式仍显示逐票跳过。
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-PROJECT="$(mktemp -d /tmp/qwb-wake-output.XXXXXXXX)"
+PROJECT="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
+export TMPDIR="$PROJECT"
 trap 'rm -rf "$PROJECT"' EXIT
 bash "$ROOT/bin/qwb-init.sh" "$PROJECT" >/dev/null
 if [[ -n "${QWB_TEST_WAKE_SOURCE:-}" ]]; then cp "$QWB_TEST_WAKE_SOURCE" "$PROJECT/qwbuddy/bin/qwb-wake.sh"; fi

@@ -12,6 +12,11 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 TASK = """# case
 state: blocked
 implementation-authorized: explicit fixture scope approval
@@ -112,6 +117,7 @@ def permissions():
     for mask in (0o022, 0o027):
         for existing in (False, True):
             with tempfile.TemporaryDirectory(prefix="qwb-r2-mode-") as d:
+                os.environ["TMPDIR"] = d
                 repo = Path(d) / "project"; repo.mkdir()
                 if existing:
                     (repo / ".claude").mkdir()
@@ -125,6 +131,7 @@ def permissions():
                 modes = {name: stat.S_IMODE((repo / name).stat().st_mode) for name in paths}
                 assert all(mode == expected for mode in modes.values()), (oct(mask), existing, modes)
     with tempfile.TemporaryDirectory(prefix="qwb-r2-hook-fail-") as d:
+        os.environ["TMPDIR"] = d
         base = Path(d); repo = base / "project"; repo.mkdir()
         stub = base / "stub"; stub.mkdir()
         mv = stub / "mv"
@@ -140,6 +147,7 @@ def permissions():
 def layout():
     for kind in ("separate", "submodule"):
         with tempfile.TemporaryDirectory(prefix="qwb-r2-layout-") as d:
+            os.environ["TMPDIR"] = d
             repo, ticket, env, log = fixture(Path(d), kind)
             result = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
                           "--task", "case", "--worker", "pi", env=env)
@@ -147,6 +155,7 @@ def layout():
             assert "worktree-space:" in ticket.read_text() and "dispatch:" in ticket.read_text()
     for kind in ("nested", "linked"):
         with tempfile.TemporaryDirectory(prefix="qwb-r2-layout-") as d:
+            os.environ["TMPDIR"] = d
             base = Path(d); main, _, _, _ = fixture(base)
             if kind == "nested":
                 repo = main / "nested"; repo.mkdir()
@@ -172,6 +181,7 @@ def layout():
 def branch_config():
     for fail_cleanup in (False, True):
       with tempfile.TemporaryDirectory(prefix="qwb-r2-config-") as d:
+        os.environ["TMPDIR"] = d
         repo, ticket, env, _ = fixture(Path(d))
         wt = repo / ".worktrees/case"
         git("-C", repo, "worktree", "add", "-qb", "case", wt)
@@ -197,6 +207,7 @@ def branch_config():
 def recovery():
     for action, changed in (("archive", False), ("archive", True), ("merged", False)):
         with tempfile.TemporaryDirectory(prefix="qwb-r2-recovery-") as d:
+            os.environ["TMPDIR"] = d
             base = Path(d); repo, ticket, env, _ = fixture(base)
             wt = repo / ".worktrees/case"
             git("-C", repo, "worktree", "add", "-qb", "case", wt)
@@ -236,6 +247,7 @@ def recovery():
 
 def warning():
     with tempfile.TemporaryDirectory(prefix="qwb-r2-warning-") as d:
+        os.environ["TMPDIR"] = d
         repo, ticket, env, log = fixture(Path(d))
         result = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
                       "--task", "case", "--worker", "pi", env=env)
@@ -256,6 +268,7 @@ def warning():
         assert here.returncode == 0 and "工人 tab 开在调用者 workspace" in here.stderr, here.stderr
     for mode in ("query-fail", "bad-response"):
         with tempfile.TemporaryDirectory(prefix="qwb-r2-warning-fail-") as d:
+            os.environ["TMPDIR"] = d
             repo, ticket, env, log = fixture(Path(d))
             env["R2_MODE"] = mode
             before = ticket.read_bytes()

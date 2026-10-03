@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Offline public-entry contract: real temporary Git/MD, fake Herdr CLI + Unix stream.
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -9,7 +12,8 @@ python3 -B - "$ROOT" <<'PY'
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='qwb-herdr-') as tmp:
+with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+    os.environ["TMPDIR"] = tmp
     b=Path(tmp); p=b/'project'; p.mkdir(); (p/'tasks').mkdir(); (p/'qwbuddy').mkdir()
     subprocess.run(['git','init','-q',str(p)],check=True)
     (p/'qwbuddy/config.sh').write_text('QWB_REWAKE_MS=0\n')
@@ -61,7 +65,8 @@ python3 -B - "$ROOT" <<'PY'
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='qwb-focus-') as tmp:
+with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+    os.environ["TMPDIR"] = tmp
     b=Path(tmp); root=b/'repo'; root.mkdir(); (root/'tasks').mkdir()
     def run(*args,env=None):
         return subprocess.run(list(args),env=env,capture_output=True,text=True,timeout=10)
@@ -226,7 +231,8 @@ python3 -B - "$ROOT" <<'PY'
 import hashlib, json, os, shutil, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='qwb-reconnect-') as tmp:
+with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+    os.environ["TMPDIR"] = tmp
     b=Path(tmp); p=b/'project'; p.mkdir(); (p/'tasks').mkdir(); (p/'qwbuddy').mkdir()
     subprocess.run(['git','init','-q',str(p)],check=True)
     lock=p/'qwbuddy/.controller.lock'; lock.mkdir(); (lock/'owner').write_text('now ctl\n')
@@ -313,11 +319,12 @@ from pathlib import Path
 ROOT=Path(sys.argv[1]).resolve()
 # Reuse the external Herdr contract double/project builder; exercise real writer and finish.
 source=(ROOT/'tests/worktree-space.py').read_text()
-prefix=source.split('with tempfile.TemporaryDirectory(prefix="qwb-space-dispatch-")')[0]
+prefix=source.split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
 prefix=prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()')
 exec(prefix)
 for mode in ['live','missing','dead','extra-pane','no-attempt']:
-    with tempfile.TemporaryDirectory(prefix='qwb-not-sent-'+mode+'-') as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         repo,ticket,state,log,env=project(Path(d)); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
         state.write_text(str(wt)); log.write_text(''); pid=os.getpid()
@@ -378,7 +385,8 @@ elif args[:2] == ["agent", "prompt"]:
     out({"type": "ok"})
 elif args[:2] == ["status", "--json"]:''')
 for mode in ['reuse','failed-reuse','unknown-start']:
-    with tempfile.TemporaryDirectory(prefix='qwb-public-reuse-'+mode+'-') as d:
+    with tempfile.TemporaryDirectory(prefix='s-') as d:
+        os.environ["TMPDIR"] = d
         b=Path(d); repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
         child=subprocess.Popen(['sleep','60'],cwd=wt)

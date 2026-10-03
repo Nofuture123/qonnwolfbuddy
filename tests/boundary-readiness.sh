@@ -3,13 +3,17 @@
 # 断言字符串由 check 的 eval 执行，变量在 eval 时展开。
 # shellcheck disable=SC2016,SC2034
 set -u
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INIT="${QWB_BOUNDARY_INIT:-$ROOT/bin/qwb-init.sh}"
 DISPATCH="${QWB_BOUNDARY_DISPATCH:-$ROOT/bin/qwb-dispatch.sh}"
 WORKTREE="${QWB_BOUNDARY_WORKTREE:-$ROOT/bin/qwb-worktree.sh}"
-TMP="$(mktemp -d)" || exit 2
+TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 2
+export TMPDIR="$TMP"
 trap 'rm -rf "$TMP"' EXIT
 FAILS=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; FAILS=$((FAILS+1)); fi; }

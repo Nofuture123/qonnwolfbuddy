@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # 真实公开入口 + 临时项目/fake Herdr；不接触真实endpoint、安装目录或主票。
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
+export TMPDIR="$TMP"
 trap 'rm -rf "$TMP"' EXIT
 P="$TMP/project"; mkdir -p "$P" "$TMP/bin"
 bash "$ROOT/bin/qwb-init.sh" "$P" >/dev/null

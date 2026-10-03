@@ -11,6 +11,11 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
+os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)
+tempfile.tempdir = str(TEST_TMP_ROOT)
 fixture = runpy.run_path(str(ROOT / "tests/r2-cli.py"))["fixture"]
 
 
@@ -33,6 +38,7 @@ except UnicodeDecodeError:
 def wake_case(label, line, expected=None):
     for mode in ("once", "block"):
         with tempfile.TemporaryDirectory(prefix=f"qwb-r4-wake-{label}-{mode}-") as d:
+            os.environ["TMPDIR"] = d
             base = Path(d)
             repo, ticket, env, log = fixture(base)
             strict_herdr(base)
@@ -70,6 +76,7 @@ def wake_summary():
 
 def dispatch_name(ticket_name, locale, explicit=None):
     with tempfile.TemporaryDirectory(prefix="qwb-r4-name-") as d:
+        os.environ["TMPDIR"] = d
         base = Path(d)
         repo, ticket, env, _ = fixture(base)
         renamed = ticket.with_name(f"2099-01-01-{ticket_name}.md")

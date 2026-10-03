@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Public ledger/test/send/wake entries; private Git + fake Herdr only.
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_POLICY_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -10,6 +13,7 @@ import hashlib, json, os, shutil, subprocess, tempfile
 from pathlib import Path
 ROOT=Path(os.environ['QWB_POLICY_TEST_ROOT'])
 with tempfile.TemporaryDirectory(prefix='qwb-policy-') as temp:
+    os.environ["TMPDIR"] = temp
     tmp=Path(temp).resolve(); p=tmp/'project'; p.mkdir(); stub=tmp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')
     for name in ['TASK.md','QWBUDDY.md']: shutil.copy(ROOT/'templates'/name,p/'qwbuddy'/name)

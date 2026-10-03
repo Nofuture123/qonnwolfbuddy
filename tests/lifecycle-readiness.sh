@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 生产生命周期定向回归；临时项目与子进程由 Python finally 回收。
 set -euo pipefail
+export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,6 +23,7 @@ import time
 source = Path(sys.argv[1])
 repo = Path(sys.argv[2])
 with tempfile.TemporaryDirectory(prefix="qwb-lifecycle-") as tmp:
+    os.environ["TMPDIR"] = tmp
     project = Path(tmp)
     qwb = project / "qwbuddy"
     (qwb / "bin").mkdir(parents=True)

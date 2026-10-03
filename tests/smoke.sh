@@ -5,6 +5,9 @@ set -uo pipefail
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export TMPDIR="$ROOT/.qwb-tmp"
+mkdir -p "$TMPDIR" || exit 1
+export GIT_CEILING_DIRECTORIES="$TMPDIR"
 FAILS=0
 
 ok()   { echo "PASS  $1"; }
@@ -27,7 +30,7 @@ def block(start,end):
 prefix=prefix.replace('ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
                       'ROOT='+shlex.quote(sys.argv[2]))
 parts=[prefix,
-       'TMP="$(mktemp -d)"'+block('TMP="$(mktemp -d)"','\nassert_file "$TMP/qwbuddy/QWBUDDY.md"'),
+       'TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1'+block('TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1','\nassert_file "$TMP/qwbuddy/QWBUDDY.md"'),
        'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\n# HERDR_STUB_READY\n'),
        'GP="$TMP/gitp"'+block('GP="$TMP/gitp"','\nWTID="wtdemo";'),
        '# —— S4–S7 场记：'+block('# —— S4–S7 场记：','echo "== 17c.'),
@@ -49,7 +52,8 @@ else
 fi
 
 echo "== 3. qwb-init.sh 装进临时假项目 =="
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
+export TMPDIR="$TMP"
 WIREPID=""
 trap '[[ -z "$WIREPID" ]] || { kill "$WIREPID" 2>/dev/null; wait "$WIREPID" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
 # 信任预置会读写 $HOME/.claude.json 与 $HOME/.codex/config.toml：全程用假 HOME，不碰真家目录。
@@ -2901,7 +2905,7 @@ echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/
 bash "$ROOT/tests/optional-routing.sh" && ok "可选路由公开 CLI 结构化契约" || bad "可选路由公开 CLI 结构化契约"
 # 假 curl 手法沿 firstmate tests/fm-dispatch-resolve.test.sh：记录 argv/请求体/fd3 头/子进程环境，
 # 按 FAKE_CURL_* 应答。零网络、零真 key。
-DT="$(mktemp -d)"
+DT="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
 DFB="$DT/fakebin"; DLOG="$DT/log"
 mkdir -p "$DFB" "$DLOG" "$DT/qwbuddy"
 cat > "$DFB/curl" <<'FAKE'
