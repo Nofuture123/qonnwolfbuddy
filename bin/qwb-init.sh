@@ -168,7 +168,7 @@ check_preserved_file() {
 }
 atomic_copy() {
   local src="$1" dst="$2" tmp
-  tmp="$(mktemp "$(dirname "$dst")/.qwb-install.XXXXXXXX")" || return 1
+  tmp="$(mktemp "${dst%/*}/.qwb-install.XXXXXXXX")" || return 1
   if ! cp -p "$src" "$tmp" || ! mv -f "$tmp" "$dst"; then
     rm -f "$tmp"
     return 1
@@ -194,10 +194,10 @@ for dst in "$ROOT/qwbuddy/QWBUDDY.md" "$ROOT/qwbuddy/TASK.md" \
 done
 for doc in "${guide_docs[@]}"; do check_install_file "$ROOT/qwbuddy/$doc" || exit 1; done
 check_install_file "$ROOT/qwbuddy/test-policy/qwb-v1.md" || exit 1
-for src in "$TPL"/roles/*.md; do check_install_file "$ROOT/qwbuddy/roles/$(basename "$src")" || exit 1; done
+for src in "$TPL"/roles/*.md; do check_install_file "$ROOT/qwbuddy/roles/${src##*/}" || exit 1; done
 for src in "$SRC"/qwb-*.sh; do
-  [[ "$(basename "$src")" == "qwb-init.sh" ]] && continue
-  check_install_file "$ROOT/qwbuddy/bin/$(basename "$src")" || exit 1
+  [[ "${src##*/}" == "qwb-init.sh" ]] && continue
+  check_install_file "$ROOT/qwbuddy/bin/${src##*/}" || exit 1
 done
 for dst in "$ROOT/qwbuddy/config.sh" "$ROOT/qwbuddy/workers.sh" \
            "$ROOT/qwbuddy/brief-include.md" "$ROOT/qwbuddy/dispatch-rules.json"; do
@@ -215,7 +215,7 @@ for doc in "${guide_docs[@]}"; do
   atomic_copy "$TPL/$doc" "$ROOT/qwbuddy/$doc" || { echo "错误：安装专项文档失败：$doc" >&2; exit 1; }
 done
 atomic_copy "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
-for src in "$TPL"/roles/*.md; do atomic_copy "$src" "$ROOT/qwbuddy/roles/$(basename "$src")"; done
+for src in "$TPL"/roles/*.md; do atomic_copy "$src" "$ROOT/qwbuddy/roles/${src##*/}"; done
 
 # config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
 OLD_CONF_NAME="config.json"
@@ -298,8 +298,8 @@ fi
 
 # 运行时脚本装进目标项目；qwb-init.sh 是母本仓专用安装器，不复制进目标
 for s in "$SRC"/qwb-*.sh; do
-  [[ "$(basename "$s")" == "qwb-init.sh" ]] && continue
-  atomic_copy "$s" "$ROOT/qwbuddy/bin/$(basename "$s")"
+  [[ "${s##*/}" == "qwb-init.sh" ]] && continue
+  atomic_copy "$s" "$ROOT/qwbuddy/bin/${s##*/}"
 done
 
 # 派工规则模板：目标已有不覆盖（可能已被项目主人改成自己的派工规则），幂等（同 brief-include 做法）
