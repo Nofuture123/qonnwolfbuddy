@@ -158,6 +158,49 @@ qwb_ledger_utf8_ok() {
   ' "$1" >/dev/null 2>&1
 }
 
+# 单遍扫描任务书：整个调用只起一个 perl 进程，按参数顺序逐文件输出一行
+# 「路径<TAB>utf8ok<TAB>collab<TAB>state」。语义与逐文件调 qwb_task_state /
+# qwb_ledger_utf8_ok / grep -q '<!-- qwb-collab-' 完全等价（含边界：无列首 state: 行的
+# 文件不输出；文件打不开时视为无 state: 行静默跳过——与旧 grep 失败 continue 一致）。
+# state 可能是空串，而制表符 IFS 会合并连续空字段，故 state 固定放最后一列：
+# read 对行尾缺位的末字段仍赋空串，前面的列永不缺位；state 值已删全部空白，绝不含 TAB。
+# 路径含 TAB 或换行会破坏输出格式：整体 stderr 报错、非 0 退出（现有账本不存在这种文件名）。
+qwb_ledger_scan() {
+  perl -MEncode=decode,FB_CROAK -e '
+    my $marker = "<!-- qwb-collab-";
+    for my $file (@ARGV) {
+      if ($file =~ /[\t\n]/) {
+        print STDERR "qwb_ledger_scan: 路径含 TAB 或换行，拒绝扫描：$file\n";
+        exit 1;
+      }
+      next unless -e $file;
+      my $data;
+      if (open my $fh, "<", $file) {
+        local $/; $data = <$fh>; $data = "" unless defined $data;
+      }
+      unless (defined $data) {
+        # 与旧实现 grep/sed 打不开文件时的 stderr 文案一致，然后同样按无 state: 行跳过。
+        print STDERR "grep: $file: $!\n";
+        next;
+      }
+      my $state = "";
+      if ($data =~ /^(state:[^\n]*)/m) {
+        $state = $1;
+        $state =~ s/^state:[[:space:]]*//;
+        $state =~ s/[[:space:]]//g;
+      } else {
+        next;
+      }
+      # 注意：decode 会就地清空传入的标量（本机 Encode 实测），故必须喂副本，
+      # 否则后面的 collab 检测拿到的是空串。
+      my $tmp = $data;
+      my $ok = eval { decode("UTF-8", $tmp, FB_CROAK); 1 } ? 1 : 0;
+      my $collab = index($data, $marker) >= 0 ? 1 : 0;
+      print "$file\t$ok\t$collab\t$state\n";
+    }
+  ' "$@"
+}
+
 # 对外摘要只输出合法 UTF-8；先替换坏字节，再按 Unicode 字符截断。
 # LC_ALL=C 仍用于账本解析，不能拿 bash 字节子串直接交给 Herdr。
 qwb_utf8_excerpt() {
@@ -372,14 +415,6 @@ qwb_is_project_worktree() {
     [[ "$(cd "$p" 2>/dev/null && pwd -P)" == "$dir_phys" ]] && return 0
   done < <(printf '%s\n' "$listing" | sed -n 's/^worktree //p')
   return 1
-}
-
-# Actual native activity; unknown refuses reuse rather than trusting a Herdr idle edge.
-qwb_pane_activity() {
-  local helper data
-  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-herdr.sh"
-  data="$(bash "$helper" activity --project "${PROJECT_ROOT:-$PWD}" --pane "$1" --dir "$2" --task "$3")" || return 1
-  printf '%s' "$data" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{activity}'
 }
 
 # worker_lost <任务书> —— 工人丢失判定（关机/herdr 重启后 pane 没了，票还 running）

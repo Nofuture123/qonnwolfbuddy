@@ -486,13 +486,12 @@ fi
 
 # 未结项：输出「文件<TAB>state」。state 异常按 needs-decision 叫主控查看。
 # 无 state: 字段行的文件（如 tasks/lessons.md）不算任务书，跳过不警告。
+# 单遍扫描（qwb_ledger_scan）把全部任务书一次读完，不再每票起 6 个子进程；
+# 其输出列序为「路径<TAB>utf8ok<TAB>collab<TAB>state」，state 可能为空串故放最后一列（见 lib 注释）。
 open_items() {
-  local f st
-  for f in "$LEDGER"/*.md; do
-    [[ -e "$f" ]] || continue
-    grep -q '^state:' "$f" || continue
-    st="$(qwb_task_state "$f")"
-    if ! qwb_ledger_utf8_ok "$f"; then
+  local f st u8 col
+  while IFS=$'\t' read -r f u8 col st; do
+    if [[ "$u8" == "0" ]]; then
       echo "警告：$(basename "$f") 账本 UTF-8 损坏，按未结项叫主控查看" >&2
       printf '%s\tneeds-decision\n' "$f"
       continue
@@ -500,13 +499,17 @@ open_items() {
     case "$st" in
       running|blocked|needs-decision) printf '%s\t%s\n' "$f" "$st" ;;
       done|verified)
-        if [[ -n "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]]; then
-          printf '%s\tneeds-decision\n' "$f"
+        # collab=0 时 qwb_task_obligations 本来就立即返回空，直接跳过不改变结果。
+        if [[ "$col" == "1" ]]; then
+          if [[ -n "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]]; then
+            printf '%s\tneeds-decision\n' "$f"
+          fi
         fi ;;
       *) echo "警告：$(basename "$f") state=${st} 非法，按未结项叫主控查看" >&2
          printf '%s\tneeds-decision\n' "$f" ;;
     esac
-  done
+  done < <(qwb_ledger_scan "$LEDGER"/*.md)
+  return 0
 }
 
 # 最近一次 wake 行里的 fp（无 wake 行或解析不到 fp= 则为空 → 视为指纹不同）
@@ -769,26 +772,42 @@ check_round() {
   return "$write_failed"
 }
 
-# 毫秒级计时：macOS 的 date 不支持 %N，用 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
-# 测试注入点：QWB_NOW_MS_CMD 非空时执行它取毫秒值，否则用 perl 实现——默认行为不变。
+# 毫秒级计时：优先 bash5 内建 EPOCHREALTIME（零子进程；小数点随 locale 可能是「,」，
+# 先去掉全部非数字得微秒整数再整除 1000，输出格式与 perl 版一致：纯整数、无换行）。
+# bash 3.2 无此变量，回落 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
+# 测试注入点：QWB_NOW_MS_CMD 非空时执行它取毫秒值，调用次数不变——默认行为不变。
 now_ms() {
   if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local us="${EPOCHREALTIME//[^0-9]/}"
+    printf '%d' "$(( us / 1000 ))"
+    return
+  fi
   perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
 }
 
 # 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转。
+# printf -v 直接写变量拼小数秒，不起子 shell。
 # 测试注入点：QWB_SLEEP_CMD 非空时把毫秒传给它执行，不真睡——默认行为不变。
 sleep_ms() {
-  local ms="$1"
+  local ms="$1" secs
   (( ms > 0 )) || ms=1
   if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
-  sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
+  printf -v secs '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))"
+  sleep "$secs"
 }
 
-sleep_interval() { sleep_ms "$INTERVAL"; }
-
 EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""
-event_mark() { [[ -z "$EVENT_DIR" ]] || head -1 "$EVENT_DIR/notice" 2>/dev/null || true; }
+# 事件通知首行：内建 read 代替 head -1，等待期每拍不再起子进程。逐字节等价：
+# EVENT_DIR 为空时无输出；文件不存在时无输出、不报错、返回 0（重定向错误经 2>/dev/null 吞掉，
+# 故 2> 写在 < 前）；首行无结尾换行时 read 返回非 0 但内容已存入变量，仍输出该行；
+# IFS= 保留首尾空白，与 head -1 取到的内容一致。
+event_mark() {
+  if [[ -z "$EVENT_DIR" ]]; then return 0; fi
+  local line=""
+  IFS= read -r line 2>/dev/null < "$EVENT_DIR/notice" || true
+  printf '%s' "$line"
+}
 event_cleanup() {
   if [[ -n "$EVENT_PID" ]]; then
     kill "$EVENT_PID" 2>/dev/null || true
