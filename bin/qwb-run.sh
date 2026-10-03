@@ -226,15 +226,12 @@ if [[ "$LAUNCH_MODE" == pane-run ]]; then
     done
     printf "%s%s'" "$quoted" "$rest"
   }
-  PANE_COMMAND=""
   for arg in "${WORKER_ARGV[@]}"; do
     quoted="$(quote_shell_arg "$arg")"
     PANE_COMMAND="${PANE_COMMAND:+${PANE_COMMAND} }${quoted}"
   done
 fi
-NAME_GIVEN=0
-[[ -n "$NAME" ]] && NAME_GIVEN=1
-if [[ "$NAME_GIVEN" -eq 0 ]]; then
+if [[ -z "$NAME" ]]; then
   NAME="$(printf '%s' "$TASK_ID" | qwb_default_agent_name)"
 else
   NAME="$(printf '%s' "$NAME" | cut -c1-32 | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
@@ -428,10 +425,7 @@ validate_reuse() {
     printf "%s\t%s\t%s\t%s",$p->{pane_id},$p->{agent},$cwd,$p->{workspace_id};' || true)"
   [[ -n "$pane_meta" ]] \
     || { echo "错误：复用 pane $ag_pane 身份无法解析，拒绝投递" >&2; return 1; }
-  pane_id="$(printf '%s' "$pane_meta" | cut -f1)"
-  pane_kind="$(printf '%s' "$pane_meta" | cut -f2)"
-  pane_cwd="$(printf '%s' "$pane_meta" | cut -f3)"
-  pane_ws="$(printf '%s' "$pane_meta" | cut -f4)"
+  IFS=$'\t' read -r pane_id pane_kind pane_cwd pane_ws <<<"$pane_meta"
   pane_dir="$(cd "$pane_cwd" 2>/dev/null && pwd -P)" \
     || { echo "错误：复用 pane cwd 无法确认：$pane_cwd" >&2; return 1; }
   [[ "$ag_kind" == "$WORKER_HARNESS" && "$pane_kind" == "$WORKER_HARNESS" \
@@ -465,31 +459,24 @@ if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
       printf "%s\t%s\t%s\t%s\t%s\t%s", $a->{name}, $a->{agent_status},
         $a->{pane_id}, $a->{agent}, $cwd, $a->{workspace_id};' || true)"
     if [[ -n "$ag_meta" ]]; then
-      ag_name="$(printf '%s' "$ag_meta" | cut -f1)"
-      ag_stat="$(printf '%s' "$ag_meta" | cut -f2)"
-      ag_pane="$(printf '%s' "$ag_meta" | cut -f3)"
-      ag_kind="$(printf '%s' "$ag_meta" | cut -f4)"
-      ag_cwd="$(printf '%s' "$ag_meta" | cut -f5)"
-      ag_ws="$(printf '%s' "$ag_meta" | cut -f6)"
+      IFS=$'\t' read -r ag_name ag_stat ag_pane ag_kind ag_cwd ag_ws <<<"$ag_meta"
       [[ "$ag_name" == "$NAME" ]] \
         || { echo "错误：查询同名工人 ${NAME} 却得到 ${ag_name}，拒绝复用" >&2; exit 1; }
-      if [[ "$ag_name" == "$NAME" ]]; then
-        case "$ag_stat" in
-          idle|done)
-            [[ -n "$ag_pane" ]] || { echo "错误：同名工人 ${NAME} 状态 ${ag_stat} 但缺 pane_id，无法复用（fail-closed）：${ag_out}" >&2; exit 1; }
-            validate_reuse || exit 1
-            REUSE_PANE="$ag_pane"
-            ;;
-          working|blocked)
-            echo "错误：同名工人 ${NAME} 还在 ${ag_stat}（pane ${ag_pane}）——它还在干，别打断；确要重派先确认它已停，或换 --name 新开。" >&2
-            exit 1
-            ;;
-          *)
-            echo "错误：同名工人 ${NAME} 状态为 ${ag_stat}（非 idle/done/working/blocked），无法安全处置（fail-closed）：${ag_out}" >&2
-            exit 1
-            ;;
-        esac
-      fi
+      case "$ag_stat" in
+        idle|done)
+          [[ -n "$ag_pane" ]] || { echo "错误：同名工人 ${NAME} 状态 ${ag_stat} 但缺 pane_id，无法复用（fail-closed）：${ag_out}" >&2; exit 1; }
+          validate_reuse || exit 1
+          REUSE_PANE="$ag_pane"
+          ;;
+        working|blocked)
+          echo "错误：同名工人 ${NAME} 还在 ${ag_stat}（pane ${ag_pane}）——它还在干，别打断；确要重派先确认它已停，或换 --name 新开。" >&2
+          exit 1
+          ;;
+        *)
+          echo "错误：同名工人 ${NAME} 状态为 ${ag_stat}（非 idle/done/working/blocked），无法安全处置（fail-closed）：${ag_out}" >&2
+          exit 1
+          ;;
+      esac
     else
       echo "错误：查询同名工人 ${NAME} 的应答无法解析（fail-closed，不猜）：${ag_out}" >&2
       exit 1
@@ -553,16 +540,14 @@ else
 fi
 # 成功才释放；异常/终止保留claim，主控按真实op收据恢复，不自动清。
 if [[ "$REVISE_GIVEN" -eq 1 ]]; then
-  REV_OLD="$DECLARED_FP"; REV_NEW="$SCEN_FP"
-  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" revise "$REV_OLD" "$REV_NEW" "$REVISE" >/dev/null
-  echo "已显式修订验收场景：old=${REV_OLD:0:8}… new=${REV_NEW:0:8}…（原因已留痕）"
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" revise "$DECLARED_FP" "$SCEN_FP" "$REVISE" >/dev/null
+  echo "已显式修订验收场景：old=${DECLARED_FP:0:8}… new=${SCEN_FP:0:8}…（原因已留痕）"
 fi
 
 # worktree（M6：默认隔离）：--worktree 复用既有副本；--here 显式用项目根；
 # 其余情况（含 --create-worktree 与默认不给参数）一律开 <根>/.worktrees/<id> 隔离副本
 WT_CREATED=0
 if [[ "$HERE" -eq 0 && -z "$WORKTREE" ]]; then
-  WT_CREATED=0
   # 开之前先清点：有残留 worktree 打警告但不阻塞（使用者可能有意保留）
   WT_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-worktree.sh"
   if [[ -f "$WT_BIN" ]]; then
@@ -632,7 +617,7 @@ if [[ "$wt_kind_rc" -eq 0 ]]; then
   if [[ -z "$TASK_SPACE" ]]; then
     space_out="$(herdr worktree open --cwd "$PROJECT_ROOT" --path "$DIR" --label "$TASK_ID" --no-focus 2>&1)" \
       || { echo "错误：worktree 已保留但 Herdr Space 登记失败，未派发：$space_out" >&2; exit 1; }
-    opened_id=""; opened_tab=""; already_open=""; SPACE_ROOT_PANE=""
+    opened_id=""; opened_tab=""; already_open=""
     abort_opened_space() {
       echo "错误：$1；副本保留，未派发" >&2
       if [[ "$already_open" == 0 && -n "$opened_id" ]]; then
@@ -764,23 +749,22 @@ elif [[ -z "$PANE" ]]; then
   else
     out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
   fi
-  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
-  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
+  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）；
+  # 同一次解码顺带取 tab_id，两列输出（仿 worktree space_meta 写法），严格校验与报错文案不变
+  pane_tab="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
     my $j = eval { decode_json(<STDIN>) };
-    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH")
-      ? $j->{result}{root_pane}{pane_id} : undef;
-    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
+    my $rp = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH") ? $j->{result}{root_pane} : undef;
+    my $pv = $rp ? $rp->{pane_id} : undef;
+    my $tv = $rp ? $rp->{tab_id} : undef;
+    printf "%s\t%s",
+      ((defined $pv && !ref $pv && $pv ne "" && encode_json($pv) =~ /^"/) ? $pv : ""),
+      ((defined $tv && !ref $tv && $tv ne "") ? $tv : "");
   ')"
+  PANE="$(printf '%s' "$pane_tab" | cut -f1)"
   [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
   # tab id 供启动失败时回滚关 tab（缺失只警告不拒绝——关不掉大不了留个空 tab）
-  TAB_ID="$(printf '%s' "$out" | perl -MJSON::PP=decode_json -0777 -e '
-    my $j = eval { decode_json(<STDIN>) };
-    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH")
-      ? $j->{result}{root_pane}{tab_id} : undef;
-    print((defined $v && !ref $v && $v ne "") ? $v : "");
-  ')"
+  TAB_ID="$(printf '%s' "$pane_tab" | cut -f2)"
 fi
 
 # op_id收据在投递前写好；失败后锁内重读原路径，不复用任何旧offset/FD。
@@ -796,6 +780,12 @@ delivery_failed() {
     || echo "警告：补偿发布失败，保留原收据与claim，需人工核对 $TASK_FILE" >&2
   printf '错误：%s 失败（退出码 %s）：\n%s\n' "$step" "$rc" "$detail" >&2
   exit 1
+}
+
+deliver() {   # $1=步骤名，其余=命令；输出留在 DELIVER_OUT
+  local step="$1" rc=0; shift
+  DELIVER_OUT="$("$@" 2>&1)" || rc=$?
+  [[ "$rc" -eq 0 ]] || delivery_failed "$step" "$rc" "$DELIVER_OUT"
 }
 
 now_ms() {
@@ -825,26 +815,18 @@ case "$LAUNCH_MODE" in
     if [[ -n "$REUSE_PANE" ]]; then
       record_worker_activity
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
-      prompt_rc=0
-      prompt_out="$(herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}" 2>&1)" || prompt_rc=$?
-      [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
-      printf '%s\n' "$prompt_out"
+      deliver "herdr agent prompt" herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
+      printf '%s\n' "$DELIVER_OUT"
     else
-      start_rc=0
-      start_out="$(qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}" 2>&1)" || start_rc=$?
-      [[ "$start_rc" -eq 0 ]] || delivery_failed "herdr agent start" "$start_rc" "$start_out"
-      printf '%s\n' "$start_out"
+      deliver "herdr agent start" qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}"
+      printf '%s\n' "$DELIVER_OUT"
       record_worker_activity
-      prompt_rc=0
-      prompt_out="$(herdr agent prompt "$NAME" "$PROMPT" 2>&1)" || prompt_rc=$?
-      [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr agent prompt" "$prompt_rc" "$prompt_out"
-      printf '%s\n' "$prompt_out"
+      deliver "herdr agent prompt" herdr agent prompt "$NAME" "$PROMPT"
+      printf '%s\n' "$DELIVER_OUT"
     fi
     ;;
   pane-run)
-    run_rc=0
-    run_out="$(herdr pane run "$PANE" "$PANE_COMMAND" 2>&1)" || run_rc=$?
-    [[ "$run_rc" -eq 0 ]] || delivery_failed "herdr pane run（启动）" "$run_rc" "$run_out"
+    deliver "herdr pane run（启动）" herdr pane run "$PANE" "$PANE_COMMAND"
     detect_started="$(now_ms)"
     while ! herdr agent get "$PANE" >/dev/null 2>&1; do
       detect_elapsed=$(( $(now_ms) - detect_started ))
@@ -856,17 +838,11 @@ case "$LAUNCH_MODE" in
       sleep_ms "$detect_left"
     done
     record_worker_activity
-    rename_rc=0
-    rename_out="$(herdr agent rename "$PANE" "$NAME" 2>&1)" || rename_rc=$?
-    [[ "$rename_rc" -eq 0 ]] || delivery_failed "herdr agent rename" "$rename_rc" "$rename_out"
-    prompt_rc=0
-    prompt_out="$(herdr pane run "$PANE" "$PROMPT" 2>&1)" || prompt_rc=$?
-    [[ "$prompt_rc" -eq 0 ]] || delivery_failed "herdr pane run（提示词）" "$prompt_rc" "$prompt_out"
-    printf '%s\n' "$prompt_out"
+    deliver "herdr agent rename" herdr agent rename "$PANE" "$NAME"
+    deliver "herdr pane run（提示词）" herdr pane run "$PANE" "$PROMPT"
+    printf '%s\n' "$DELIVER_OUT"
     if ! herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout 300 >/dev/null 2>&1; then
-      enter_rc=0
-      enter_out="$(herdr pane send-keys "$PANE" enter 2>&1)" || enter_rc=$?
-      [[ "$enter_rc" -eq 0 ]] || delivery_failed "herdr pane send-keys" "$enter_rc" "$enter_out"
+      deliver "herdr pane send-keys" herdr pane send-keys "$PANE" enter
     fi
     ;;
 esac
