@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Public entrances + private Git and fake Herdr. No network/model/real endpoints.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_CI_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_CI_TEST_ROOT
 python3 -u -B - <<'PY'

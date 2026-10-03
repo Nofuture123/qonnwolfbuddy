@@ -1,6 +1,9 @@
 """R2 regressions through the installed public CLI, using isolated Git and Herdr fixtures."""
 import json
 import os
+
+# Fail closed even if the PATH stub disappears.
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 from pathlib import Path
 import shutil
 import stat

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 真实公开入口 + 临时项目/fake Herdr；不接触真实endpoint、安装目录或主票。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

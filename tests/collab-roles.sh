@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Public role/control entrances; Herdr alone is a fixture, never a live pane.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_ROLES_TEST_ROOT="$ROOT"
 python3 -B - <<'PY'

@@ -1,6 +1,9 @@
 """R4 regressions through installed public CLIs and a strict Herdr argv stub."""
 import json
 import os
+
+# Fail closed even if the PATH stub disappears.
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 from pathlib import Path
 import runpy
 import subprocess

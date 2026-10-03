@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Public ledger/test/send/wake entries; private Git + fake Herdr only.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_POLICY_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_POLICY_TEST_ROOT
 python3 -B - <<'PY'

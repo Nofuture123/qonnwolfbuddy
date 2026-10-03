@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Public CLI behavior; private Git, only external Herdr boundary is fake.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_POSTURE_ROOT="$ROOT"
 python3 -B - <<'PY'

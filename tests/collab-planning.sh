@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 公开入口 + 私有项目/系统边界替身；绝不触碰真实Herdr。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_PLANNING_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
 import contextlib, hashlib, json, os, shutil, signal, subprocess, tempfile, time

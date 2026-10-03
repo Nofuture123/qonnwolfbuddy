@@ -1,6 +1,9 @@
 """Installed guide links and safe upgrade, run by smoke.sh."""
 from pathlib import Path
 import os
+
+# Fail closed even if the PATH stub disappears.
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 import re
 import subprocess
 import tempfile

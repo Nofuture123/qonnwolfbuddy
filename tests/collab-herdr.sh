@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Offline public-entry contract: real temporary Git/MD, fake Herdr CLI + Unix stream.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [[ "${1:-}" != not-sent ]]; then
 python3 -B - "$ROOT" <<'PY'

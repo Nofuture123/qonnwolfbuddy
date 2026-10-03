@@ -2,6 +2,9 @@
 """Public qwb-run / qwb-init worker configuration contract with isolated HOME."""
 import json
 import os
+
+# Fail closed even if the PATH stub disappears.
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 import shutil
 from pathlib import Path
 import subprocess

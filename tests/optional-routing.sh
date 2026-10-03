@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Public CLI contract for optional routing. All projects, keys and processes are fake.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT

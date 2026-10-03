@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWatchCore, WAKE_PREFIX } from "../templates/pi-extensions/qwb-watch.ts";
 
+// Keep any real child process away from the host Herdr endpoint.
+process.env.HERDR_SOCKET_PATH = "/dev/null/qwb-test.sock";
+
 const root = mkdtempSync(join(tmpdir(), "qwb-watch-test-"));
 mkdirSync(join(root, "qwbuddy", "bin"), { recursive: true });
 writeFileSync(join(root, "qwbuddy", "bin", "qwb-wake.sh"), "#!/usr/bin/env bash\nexit 0\n");

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 真入口+临时Git；仅Herdr/ps/lsof系统边界替身，不调用现场端点。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
 import hashlib, json, os, shutil, subprocess, tempfile, time

@@ -1,6 +1,9 @@
 """Public dispatch/finish failures with an isolated Herdr contract double."""
 import json
 import os
+
+# Fail closed even if the PATH stub disappears.
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 from pathlib import Path
 import shutil
 import subprocess

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 公开 CLI：--block 多轮等待只交最终摘要；人读模式仍显示逐票跳过。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PROJECT="$(mktemp -d /tmp/qwb-wake-output.XXXXXXXX)"

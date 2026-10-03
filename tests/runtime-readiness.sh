@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 定向运行时负例；由 smoke.sh 调用，也可单独运行。
 set -uo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

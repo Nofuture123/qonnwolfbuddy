@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 生产生命周期定向回归；临时项目与子进程由 Python finally 回收。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${QWB_LIFECYCLE_SOURCE:-$REPO}"
 python3 - "$ROOT" "$REPO" <<'PY'

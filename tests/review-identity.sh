@@ -6,6 +6,8 @@
 #   user_身份未知不伪装通过           → unknown/缺字段/缺证据 → 报缺证据不通过
 #   user_无审核要求的普通票不额外烧token → 无 review-required 标记 → 不启用检查
 set -uo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILS=0

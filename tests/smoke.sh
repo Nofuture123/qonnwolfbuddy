@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # tests/smoke.sh —— QW buddy 冒烟测试（不需要 herdr，可在干净环境跑）
 set -uo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILS=0
@@ -26,7 +28,7 @@ prefix=prefix.replace('ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
                       'ROOT='+shlex.quote(sys.argv[2]))
 parts=[prefix,
        'TMP="$(mktemp -d)"'+block('TMP="$(mktemp -d)"','\nassert_file "$TMP/qwbuddy/QWBUDDY.md"'),
-       'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\nchmod +x "$STUB/herdr"\n')+'\nchmod +x "$STUB/herdr"',
+       'STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"'+block('STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"','\n# HERDR_STUB_READY\n'),
        'GP="$TMP/gitp"'+block('GP="$TMP/gitp"','\nWTID="wtdemo";'),
        '# —— S4–S7 场记：'+block('# —— S4–S7 场记：','echo "== 17c.'),
        source.split('# 新节必须加在本行之前',1)[1]]
@@ -207,6 +209,11 @@ esac
 exit 0
 EOF
 chmod +x "$STUB/herdr"
+[[ "$(PATH="$STUB:$PATH" command -v herdr)" == "$STUB/herdr" ]] || {
+  echo 'FAIL Herdr stub missing or PATH resolved another executable' >&2
+  exit 1
+}
+# HERDR_STUB_READY
 
 printf '# 假任务\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$FAKE"
 ( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null \
@@ -451,7 +458,8 @@ rm -rf "$LOCKD"
   && bad "第二次 acquire 竟成功" || ok "活锁主在时第二次 acquire 被拒"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh status ) | grep -q 'wtest:p9' \
   && ok "status 显示锁主" || bad "status 未显示锁主"
-( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh release ) >/dev/null \
+# 默认桩片场返回 pane_not_found；释放正例不能靠真 Herdr 查询假锁主。
+( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-lock.sh release ) >/dev/null \
   && ok "release 成功" || bad "release 失败"
 ( cd "$TMP" && bash qwbuddy/bin/qwb-lock.sh acquire --owner wtest:p9 ) >/dev/null \
   && ok "release 后可再 acquire" || bad "release 后 acquire 失败"

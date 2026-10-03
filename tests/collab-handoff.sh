@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 真实公开入口，唯一临时项目与 fake Herdr；不接触现场会话。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 P="$TMP/project"; mkdir -p "$P/tasks" "$P/qwbuddy/.controller.lock" "$TMP/bin"

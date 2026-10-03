@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 私有临时Git + 系统边界fakeHerdr；不碰现场main/端点。
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'

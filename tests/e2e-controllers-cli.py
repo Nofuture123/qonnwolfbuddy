@@ -1,6 +1,9 @@
 """真实 E2E 入口参数的公开 CLI 回归，不启动付费主控。"""
 from pathlib import Path
+import os
 import subprocess
+
+os.environ["HERDR_SOCKET_PATH"] = "/dev/null/qwb-test.sock"
 
 ROOT = Path(__file__).resolve().parent.parent
 ENTRY = ROOT / "tests/e2e-real.sh"

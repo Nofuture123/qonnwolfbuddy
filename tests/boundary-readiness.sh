@@ -3,6 +3,8 @@
 # 断言字符串由 check 的 eval 执行，变量在 eval 时展开。
 # shellcheck disable=SC2016,SC2034
 set -u
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INIT="${QWB_BOUNDARY_INIT:-$ROOT/bin/qwb-init.sh}"
 DISPATCH="${QWB_BOUNDARY_DISPATCH:-$ROOT/bin/qwb-dispatch.sh}"

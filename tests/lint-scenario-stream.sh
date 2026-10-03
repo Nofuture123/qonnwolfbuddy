@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Real public lint, private fixture only. No network, model or Herdr calls.
 set -euo pipefail
+# Fail closed even if the PATH stub disappears.
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_STREAM_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_STREAM_TEST_ROOT
 python3 -u -B - <<'PY'
