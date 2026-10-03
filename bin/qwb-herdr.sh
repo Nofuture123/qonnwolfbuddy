@@ -134,9 +134,18 @@ def activity(pane,directory=None):
         byid={x['id']:x for x in entries if 'id' in x}; branch=[]; node=entries[-1]; seen=set()
         while node and node.get('id') not in seen:
             seen.add(node.get('id')); branch.append(node); node=byid.get(node.get('parentId'))
+        # Pi context edits are branch-relative; latest wins without rewriting raw history.
+        edits={x['targetId']:x['replacement'] for x in reversed(branch) if x.get('type')=='context_edit'}
         outstanding=set(); last=None
         for x in reversed(branch):
             m=x.get('message',{}); role=m.get('role')
+            if x.get('id') in edits and role in ('user','assistant','toolResult','custom'):
+                replacement=edits[x['id']]
+                if replacement is None: continue
+                require(isinstance(replacement,dict) and isinstance(replacement.get('content'),(str,list)),'context edit content unknown')
+                content=replacement['content']
+                if role in ('assistant','toolResult') and isinstance(content,str): content=[dict(type='text',text=content)]
+                m=dict(m,content=content)  # Only content changes; retain role/call ID/stop metadata.
             if role: last=m
             if role=='assistant':
                 outstanding.update(c['id'] for c in m.get('content',[]) if isinstance(c,dict) and c.get('type')=='toolCall' and c.get('id'))

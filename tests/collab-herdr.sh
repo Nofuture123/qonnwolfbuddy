@@ -160,6 +160,48 @@ else: sys.exit(9)
     stale=run(*helper,'activity','--project',str(root),'--pane','wTask:p1','--dir',str(wt),'--task',str(task),env=busyenv)
     assert json.loads(stale.stdout)['activity']=='unknown'
     task.write_text(original_ticket)
+    # Pi recovery omits a transport-error attempt; raw history must stay intact.
+    settled_bytes=session.read_bytes()
+    header=dict(type='session',id='session',cwd=str(wt))
+    failed=dict(type='message',id='failed',parentId=None,message=dict(role='assistant',stopReason='error',errorMessage='WebSocket closed 1012',content=[dict(type='toolCall',id='ghost',name='bash')]))
+    finish=dict(type='message',id='finish',parentId='failed',message=dict(role='assistant',stopReason='stop',content=[]))
+    omission=dict(type='context_edit',id='omit',parentId='finish',targetId='failed',replacement=None)
+    def observe(entries,wanted,pending):
+        session.write_text('\n'.join(json.dumps(x) for x in [header,*entries])+'\n'); before=session.read_bytes()
+        got=run(*helper,'activity','--project',str(root),'--pane','wTask:p1','--dir',str(wt),env=busyenv)
+        assert got.returncode==0,(got.stdout,got.stderr)
+        data=json.loads(got.stdout)
+        assert (data['activity'],data.get('pending_tools'))==(wanted,pending),(wanted,pending,data)
+        assert session.read_bytes()==before,'activity rewrote append-only native history'
+    observe([failed,finish],'busy',['ghost'])  # An error or Herdr idle alone never clears a call.
+    observe([failed,finish,omission],'idle',[])  # Only the explicit edit condition differs.
+    observe([failed,finish,dict(omission,targetId='other-entry')],'busy',['ghost'])
+    observe([failed,finish,dict(omission,replacement={'content':'recovered text'})],'idle',[])
+    observe([failed,finish,dict(omission,replacement={'content':[]})],'idle',[])
+    live=dict(type='toolCall',id='live',name='bash')
+    observe([failed,finish,dict(omission,replacement={'content':[live]})],'busy',['live'])
+    restored=dict(omission,id='restore',parentId='omit',replacement={'content':failed['message']['content']})
+    observe([failed,finish,omission,restored],'busy',['ghost'])
+    observe([failed,finish,omission,restored,dict(omission,id='delete-again',parentId='restore')],'idle',[])
+    # An edit on an abandoned branch must not alter the selected branch's pending call.
+    observe([failed,finish,omission,dict(type='label',id='before-edit',parentId='finish')],'busy',['ghost'])
+    observe([failed,finish,dict(omission,replacement={'content':[live]}),dict(type='message',id='other-root',parentId=None,message=dict(role='assistant',stopReason='stop',content=[]))],'idle',[])
+    result=dict(type='message',id='result',parentId='failed',message=dict(role='toolResult',toolCallId='ghost',content=[]))
+    result_finish=dict(finish,parentId='result')
+    result_edit=dict(omission,parentId='finish',targetId='result',replacement={'content':'edited result'})
+    observe([failed,result,result_finish,result_edit],'idle',[])  # Content changes preserve role/call ID.
+    observe([failed,result,result_finish,dict(result_edit,replacement=None)],'busy',['ghost'])
+    pending=dict(type='message',id='live-call',parentId='omit',message=dict(role='assistant',stopReason='toolUse',content=[live]))
+    observe([failed,finish,omission,pending,dict(finish,id='idle-edge',parentId='live-call')],'busy',['live'])
+    # Compaction is not an execution acknowledgement; preserve unmatched native obligations.
+    observe([failed,finish,dict(type='compaction',id='summary',parentId='finish',firstKeptEntryId='summary',summary='history summarized')],'busy',['ghost'])
+    working=json.loads(state.read_text());next(x for x in working['panes'] if x['pane_id']=='wTask:p1')['agent_status']='working';state.write_text(json.dumps(working))
+    observe([failed,finish,omission],'busy',[])
+    state.write_text(json.dumps(s))
+    observe([failed,finish,{k:v for k,v in omission.items() if k!='replacement'}],'unknown',None)
+    observe([failed,finish,dict(omission,replacement={'content':False})],'unknown',None)
+    session.write_bytes(settled_bytes)
+    print('PASS context edits omit/replace content on selected branch; latest wins; true pending/error/working/compaction remain busy; raw untouched')
     blocked=run(*close,env=busyenv); assert blocked.returncode!=0,blocked.stderr
     state.write_text(json.dumps(initial))
     # A foreground shell is not death proof for the original bound/background PID.
