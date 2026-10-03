@@ -1371,7 +1371,8 @@ echo "== 25. C：qwb-lint.sh 自身 lint =="
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
   && ok "母本仓 lint 全过（LINT PASS）" || { bad "母本仓 lint FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
-printf '%s' "$lintout" | grep -c '^PASS' | grep -qE '^[4-9]' \
+npass="$(printf '%s' "$lintout" | grep -c '^PASS' || true)"  # 0 匹配时 grep -c 退出码 1，照同文件写法吞掉
+[[ "$npass" -ge 4 ]] \
   && ok "lint 逐项 PASS 输出可见" || bad "lint 无逐项 PASS 输出"
 HL="$TMP/healthy"; mkdir -p "$HL"; bash "$ROOT/bin/qwb-init.sh" "$HL" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HL/qwbuddy/config.sh"
