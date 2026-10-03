@@ -12,6 +12,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
+# PATH 替身失效时也不能连现场 Herdr；只为本跑批建仓内日志，不改子测试 TMPDIR。
+export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
+TMPBASE="$ROOT/.qwb-tmp"
+mkdir -p "$TMPBASE" || exit 1
 
 # 默认清单：显式写死，不用 glob——新增测试文件必须有人有意接入才进全门。
 # collab-land.sh 在 4678ba0 基线退出 1，暂不接入，失败输出另记主账本。
@@ -32,7 +36,7 @@ DEFAULT_TESTS=(
 
 if [[ $# -gt 0 ]]; then TESTS=("$@"); else TESTS=("${DEFAULT_TESTS[@]}"); fi
 
-TMPD="$(mktemp -d)" || exit 1
+TMPD="$(mktemp -d "$TMPBASE/collab-all.XXXXXXXX")" || exit 1
 PIDS=()
 # shellcheck disable=SC2329 # 仅被下方 trap 字符串间接调用，shellcheck 数据流分析看不出
 kill_tree() { # 递归杀整棵进程树：测试会派生 python/git 等子进程，只杀直接子进程会留孤儿

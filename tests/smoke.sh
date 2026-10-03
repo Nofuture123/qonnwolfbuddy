@@ -95,12 +95,12 @@ echo "== 6. qwb-wake.sh --dry-run 未结项判定 =="
 FAKE="$TMP/tasks/2099-01-01-fake.md"
 printf '# 假任务\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$FAKE"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '2099-01-01-fake' && ok "state=running 列为未结项" || bad "state=running 未列为未结项"
+grep -q '2099-01-01-fake' <<<"$out" && ok "state=running 列为未结项" || bad "state=running 未列为未结项"
 grep -q '^wake:' "$FAKE" && bad "dry-run 写了 wake 行" || ok "dry-run 无副作用（无 wake 行）"
 
 printf '# 假任务\nstate: verified\n' > "$FAKE"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '2099-01-01-fake' && bad "state=verified 仍列为未结项" || ok "state=verified 不再列为未结项"
+grep -q '2099-01-01-fake' <<<"$out" && bad "state=verified 仍列为未结项" || ok "state=verified 不再列为未结项"
 
 echo "== 7. stub herdr：qwb-wake.sh --once 有未结项退出 0（回归 Bug 2）=="
 STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
@@ -281,18 +281,18 @@ F3F="$TMP/tasks/2099-01-03-f3.md"
 printf '# F3\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running fp=0000oldfp\n' > "$F3F"
 printf 'done: 工人完成，附检查证据\n' >> "$F3F"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-03-f3' \
+grep -q '未结项（将叫醒）: 2099-01-03-f3' <<<"$out" \
   && ok "追加 done: 后再次列为未结项" || bad "追加 done: 后仍未列为未结项"
 # 真跑一轮写下新指纹；之后账本不再变 → 不再叫
 ( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-03-f3' \
+grep -q '未结项（将叫醒）: 2099-01-03-f3' <<<"$out" \
   && bad "进展未变仍重复叫" || ok "写下新指纹后进展未变→不再叫"
 # 兼容旧格式：无 fp= 的 wake 行视为指纹不同 → 允许再叫
 F3O="$TMP/tasks/2099-01-05-f3old.md"
 printf '# 旧格式\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2026-01-01T00:00:00Z state=running\n' > "$F3O"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-05-f3old' \
+grep -q '未结项（将叫醒）: 2099-01-05-f3old' <<<"$out" \
   && ok "无 fp= 的旧 wake 行→仍列为未结项" || bad "无 fp= 的旧 wake 行被误跳过"
 
 echo "== 11. F4 回归：投递失败不终止值守、不写 wake 行 =="
@@ -491,25 +491,26 @@ for wname in workers '(codex)' note; do
   fi
   grep -q 'agent start' "$STUBLOG" && bad "--worker ${wname} 仍调用了 herdr agent start" || ok "--worker ${wname} 未调用 agent start"
 done
-printf '%s' "$r3out" | grep -qF 'codex pi claude devin omp' && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
+grep -qF 'codex pi claude devin omp' <<<"$r3out" && ok "报错列出全部合法工人名" || bad "报错未列出合法工人名"
 
 echo "== 16. R4：非法 state 变可见 =="
 ILF="$TMP/tasks/2099-01-06-illegal.md"
 printf '# 非法状态\nstate: pending\n' > "$ILF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-{ printf '%s' "$out" | grep -q '\[未结\].*state=pending' && printf '%s' "$out" | grep -q '状态异常'; } \
+{ grep -q '\[未结\].*state=pending' <<<"$out" && grep -q '状态异常' <<<"$out"; } \
   && ok "status 对 state=pending 标未结并要求主控查看" || bad "status 未把非法 state 标为未结"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
-printf '%s' "$out" | grep -q 'state=pending 非法' && ok "wake 对 state=pending 发 stderr 警告" || bad "wake 未警告非法 state"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-06-illegal' \
+grep -q 'state=pending 非法' <<<"$out" && ok "wake 对 state=pending 发 stderr 警告" || bad "wake 未警告非法 state"
+grep -q '未结项（将叫醒）: 2099-01-06-illegal' <<<"$out" \
   && ok "非法 state 仍列为未结项供主控查看" || bad "非法 state 从值守中消失"
 # 对照：无 state: 字段行的说明文档（如 lessons.md）不算任务书，status 跳过不标 [非法]
 DOCF="$TMP/tasks/lessons.md"
 printf '# 错题本\n只是说明文档，无 state 字段\n' > "$DOCF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep '\[未结\]' | grep -q 'lessons\.md' \
+# 两级过滤保留原字节输入，末端 grep 排空 stdin，避免上游 SIGPIPE。
+printf '%s' "$out" | grep '\[未结\]' | grep 'lessons\.md' >/dev/null \
   && bad "无 state 字段文档被误标未结" || ok "无 state 字段文档 status 不标未结"
-printf '%s' "$out" | grep -q 'state=pending.*状态异常' \
+grep -q 'state=pending.*状态异常' <<<"$out" \
   && ok "有非法值任务书仍报状态异常" || bad "有非法值任务书未报异常"
 
 echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
@@ -526,10 +527,10 @@ WTID="wtdemo"; WTF="$GP/tasks/2099-01-07-${WTID}.md"
 printf '# demo\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$WTF"
 git -C "$GP" worktree add -q -b "$WTID" "$GP/.worktrees/$WTID"
 out="$(bash "$WTB" list --project "$GP")"
-printf '%s' "$out" | grep -q "未结项.*${WTID}" && ok "list 标出未结项 worktree" || bad "list 未标出未结项"
+grep -q "未结项.*${WTID}" <<<"$out" && ok "list 标出未结项 worktree" || bad "list 未标出未结项"
 mkdir -p "$GP/.worktrees/orphan"
 out="$(bash "$WTB" list --project "$GP")"
-printf '%s' "$out" | grep -q '残留.*orphan' && ok "list 标出残留目录" || bad "list 未标出残留"
+grep -q '残留.*orphan' <<<"$out" && ok "list 标出残留目录" || bad "list 未标出残留"
 
 # --merged 对未合并分支拒绝（先在分支上做个 commit 让它领先 HEAD）
 git -C "$GP/.worktrees/$WTID" -c user.email=t@t.t -c user.name=t commit -qm wip --allow-empty
@@ -603,7 +604,7 @@ When  主控派发
 Then  拒绝派发
 EOF
 r1out="$( cd "$GP" && PATH="$STUB:$PATH" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnew --worker codex --create-worktree 2>&1 )"
-printf '%s' "$r1out" | grep -q '残留' && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
+grep -q '残留' <<<"$r1out" && ok "--create-worktree 对残留打警告" || bad "--create-worktree 无残留警告"
 [[ -d "$GP/.worktrees/wtnew" ]] && ok "警告不阻塞：worktree 已建" || bad "--create-worktree 被阻塞"
 
 echo "== 17b. 方案A：隔离派发直落根 pane；finish --root-tab-missing 兑底（本票 8 场景）=="
@@ -633,7 +634,7 @@ ra_space="wQ$(printf '%s' "$ra_dir" | shasum | cut -c1-8)"
   && ! grep -q 'tab create' "$STUBLOG" \
   && grep -qF "worktree-space: id=${ra_space} root-tab=${ra_space}:t1 path=${ra_dir}" "$GP/tasks/2099-01-17-rootpane.md" \
   && grep -q "worker=codex agent=qwb-rootpane pane=${ra_space}:p1 dir=${ra_dir}" "$GP/tasks/2099-01-17-rootpane.md" \
-  && printf '%s' "$ra_out" | grep -q "pane=${ra_space}:p1 dir="; } \
+  && grep -q "pane=${ra_space}:p1 dir=" <<<"$ra_out"; } \
   && ok "S1 新建 Space：agent start 直落根 pane、无 tab create、worktree-space/dispatch/提示记根 pane" \
   || { bad "S1 方案A 直落根 pane 不对（rc=${ra_rc}）"; grep -E 'worktree open|agent start|tab create' "$STUBLOG"; }
 
@@ -666,7 +667,7 @@ EOF
 : > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
 rf_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:rf HERDR_FAIL=start bash "$TMP/qwbuddy/bin/qwb-run.sh" --task rpfail --worker codex 2>&1 )"; rf_rc=$?
 rf_space="wQ$(printf '%s' "$(cd "$GP/.worktrees/rpfail" && pwd)" | shasum | cut -c1-8)"   # 同 qwb-run 的 DIR 形态
-{ [[ "$rf_rc" -ne 0 ]] && printf '%s' "$rf_out" | grep -q 'agent start 失败' \
+{ [[ "$rf_rc" -ne 0 ]] && grep -q 'agent start 失败' <<<"$rf_out" \
   && grep -q "agent start qwb-rpfail --kind codex --pane ${rf_space}:p1" "$STUBLOG" \
   && ! grep -q 'tab close' "$STUBLOG" && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'workspace close' "$STUBLOG" \
   && [[ "$(grep -c '^dispatch:' "$GP/tasks/2099-01-17-rpfail.md")" -eq 0 ]] \
@@ -772,7 +773,7 @@ fs_mkticket wtrunning wFo wFo:t1 wFo:t2 wFo:p2 >/dev/null
 fs_get wFo:p2 wFo:t2 wFo working; fs_tabs wFo:t2; fs_panes wFo:p2 working
 : > "$STUBLOG"
 fo_out="$(HERDR_DYN_DIR="$FD" qwb_finish wtrunning --archive --root-tab-missing --project "$GP" 2>&1)"; fo_rc=$?
-{ [[ "$fo_rc" -ne 0 ]] && printf '%s' "$fo_out" | grep -q '仍在 working' \
+{ [[ "$fo_rc" -ne 0 ]] && grep -q '仍在 working' <<<"$fo_out" \
   && [[ -d "$GP/.worktrees/wtrunning" ]] && ! grep -q 'workspace close' "$STUBLOG" \
   && ! git -C "$GP" show-ref --verify --quiet "refs/tags/archive/wtrunning" \
   && git -C "$GP" show-ref --verify --quiet "refs/heads/wtrunning" \
@@ -836,7 +837,7 @@ EOF
 printf '%s\n' '{"result":{"already_open":false,"workspace":{"workspace_id":"wQnopane"},"root_pane":{"tab_id":"wQnopane:t1"}}}' > "$FD2/worktree-open.json"
 : > "$STUBLOG"; rm -rf "$GP/qwbuddy/.controller.lock"
 wn_out="$( cd "$GP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wn HERDR_DYN_DIR="$FD2" bash "$TMP/qwbuddy/bin/qwb-run.sh" --task wtnopane --worker codex 2>&1 )"; wn_rc=$?
-{ [[ "$wn_rc" -ne 0 ]] && printf '%s' "$wn_out" | grep -q 'root_pane.pane_id' \
+{ [[ "$wn_rc" -ne 0 ]] && grep -q 'root_pane.pane_id' <<<"$wn_out" \
   && grep -q 'workspace close wQnopane' "$STUBLOG" && ! grep -q 'tab create' "$STUBLOG" \
   && ! grep -q '^dispatch:' "$GP/tasks/2099-01-17-wtnopane.md" \
   && ! grep -q '^worktree-space:' "$GP/tasks/2099-01-17-wtnopane.md" \
@@ -1077,7 +1078,7 @@ grep -q 'wtest:mine' "$PRES/qwbuddy/config.sh" \
 MIG="$TMP/migproj"; mkdir -p "$MIG/qwbuddy"
 echo '{}' > "$MIG/qwbuddy/config.json"
 migout="$(bash "$ROOT/bin/qwb-init.sh" "$MIG" 2>&1)"
-printf '%s' "$migout" | grep -q '旧版' && ok "init 对旧版 JSON 配置打迁移提示" || bad "init 未打迁移提示"
+grep -q '旧版' <<<"$migout" && ok "init 对旧版 JSON 配置打迁移提示" || bad "init 未打迁移提示"
 assert_file "$MIG/qwbuddy/config.sh"
 
 echo "== 21. G3：旧配置文件名仅允许见于 qwb-init.sh 迁移逻辑，且为可读字面量 =="
@@ -1173,26 +1174,26 @@ bash "$ROOT/bin/qwb-test.sh" fast --project "$ROOT" >/dev/null 2>&1 \
 # 门命令覆盖：往临时项目配置追加可用门
 printf 'QWB_GATE_FAST="echo fastgate-ok"\nQWB_GATE_FULL="exit 7"\n' >> "$TMP/qwbuddy/config.sh"
 out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$TMP" 2>&1)"; rc=$?
-[[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q 'fastgate-ok' \
+[[ "$rc" -eq 0 ]] && grep -q 'fastgate-ok' <<<"$out" \
   && ok "fast 门原样转发输出且退出 0" || bad "fast 门输出/退出码不对（rc=${rc}）"
 out="$(bash "$ROOT/bin/qwb-test.sh" full --project "$TMP" 2>&1)"; rc=$?
 [[ "$rc" -eq 7 ]] && ok "full 门失败退出码透传（7）" || bad "退出码未透传（rc=${rc}，应 7）"
-printf '%s' "$out" | grep -qF '门失败（full）：exit 7 退出码=7' \
+grep -qF '门失败（full）：exit 7 退出码=7' <<<"$out" \
   && ok "门失败行格式正确且到 stderr/输出可见" || bad "缺「门失败（full）：…退出码=7」行"
 # qwb.config.sh 回退（无 qwbuddy/ 的母本仓形态）
 FB="$TMP/fallback"; mkdir -p "$FB"
 printf 'QWB_GATE_FAST="echo fb-fast-ok"\n' > "$FB/qwb.config.sh"
 out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$FB" 2>&1)"; rc=$?
-[[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q 'fb-fast-ok' \
+[[ "$rc" -eq 0 ]] && grep -q 'fb-fast-ok' <<<"$out" \
   && ok "无 qwbuddy/ 时回退 qwb.config.sh" || bad "qwb.config.sh 回退失效（rc=${rc}）"
 # 优先级：qwbuddy/config.sh 先于 qwb.config.sh
 mkdir -p "$FB/qwbuddy"; printf 'QWB_GATE_FAST="echo qwbuddy-wins"\n' > "$FB/qwbuddy/config.sh"
 out="$(bash "$ROOT/bin/qwb-test.sh" fast --project "$FB" 2>&1)"
-printf '%s' "$out" | grep -q 'qwbuddy-wins' \
+grep -q 'qwbuddy-wins' <<<"$out" \
   && ok "qwbuddy/config.sh 优先于 qwb.config.sh" || bad "配置优先级不对"
 # 未声明门：报错并给出正确写法
 out="$(bash "$ROOT/bin/qwb-test.sh" full --project "$FB" 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'QWB_GATE_FULL' && printf '%s' "$out" | grep -q 'QWB_GATE_FULL="bash tests/smoke.sh'; } \
+{ [[ "$rc" -ne 0 ]] && grep -q 'QWB_GATE_FULL' <<<"$out" && grep -q 'QWB_GATE_FULL="bash tests/smoke.sh' <<<"$out"; } \
   && ok "未声明门时报错并给出声明写法" || bad "未声明门处理不对（rc=${rc}）"
 # 无配置项目：报错
 MT="$TMP/empty-proj"; mkdir -p "$MT"
@@ -1381,7 +1382,7 @@ grep -q '自证' "$TMP/qwbuddy/roles/执行者.md" && grep -q '契约校验' "$T
 
 echo "== 25. C：qwb-lint.sh 自身 lint =="
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
-[[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
+[[ "$rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lintout" \
   && ok "母本仓 lint 全过（LINT PASS）" || { bad "母本仓 lint FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
 npass="$(printf '%s' "$lintout" | grep -c '^PASS' || true)"  # 0 匹配时 grep -c 退出码 1，照同文件写法吞掉
 [[ "$npass" -ge 4 ]] \
@@ -1398,10 +1399,10 @@ printf 'QWB_DEAD_KEY=1\n' > "$BD/qwbuddy/config.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'echo $X你好' > "$BD/qwbuddy/bin/qwb-foo.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$BD" 2>&1)"; rc=$?
 [[ "$rc" -eq 1 ]] && ok "坏项目 lint 退出 1" || bad "坏项目 lint 未失败（rc=${rc}）"
-printf '%s' "$lintout" | grep -q 'qwb-ghost.sh' && ok "检出文档承诺缺失脚本" || bad "未检出缺失脚本"
-printf '%s' "$lintout" | grep -q 'pending' && ok "检出非法 state" || bad "未检出非法 state"
-printf '%s' "$lintout" | grep -q 'QWB_DEAD_KEY' && ok "检出血配置死键" || bad "未检出死键"
-printf '%s' "$lintout" | grep -q 'qwb-foo.sh' && ok "检出 \$VAR+非ASCII 写法" || bad "未检出变量写法"
+grep -q 'qwb-ghost.sh' <<<"$lintout" && ok "检出文档承诺缺失脚本" || bad "未检出缺失脚本"
+grep -q 'pending' <<<"$lintout" && ok "检出非法 state" || bad "未检出非法 state"
+grep -q 'QWB_DEAD_KEY' <<<"$lintout" && ok "检出血配置死键" || bad "未检出死键"
+grep -q 'qwb-foo.sh' <<<"$lintout" && ok "检出 \$VAR+非ASCII 写法" || bad "未检出变量写法"
 
 echo "== 26. D：herdr fixture 契约基线（真实 JSON 路径检查）=="
 for fx in tab-create agent-start agent-prompt agent-wait agent-wait-timeout agent-list pane-run pane-run-error \
@@ -1520,12 +1521,12 @@ printf '# rw\nstate: running\nimplementation-authorized: explicit fixture scope 
 [[ "$(grep -c '^wake:' "$RWF")" == "1" ]] && ok "首轮叫醒写下 wake 行" || bad "首轮未写 wake 行"
 # 指纹未变 + 默认 QWB_REWAKE_MS=1800000 未超期 → 不叫
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
   && bad "未超期却将再叫（兜底误触发）" || ok "指纹未变且未超期→不再叫"
 # 负例：把 wake 时间戳改到 2000 年 → 已超期 → 无任何新账本行也必须再叫（修复前永远跳过）
 sed -i '' 's/^wake: [^[:space:]]*/wake: 2000-01-01T00:00:00Z/' "$RWF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
   && ok "无新行但 wake 已超期→兜底再叫" || bad "无新行且已超期仍跳过（F1 未修）"
 [[ "$(grep -c '^wake:' "$RWF")" == "1" ]] \
   && ok "dry-run 判定将叫醒但不写 wake 行" || bad "dry-run 写了 wake 行"
@@ -1536,12 +1537,12 @@ printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
 rwfp="$(grep '^wake:' "$RWF" | tail -1 | sed -n 's/.*\(fp=[^[:space:]]*\).*/\1/p')"
 printf 'wake: GARBAGE state=running %s\n' "$rwfp" >> "$RWF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
   && ok "wake 时间戳解析失败→按超期叫醒" || bad "坏时间戳被当成未超期跳过"
 # 负例：QWB_REWAKE_MS=0 → 关闭兜底，超期/坏时间戳都不再叫
 printf 'QWB_REWAKE_MS=0\n' >> "$TMP/qwbuddy/config.sh"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-23-rewake' \
+grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
   && bad "QWB_REWAKE_MS=0 仍兜底再叫" || ok "QWB_REWAKE_MS=0 关闭兜底重叫"
 
 echo "== 28. F2 回归：派发记账不得丢工人并发追加 =="
@@ -1633,7 +1634,7 @@ ES="$TMP/esproj"; mkdir -p "$ES"; bash "$ROOT/bin/qwb-init.sh" "$ES" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$ES/qwbuddy/config.sh"
 printf '# t\nstate: \n' > "$ES/tasks/2099-01-26-emptystate.md"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ES" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '空值'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '空值' <<<"$lintout"; } \
   && ok "空 state 值 → lint FAIL" || bad "空 state 值 lint 未检出（rc=${rc}）"
 # 对照：无 state 字段的纯文档不算任务书 → 不因它 FAIL
 rm "$ES/tasks/2099-01-26-emptystate.md"; printf '# lessons\n' > "$ES/tasks/lessons.md"
@@ -1644,23 +1645,23 @@ EK="$TMP/ekproj"; mkdir -p "$EK"; bash "$ROOT/bin/qwb-init.sh" "$EK" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_UNUSED_KEY=1\nQWB_COMMENT_ONLY=1\n' >> "$EK/qwbuddy/config.sh"
 printf '%s\n' '#!/usr/bin/env bash' '# 只在注释里提到 QWB_COMMENT_ONLY，不算读取' > "$EK/qwbuddy/bin/qwb-note.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$EK" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_UNUSED_KEY'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q 'QWB_UNUSED_KEY' <<<"$lintout"; } \
   && ok "export 形式死键 → lint FAIL" || bad "export 形式死键未检出（rc=${rc}）"
-printf '%s' "$lintout" | grep -q 'QWB_COMMENT_ONLY' \
+grep -q 'QWB_COMMENT_ONLY' <<<"$lintout" \
   && ok "仅注释引用仍算死键" || bad "仅注释引用被当成已读取"
 # 30c：非 qwb- 前缀脚本里的 $VAR+非ASCII 写法 → FAIL（修复前只扫 qwb-*.sh）
 HX="$TMP/hxproj"; mkdir -p "$HX"; bash "$ROOT/bin/qwb-init.sh" "$HX" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HX/qwbuddy/config.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$X你好"' > "$HX/qwbuddy/bin/helper.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$HX" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'helper.sh'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q 'helper.sh' <<<"$lintout"; } \
   && ok "非 qwb- 脚本的 \$VAR+非ASCII → lint FAIL" || bad "helper.sh 非ASCII 写法未检出（rc=${rc}）"
 
 echo "== 31. M1：验收场景门（派发前必须有场景 + 失败路径 + 冻结指纹）=="
 # 31a 负例：无场景块的任务书 → 派发必须被拒且提示补场景
 NSF="$TMP/tasks/2099-01-31-noscen.md"; printf '# ns\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$NSF"
 nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task noscen --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '补验收场景'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '补验收场景' <<<"$nout"; } \
   && ok "无场景任务书派发被拒（rc=${nrc}）" || bad "无场景任务书竟派发成功（M1 未修，rc=${nrc}）"
 grep -q '^dispatch:' "$NSF" && bad "被拒任务书仍写了 dispatch 行" || ok "被拒任务书无 dispatch 行"
 # 31b 负例：只有 happy path（无失败路径标记）→ 同样拒绝
@@ -1683,7 +1684,7 @@ When  动作二
 Then  也成功
 EOF
 nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-run.sh --task happyonly --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '失败路径'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '失败路径' <<<"$nout"; } \
   && ok "无失败路径场景的任务书被拒（rc=${nrc}）" || bad "只有 happy path 竟派发成功（rc=${nrc}）"
 # 31c 正例 + 冻结指纹：装好且门已声明的独立项目里派发 → scenarios-fp 写入
 MP="$TMP/mproj"; mkdir -p "$MP"; bash "$ROOT/bin/qwb-init.sh" "$MP" >/dev/null
@@ -1716,7 +1717,7 @@ lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MP" 2>&1)"; rc=$?
 # 31d 负例：派发后改场景块 → lint 必须 FAIL
 sed -i '' 's/拒绝执行/放行执行/' "$MPT"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MP" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '派发后被改动'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '派发后被改动' <<<"$lintout"; } \
   && ok "派发后改场景块 → lint FAIL（冻结生效）" || bad "派发后改场景 lint 未检出（M1 未修，rc=${rc}）"
 
 echo "== 32. M6：默认派发进隔离副本（不给参数 ≠ 落项目根）=="
@@ -1767,14 +1768,14 @@ echo "== 33. M5：整装默认门与入口 =="
 MI="$TMP/minst"; mkdir -p "$MI"; bash "$ROOT/bin/qwb-init.sh" "$MI" >/dev/null
 # 负例：新装项目门未声明 → qwb-test.sh fast 非 0（不是 127、不是 0）且打印声明提示
 mout="$(bash "$MI/qwbuddy/bin/qwb-test.sh" fast --project "$MI" 2>&1)"; mrc=$?
-{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && printf '%s' "$mout" | grep -q '尚未声明质量门'; } \
+{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && grep -q '尚未声明质量门' <<<"$mout"; } \
   && ok "新装项目 fast 门：rc=${mrc} 且提示尚未声明质量门" || bad "新装项目 fast 门行为不对（rc=${mrc}）"
 mout="$(bash "$MI/qwbuddy/bin/qwb-test.sh" full --project "$MI" 2>&1)"; mrc=$?
-{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && printf '%s' "$mout" | grep -q '尚未声明质量门'; } \
+{ [[ "$mrc" -ne 0 && "$mrc" -ne 127 ]] && grep -q '尚未声明质量门' <<<"$mout"; } \
   && ok "新装项目 full 门：rc=${mrc} 且提示尚未声明质量门" || bad "新装项目 full 门行为不对（rc=${mrc}）"
 # 负例：门未声明的项目跑 lint → FAIL（提醒配门，不许静默当绿）
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MI" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '质量门未声明'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '质量门未声明' <<<"$lintout"; } \
   && ok "门未声明 → lint FAIL" || bad "门未声明 lint 竟 PASS（rc=${rc}）"
 # 声明后恢复 → lint 过（对照）
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$MI/qwbuddy/config.sh"
@@ -1783,7 +1784,7 @@ bash "$ROOT/bin/qwb-lint.sh" --project "$MI" >/dev/null 2>&1 \
 # 负例：历史残留的安装副本被执行 → 清晰提示母本仓，不得假装修装
 cp "$ROOT/bin/qwb-init.sh" "$MI/qwbuddy/bin/qwb-init.sh"
 mout="$(bash "$MI/qwbuddy/bin/qwb-init.sh" "$MI" 2>&1)"; mrc=$?
-{ [[ "$mrc" -ne 0 ]] && printf '%s' "$mout" | grep -q '母本仓'; } \
+{ [[ "$mrc" -ne 0 ]] && grep -q '母本仓' <<<"$mout"; } \
   && ok "安装副本里的 qwb-init.sh 被执行 → 拒绝并提示母本仓" || bad "安装副本 init 行为不对（rc=${mrc}）"
 
 echo "== 34. R2-M2：坏 fixture 必须喂给真实运行路径（不只测测试内 jpath）=="
@@ -1859,7 +1860,7 @@ fp2="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$MPT" | head -1 | tr -d '[:spac
 sed -i '' 's/拒绝执行/放行执行/' "$MPT"
 : > "$STUBLOG"
 nout="$( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '派发后被改动' <<<"$nout"; } \
   && ok "改场景后再次派发被拒（rc=${nrc}）" || bad "改场景后再次派发竟放行（rc=${nrc}）"
 { ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
   && ok "被拒未触达 herdr（无 tab create / agent start）" || bad "被拒仍触达 herdr"
@@ -1891,7 +1892,7 @@ EOF
   && ok "mscen2 首次派发成功" || bad "mscen2 首次派发被拒"
 sed -i '' '/^scenarios-fp:/d' "$MPT2"   # 模拟新制任务丢基线
 nout="$( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen2 --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '冻结基线'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '冻结基线' <<<"$nout"; } \
   && ok "删基线留 dispatch → 再派发被拒" || bad "删基线留 dispatch 竟放行（rc=${nrc}）"
 ( cd "$MP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:mp bash "$MP/qwbuddy/bin/qwb-run.sh" --task mscen2 --worker codex --here --accept-new-scenarios ) >/dev/null \
   && ok "--accept-new-scenarios 允许重建基线" || bad "--accept-new-scenarios 仍被拒"
@@ -1904,12 +1905,12 @@ printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_AUDIT_UNUSED=1\n'
 # 假引用 1：只打印字面量（无 $）→ 仍须判死键
 printf '%s\n' '#!/usr/bin/env bash' 'echo QWB_AUDIT_UNUSED' > "$LK/qwbuddy/bin/helper.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$LK" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_AUDIT_UNUSED'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q 'QWB_AUDIT_UNUSED' <<<"$lintout"; } \
   && ok "echo 字面量不算读取 → lint FAIL" || bad "echo 字面量被当成读取（R2-M3 未修，rc=${rc}）"
 # 假引用 2：纯赋值 → 仍须判死键
 printf '%s\n' '#!/usr/bin/env bash' 'QWB_AUDIT_UNUSED=2' > "$LK/qwbuddy/bin/helper.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$LK" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q 'QWB_AUDIT_UNUSED'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q 'QWB_AUDIT_UNUSED' <<<"$lintout"; } \
   && ok "纯赋值不算读取 → lint FAIL" || bad "纯赋值被当成读取（R2-M3 未修，rc=${rc}）"
 # 对照：真读取 → lint 过
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$QWB_AUDIT_UNUSED"' > "$LK/qwbuddy/bin/helper.sh"
@@ -1959,7 +1960,7 @@ printf 'blocked: spec-defect: §2 要求零外部依赖但 §4 又要求 python3
 sg_lines_before="$(wc -l < "$SGT" | tr -d ' ')"
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q 'spec-defect' && printf '%s' "$nout" | grep -q 'spec-resolved'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q 'spec-defect' <<<"$nout" && grep -q 'spec-resolved' <<<"$nout"; } \
   && ok "未决疑点拒绝派发且报错含疑点原文与处置指引（rc=${nrc}）" || bad "未决疑点未拦住派发（rc=${nrc}）"
 [[ ! -e "$SG/.worktrees/sdgate" ]] && ok "被拒未创建 worktree" || bad "被拒仍创建了 worktree"
 { ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG"; } \
@@ -1972,7 +1973,7 @@ nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/
 printf 'done: 工人自述已修复\nworking: 继续下一阶段\n' >> "$SGT"
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q 'spec-defect'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q 'spec-defect' <<<"$nout"; } \
   && ok "普通 done:/working: 行不解除疑点，仍拒绝（rc=${nrc}）" || bad "普通状态行竟解除了疑点（rc=${nrc}）"
 # 38c：主控追加有效 spec-resolved → 放行派发
 printf 'working: spec-resolved: spec；逐项回应：删 §4 的 python3 要求，证据：tests 里仅 smoke.sh 用它；改票位置：§4\n' >> "$SGT"
@@ -1985,7 +1986,7 @@ grep -q '^dispatch:' "$SGT" && grep -q '^scenarios-fp:' "$SGT" \
 printf 'blocked: spec-defect: 新疑点：§3 验收门命令与 §5 重复且不一致\n' >> "$SGT"
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sdgate --worker codex 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '新疑点'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '新疑点' <<<"$nout"; } \
   && ok "处置后新疑点重新拦截（rc=${nrc}）" || bad "新疑点未重新拦截（rc=${nrc}）"
 [[ "$(grep -c '^dispatch:' "$SGT")" == "1" ]] && ok "重新拦截未追加 dispatch" || bad "重新拦截仍写了 dispatch"
 printf 'done: 二轮收尾自述\n' >> "$SGT"   # 给 39a 制造「疑点被普通日志遮住」的形态
@@ -1994,9 +1995,9 @@ echo "== 39. SDG② 显示与唤醒：status 标出被遮住的疑点；值守�
 # 39a：疑点之后有普通日志（done:）→ status 仍要标出未处理，不被遮住
 # （status 走 stub herdr：本节只断言账本判定，不依赖真机 herdr 服务器的响应速度）
 out="$( cd "$SG" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '规格疑点未处理' \
+grep -q '规格疑点未处理' <<<"$out" \
   && ok "status 对未决疑点标「规格疑点未处理」" || bad "status 未标未决疑点"
-{ printf '%s' "$out" | grep -q '最近: done: 二轮收尾自述' && printf '%s' "$out" | grep -q '新疑点'; } \
+{ grep -q '最近: done: 二轮收尾自述' <<<"$out" && grep -q '新疑点' <<<"$out"; } \
   && ok "疑点被后续 done: 遮不住（最近行与疑点行同显）" || bad "疑点被后续普通日志遮住"
 # 39b：对照——最后相关事件是 spec-resolved 的票不标
 SG2="$TMP/specgate2"; mkdir -p "$SG2"
@@ -2004,18 +2005,18 @@ bash "$ROOT/bin/qwb-init.sh" "$SG2" >/dev/null
 printf '# sgres\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nblocked: spec-defect: 旧疑点\nworking: spec-resolved: spec；已改票\ndone: 完成\n' \
   > "$SG2/tasks/2099-01-51-sgres.md"
 out="$( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '规格疑点未处理' \
+grep -q '规格疑点未处理' <<<"$out" \
   && bad "已处置疑点仍被标未处理" || ok "对照：spec-resolved 后不再标未处理"
 # 39c：现有值守接收 blocked: spec-defect 行——它是 blocked 状态行，改变进展指纹 → 叫醒主控
 SGW="$SG2/tasks/2099-01-52-sgwake.md"
 printf '# sgwake\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: 工人开工\n' > "$SGW"
 ( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
 out="$( cd "$SG2" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
-printf '%s' "$out" | grep -q '跳过.*sgwake' \
+grep -q '跳过.*sgwake' <<<"$out" \
   && ok "对照：进展未变值守跳过" || bad "进展未变仍要叫（对照失败）"
 printf 'blocked: spec-defect: §2 条款冲突；值守应把主控叫回来处置\n' >> "$SGW"
 out="$( cd "$SG2" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once 2>&1 )"
-printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-52-sgwake' \
+grep -q '未结项（将叫醒）: 2099-01-52-sgwake' <<<"$out" \
   && ok "blocked: spec-defect 行改变进展指纹 → 值守将叫醒主控" || bad "值守没接住 spec-defect 行"
 
 echo "== 40. SDG③ 显式修订：无痕改仍拒；revise 留痕且过 lint；空原因/无旧指纹/写入失败不派发 =="
@@ -2046,16 +2047,16 @@ oldfp="$(sed -n 's/^scenarios-fp:[[:space:]]*//p' "$SGR" | head -1 | tr -d '[:sp
 sed -i '' 's/拒绝/放行/' "$SGR"
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动' && printf '%s' "$nout" | grep -q 'revise-scenarios'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '派发后被改动' <<<"$nout" && grep -q 'revise-scenarios' <<<"$nout"; } \
   && ok "无痕改场景再派发被拒且指向显式修订通道（rc=${nrc}）" || bad "无痕改场景竟放行（rc=${nrc}）"
 [[ "$(grep -c '^dispatch:' "$SGR")" == "1" ]] && ok "无痕改被拒未追加 dispatch" || bad "无痕改被拒仍追加 dispatch"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '派发后被改动'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '派发后被改动' <<<"$lintout"; } \
   && ok "无痕改场景 lint FAIL（指纹不一致）" || bad "lint 未检出无痕改（rc=${rc}）"
 # 40a2：处置结论不授权绕过指纹检查——加了 spec-resolved 也过不了
 printf 'working: spec-resolved: spec；想以此放行改过的场景\n' >> "$SGR"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '派发后被改动'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '派发后被改动' <<<"$nout"; } \
   && ok "spec-resolved 不授权绕过指纹检查（仍拒，rc=${nrc}）" || bad "spec-resolved 竟当成改场景许可（rc=${nrc}）"
 # 40b：显式修订 → 更新基线 + 留痕（旧新指纹）+ 派发成功 + lint 通过
 ( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here \
@@ -2068,12 +2069,12 @@ grep -q "^working: scenarios-revised: old=${oldfp} new=${newfp} reason=主控修
   && ok "修订记录保留旧新指纹与原因（scenarios-revised 留痕）" || bad "修订记录缺失或不完整"
 [[ "$(grep -c '^dispatch:' "$SGR")" == "2" ]] && ok "修订后正常追加第二条 dispatch" || bad "修订后 dispatch 行数异常"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lintout"; } \
   && ok "显式修订后 lint 通过（最新记录 new= 与基线一致）" || { bad "修订后 lint 仍 FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
 # 40b2：最新一条修订记录的 new= 与当前基线不一致（伪造/错配）→ lint 必须 FAIL（2.5 第二半：记录核对）
 printf 'working: scenarios-revised: old=%s new=0000000000000000000000000000000000000000 reason=伪造记录演练\n' "$newfp" >> "$SGR"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$SG" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$lintout" | grep -q '最新修订记录'; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '最新修订记录' <<<"$lintout"; } \
   && ok "最新修订记录 new= 与基线错配 → lint FAIL" || bad "修订记录 new= 错配竟过 lint（rc=${rc}）"
 sed -i '' '$d' "$SGR"   # 撤掉伪造记录，恢复「最新记录 == 基线」
 bash "$ROOT/bin/qwb-lint.sh" --project "$SG" >/dev/null 2>&1 \
@@ -2082,7 +2083,7 @@ bash "$ROOT/bin/qwb-lint.sh" --project "$SG" >/dev/null 2>&1 \
 sed -i '' 's/放行/拒绝并报错/' "$SGR"
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev --worker codex --here --revise-scenarios= 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '原因不能为空'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '原因不能为空' <<<"$nout"; } \
   && ok "空原因拒绝派发（rc=${nrc}）" || bad "空原因竟放行（rc=${nrc}）"
 [[ "$(grep -c '^working:[[:space:]]*scenarios-revised:' "$SGR")" == "1" ]] \
   && ok "空原因未留修订记录" || bad "空原因仍写了修订记录"
@@ -2135,14 +2136,14 @@ EOF
 : > "$STUBLOG"
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev-nofp --worker codex --here \
     --revise-scenarios="想直接建基线" 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '旧指纹'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '旧指纹' <<<"$nout"; } \
   && ok "无旧指纹拒绝修订派发（rc=${nrc}）" || bad "无旧指纹竟接受修订（rc=${nrc}）"
 { ! grep -q '^dispatch:' "$SGR2" && ! grep -q '^scenarios-revised:' "$SGR2"; } \
   && ok "无旧指纹路径零副作用" || bad "无旧指纹路径留了副作用"
 # 40f：修订与 --accept-new-scenarios 互斥
 nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/qwb-run.sh --task sgrev-nofp --worker codex --here \
     --revise-scenarios="x" --accept-new-scenarios 2>&1 )"; nrc=$?
-{ [[ "$nrc" -ne 0 ]] && printf '%s' "$nout" | grep -q '互斥'; } \
+{ [[ "$nrc" -ne 0 ]] && grep -q '互斥' <<<"$nout"; } \
   && ok "修订与 --accept-new-scenarios 互斥（rc=${nrc}）" || bad "两个修订参数竟混用（rc=${nrc}）"
 
 echo "== 41. SDG④ 隔离副本幂等：返工/修订后再派不撞已存在；脏目录拒绝（验收报回的主路径）=="
@@ -2175,19 +2176,19 @@ sgrun --task sgidem --worker codex >/dev/null 2>&1 && ok "首次派发成功" ||
 [[ "$(wt_count)" == "1" ]] && ok "首次派发后该任务恰一份 worktree" || bad "首次派发后 worktree 份数=$(wt_count)"
 # 41a：返工再派（无修订）必须成功且复用同一份副本——验收报的 rc=1 路径
 out="$(sgrun --task sgidem --worker codex 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q '复用既有隔离副本' <<<"$out"; } \
   && ok "返工再派发成功且复用既有副本（rc=${rc}）" || { bad "返工再派发失败（rc=${rc}）"; printf '%s\n' "$out" >&2; }
 [[ "$(wt_count)" == "1" ]] && ok "复派后仍恰一份 worktree（复用非重建）" || bad "复派后 worktree 份数=$(wt_count)"
 [[ "$(grep -c '^dispatch:' "$SGI")" == "2" ]] && ok "复派追加第二条 dispatch" || bad "复派 dispatch 行数=$(grep -c '^dispatch:' "$SGI")"
 # 41a2：显式 --create-worktree 同样幂等
 out="$(sgrun --task sgidem --worker codex --create-worktree 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q '复用既有隔离副本' <<<"$out"; } \
   && ok "--create-worktree 同样幂等（rc=${rc}）" || { bad "--create-worktree 非幂等（rc=${rc}）"; printf '%s\n' "$out" >&2; }
 [[ "$(wt_count)" == "1" ]] && ok "--create-worktree 后仍恰一份 worktree" || bad "--create-worktree 后份数=$(wt_count)"
 # 41b：改场景 → 显式修订 → 继续派发（端到端，正是验收失败的那条路）
 sed -i '' 's/Then  建隔离副本/Then  复用隔离副本/' "$SGI"
 out="$(sgrun --task sgidem --worker codex --revise-scenarios="主控修订：结果措辞细化（依据本票 §1 场景条款）" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用既有隔离副本'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q '复用既有隔离副本' <<<"$out"; } \
   && ok "改场景后 --revise-scenarios 继续派发成功（端到端，rc=${rc}）" || { bad "改场景后修订派发失败（rc=${rc}）"; printf '%s\n' "$out" >&2; }
 [[ "$(grep -c '^dispatch:' "$SGI")" == "4" ]] && ok "修订后追加第四条 dispatch" || bad "修订后 dispatch 行数=$(grep -c '^dispatch:' "$SGI")"
 [[ "$(wt_count)" == "1" ]] && ok "全程该任务只有一份 worktree（无重复登记）" || bad "worktree 重复登记：$(wt_count)"
@@ -2213,7 +2214,7 @@ EOF
 mkdir -p "$SG3/.worktrees/sgdirty"; printf 'junk\n' > "$SG3/.worktrees/sgdirty/README.junk"
 : > "$STUBLOG"
 out="$(sgrun --task sgdirty --worker codex 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '有效 git worktree' && printf '%s' "$out" | grep -q 'rm -rf'; } \
+{ [[ "$rc" -ne 0 ]] && grep -q '有效 git worktree' <<<"$out" && grep -q 'rm -rf' <<<"$out"; } \
   && ok "普通脏目录 → 拒绝并提示清理（rc=${rc}）" || bad "脏目录未被拒或未提示清理（rc=${rc}）"
 { ! grep -q '^dispatch:' "$SG5" && [[ -f "$SG3/.worktrees/sgdirty/README.junk" ]] && ! grep -q 'tab create' "$STUBLOG"; } \
   && ok "脏目录路径零副作用（未派发/未删目录/未触达 herdr）" || bad "脏目录路径有副作用"
@@ -2221,7 +2222,7 @@ out="$(sgrun --task sgdirty --worker codex 2>&1)"; rc=$?
 rm -rf "$SG3/.worktrees/sgidem"; mkdir -p "$SG3/.worktrees/sgidem"
 : > "$STUBLOG"
 out="$(sgrun --task sgidem --worker codex 2>&1)"; rc=$?
-[[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '有效 git worktree' \
+[[ "$rc" -ne 0 ]] && grep -q '有效 git worktree' <<<"$out" \
   && ok "已登记但目录被换掉的残留 → 拒绝（rc=${rc}）" || bad "残留目录被盲目复用（rc=${rc}）"
 [[ "$(grep -c '^dispatch:' "$SGI")" == "4" ]] && ok "残留拒绝后未追加 dispatch" || bad "残留拒绝后仍派发"
 
@@ -2280,7 +2281,7 @@ grep -q 'pane=w93:p7' "$ENSP/qwbuddy/.watch" && ok "ensure 写了 .watch 身份�
 # 42b 幂等：值守进程活着 → 再 ensure 复用，不新建
 mk_plist "$DYN/pane-list.json" "w93:p7" "w93:p1,agent"   # stub 的 pane run 已把 proc-w93p7 写成 wake 形
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c 'tab create' "$STUBLOG")" == "1" ]] && printf '%s' "$out" | grep -q '复用'; } \
+{ [[ "$rc" -eq 0 ]] && [[ "$(grep -c 'tab create' "$STUBLOG")" == "1" ]] && grep -q '复用' <<<"$out"; } \
   && ok "重复 ensure 复用不新建（rc=${rc}）" || { bad "重复 ensure 行为不对（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 
 # 42c 负例：值守退出 shell 仍在 → 同 pane 重启（不新开 tab），且此前 status 不得报运行
@@ -2290,7 +2291,7 @@ mk_plist "$DYN/pane-list.json" "w93:p7"
 mk_get w93:p7 "$ENSP"; mk_proc w93:p7 shell "$ENSP"
 sout="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" \
   HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl bash qwbuddy/bin/qwb-status.sh )"
-printf '%s' "$sout" | grep -q '值守：未运行' \
+grep -q '值守：未运行' <<<"$sout" \
   && ok "值守退出 shell 仍在 → status 报未运行（不报运行）" || { bad "status 把活 pane 当成值守健康"; printf '%s\n' "$sout"; }
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 { [[ "$rc" -eq 0 ]] && [[ "$(grep -c 'tab create' "$STUBLOG")" == "0" ]] && grep -q 'pane run w93:p7' "$STUBLOG"; } \
@@ -2323,7 +2324,7 @@ printf 'pane=w8Z:pZ workspace=w8Z pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w8Z:pZ@w8Z" "w93:p1,agent"
 mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'w8Z' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run w8Z:pZ' "$STUBLOG"; } \
   && ok "登记 pane 属别的 workspace → 拒绝不认领（rc=${rc}）" \
   || { bad "跨 workspace 竟认领/重启（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
@@ -2334,14 +2335,14 @@ mk_plist "$DYN/pane-list.json" "w8Z:pZ1" "w8Z:pZ2"
 mk_get w8Z:pZ1 "$ENSP" "" w8Z; mk_proc w8Z:pZ1 wake "$ENSP"
 mk_get w8Z:pZ2 "$ENSP" "" w8Z; mk_proc w8Z:pZ2 wake "$ENSP"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z:pZ1' && printf '%s' "$out" | grep -q 'w8Z:pZ2' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'w8Z:pZ1' <<<"$out" && grep -q 'w8Z:pZ2' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
   && ok "双值守实例 → 报错且零副作用（rc=${rc}）" || { bad "双实例未拦住（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 
 # 42h 负例：无 Herdr 上下文（两 env 皆无）→ 明确拒绝
 out="$( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" env -u HERDR_WORKSPACE_ID -u HERDR_PANE_ID \
     bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'herdr'; } \
+{ [[ "$rc" -ne 0 ]] && grep -qi 'herdr' <<<"$out"; } \
   && ok "无 Herdr 上下文 → 拒绝（rc=${rc}）" || bad "无上下文竟执行（rc=${rc}）"
 # 42h2 正例变体：只有 HERDR_PANE_ID 时从 pane get 推导 workspace
 ensreset
@@ -2375,38 +2376,38 @@ ensreset
 printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w93:p7"; mk_get w93:p7 "$ENSP"; mk_proc w93:p7 wake "$ENSP"
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：tab' && printf '%s' "$out" | grep -q 'w93:p7'; } \
+{ grep -q '值守：tab' <<<"$out" && grep -q 'w93:p7' <<<"$out"; } \
   && ok "status 值守显示运行+pane" || { bad "status 未显示运行"; printf '%s\n' "$out"; }
 # 43b 进程退出、shell 仍在 → 未运行（不得只凭 pane 存在报健康）
 mk_proc w93:p7 shell "$ENSP"
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：未运行' && printf '%s' "$out" | grep -qi '退出\|不在'; } \
+{ grep -q '值守：未运行' <<<"$out" && grep -qi '退出\|不在' <<<"$out"; } \
   && ok "pane 在进程不在 → 未运行" || { bad "进程不在仍报运行"; printf '%s\n' "$out"; }
 # 43c 登记 pane 已不存在 → 未运行
 rm -f "$DYN/get-$(wsan w93:p7).json" "$DYN/proc-$(wsan w93:p7).json"
 out="$(statrun)"
-printf '%s' "$out" | grep -q '值守：未运行' \
+grep -q '值守：未运行' <<<"$out" \
   && ok "登记 pane 消失 → 未运行" || { bad "pane 消失仍报非未运行"; printf '%s\n' "$out"; }
 # 43d 登记 pane 被其他进程占用 → 未运行
 mk_get w93:p7 "$ENSP"; mk_proc w93:p7 busy "$ENSP"
 out="$(statrun)"
-printf '%s' "$out" | grep -q '值守：未运行' \
+grep -q '值守：未运行' <<<"$out" \
   && ok "pane 被占用 → 未运行" || { bad "占用 pane 报非未运行"; printf '%s\n' "$out"; }
 # 43e 无登记但扫到活的本项目值守（手工启动）→ 运行 + 标明未登记
 rm -f "$ENSP/qwbuddy/.watch"
 mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w93:p1,agent"; mk_get w8Z:pZ "$ENSP" "" w8Z; mk_proc w8Z:pZ wake "$ENSP"
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：tab' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
+{ grep -q '值守：tab' <<<"$out" && grep -q 'w8Z:pZ' <<<"$out"; } \
   && ok "未登记值守被扫到 → 运行" || { bad "未登记值守漏检"; printf '%s\n' "$out"; }
 # 43f 无登记也扫不到 → 未运行
 ensreset
 mk_plist "$DYN/pane-list.json" "w93:p1,agent"
 out="$(statrun)"
-printf '%s' "$out" | grep -q '值守：未运行' \
+grep -q '值守：未运行' <<<"$out" \
   && ok "无记录无进程 → 未运行" || { bad "空值守未报未运行"; printf '%s\n' "$out"; }
 # 43g 无 herdr → 未知（不许静默报未运行）
 out="$(SPATH_OVERRIDE="/usr/bin:/bin" statrun)"
-printf '%s' "$out" | grep -q '值守：未知' \
+grep -q '值守：未知' <<<"$out" \
   && ok "无 herdr → 值守状态未知" || { bad "无 herdr 未报未知"; printf '%s\n' "$out"; }
 # 43h 登记 pane 存在但进程查询失败 → 未知
 ensreset
@@ -2414,7 +2415,7 @@ printf 'pane=w93:p7 workspace=wtestW pid=111 started=x\n' > "$ENSP/qwbuddy/.watc
 mk_plist "$DYN/pane-list.json" "w93:p7"; mk_get w93:p7 "$ENSP"
 printf '{"error":{"code":"io_error","message":"mocked proc failure"}}\n' > "$DYN/proc-$(wsan w93:p7).err"
 out="$(statrun)"
-printf '%s' "$out" | grep -q '值守：未知' \
+grep -q '值守：未知' <<<"$out" \
   && ok "进程查询失败 → 未知" || { bad "查询失败未报未知"; printf '%s\n' "$out"; }
 
 echo "== 44. --pane 复用先核对 cwd 与 pane 状态（派发副作用前拒）=="
@@ -2438,7 +2439,7 @@ mk_get w8Z:pY "/somewhere/else"; mk_proc w8Z:pY shell "/somewhere/else"
 dbefore="$(grep -c '^dispatch:' "$DISP")"; : > "$STUBLOG"
 out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
     bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'cwd' && printf '%s' "$out" | grep -q 'cd ' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'cwd' <<<"$out" && grep -q 'cd ' <<<"$out" \
    && [[ "$(grep -c '^dispatch:' "$DISP")" == "$dbefore" ]] \
    && ! grep -q 'agent start' "$STUBLOG"; } \
   && ok "--pane cwd 不符 → 拒派+给 cd 修复步骤+零副作用（rc=${rc}）" || { bad "cwd 不符竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
@@ -2447,20 +2448,20 @@ rm -f "$DYN/get-$(wsan w8Z:pY).json"
 dbefore="$(grep -c '^dispatch:' "$DISP")"
 out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
     bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '无法确认\|不存在' \
+{ [[ "$rc" -ne 0 ]] && grep -qi '无法确认\|不存在' <<<"$out" \
    && [[ "$(grep -c '^dispatch:' "$DISP")" == "$dbefore" ]]; } \
   && ok "--pane 不可查询 → 拒派（rc=${rc}）" || { bad "pane 不存在竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
 # 44d 负例：pane 前台有进程在跑（非空闲 shell）→ 拒派
 mk_get w8Z:pY "$PDIR"; mk_proc w8Z:pY busy "$PDIR"
 out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
     bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '占用\|非空闲\|进程'; } \
+{ [[ "$rc" -ne 0 ]] && grep -qi '占用\|非空闲\|进程' <<<"$out"; } \
   && ok "--pane 前台非空闲 → 拒派（rc=${rc}）" || { bad "忙 pane 竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
 # 44e 负例：pane 里跑着 agent TUI → 拒派（不往 TUI 发命令）
 mk_get w8Z:pY "$PDIR" devin; mk_proc w8Z:pY busy "$PDIR"
 out="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_PANE_ID=wtest:ctl \
     bash qwbuddy/bin/qwb-run.sh --task 2099-01-02-disp --worker codex --here --pane w8Z:pY 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'agent'; } \
+{ [[ "$rc" -ne 0 ]] && grep -qi 'agent' <<<"$out"; } \
   && ok "--pane 跑着 agent → 拒派（rc=${rc}）" || { bad "agent pane 竟放行（rc=${rc}）"; printf '%s\n' "$out"; }
 
 echo "== 45. 主控返修：换主控不复用错误目标 / cwd预检不造资源 / 未确认不算成功 =="
@@ -2469,14 +2470,14 @@ ensreset
 mk_plist "$DYN/pane-list.json" "w8Z:pZ@wtestW" "w93:p1,agent"
 mk_get w8Z:pZ "$ENSP" "" wtestW; mk_proc w8Z:pZ wake "$ENSP" "wold:pA"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'wold:pA' && printf '%s' "$out" | grep -q 'wtest:ctl' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'wold:pA' <<<"$out" && grep -q 'wtest:ctl' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG"; } \
   && ok "值守指向旧主控 → 拒绝不复用+给修复步骤（rc=${rc}）" \
   || { bad "指向旧主控竟静默复用（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 # 45a2 反转对照：同一 pane 值守指向本次要求的目标 → 正常复用
 mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用' && ! grep -q 'tab create' "$STUBLOG"; } \
+{ [[ "$rc" -eq 0 ]] && grep -q '复用' <<<"$out" && ! grep -q 'tab create' "$STUBLOG"; } \
   && ok "值守目标一致 → 正常复用（rc=${rc}）" || { bad "目标一致竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 # 45b 负例：候选 pane 查询失败 → 不得忽略失败新开实例
 ensreset
@@ -2523,7 +2524,7 @@ SG3P="$(cd "$SG3" && pwd -P)"
 mk_plist "$DYN/pane-list.json" "w8Z:pY"; mk_get w8Z:pY "$SG3P"; mk_proc w8Z:pY shell "$SG3P"
 sha_before="$(shasum "$SGP" | cut -d' ' -f1)"; : > "$STUBLOG"
 out="$(sgrun --task sgpwt --worker codex --pane w8Z:pY 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'cwd' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'cwd' <<<"$out" \
    && [[ ! -e "$SG3/.worktrees/sgpwt" ]] \
    && ! git -C "$SG3" show-ref --verify --quiet "refs/heads/sgpwt" \
    && ! grep -q 'tab create\|agent start' "$STUBLOG" \
@@ -2547,19 +2548,19 @@ mk_plist "$DYN/pane-list.json" "w8Z:pZ" "w8Z:pQ"
 mk_get w8Z:pZ "$ENSP" "" wtestW; mk_proc w8Z:pZ wake "$ENSP" "wtest:ctl"
 printf '{"error":{"code":"io_error","message":"mocked proc failure"}}\n' > "$DYN/proc-$(wsan w8Z:pQ).err"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi '无法排除\|未知' \
+{ [[ "$rc" -ne 0 ]] && grep -qi '无法排除\|未知' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
-   && ! printf '%s' "$out" | grep -q '复用已'; } \
+   && ! grep -q '复用已' <<<"$out"; } \
   && ok "活实例+查询失败 → ensure 拒绝（不抢先复用，rc=${rc}）" \
   || { bad "混合不确定态竟报成功（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 # 46a2 同一布局下 status 必须明确未知，不保证单实例
 out="$(statrun)"
-{ printf '%s' "$out" | grep -q '值守：未知' && printf '%s' "$out" | grep -q 'w8Z:pZ'; } \
+{ grep -q '值守：未知' <<<"$out" && grep -q 'w8Z:pZ' <<<"$out"; } \
   && ok "活实例+查询失败 → status 明确未知不保证单实例" || { bad "混合态 status 误报（输出见上）"; printf '%s\n' "$out"; }
 # 46b 正例反转：活实例目标一致且无查询失败 → 仍正常复用
 rm -f "$DYN/proc-$(wsan w8Z:pQ).err"; mk_proc w8Z:pQ shell "$ENSP"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '复用'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q '复用' <<<"$out"; } \
   && ok "无查询失败 → 正常复用（rc=${rc}）" || { bad "无失败竟拒绝（rc=${rc}）"; printf '%s\n' "$out"; cat "$STUBLOG"; }
 # 46c 真实 SIGTERM：持锁期间被 TERM → 锁清、退出码非0、下一次 ensure 可用
 ensreset
@@ -2579,7 +2580,7 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 ensreset
 rm -f "$DYN/get-$(wsan wtest:ctl).json"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '不存在' \
+{ [[ "$rc" -ne 0 ]] && grep -q '不存在' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
    && ! grep -q 'pane list' "$STUBLOG" \
    && [[ ! -f "$ENSP/qwbuddy/.watch" ]] && [[ ! -d "$ENSP/qwbuddy/.watch.lock" ]]; } \
@@ -2590,7 +2591,7 @@ ensreset
 mk_get wtest:ctl "$ENSP" "" w8Z   # 目标 pane 属 w8Z，调用者 ws=wtestW
 mk_plist "$DYN/pane-list.json" "w93:p1,agent"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'w8Z' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'w8Z' <<<"$out" \
    && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'pane run' "$STUBLOG" \
    && [[ ! -f "$ENSP/qwbuddy/.watch" ]]; } \
   && ok "目标 pane 异 workspace → 拒绝零副作用（rc=${rc}）" \
@@ -2677,9 +2678,9 @@ mk_launch_task panetimeout
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAILS=99 \
   HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
   QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task panetimeout --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'pane-run 工人检测' \
-   && printf '%s' "$out" | grep -q '超时（300ms）' && printf '%s' "$out" | grep -q 'pane=w93:p7' \
-   && printf '%s' "$out" | grep -q '查 herdr pane read / process-info / agent get'; } \
+{ [[ "$rc" -ne 0 ]] && grep -q 'pane-run 工人检测' <<<"$out" \
+   && grep -q '超时（300ms）' <<<"$out" && grep -q 'pane=w93:p7' <<<"$out" \
+   && grep -q '查 herdr pane read / process-info / agent get' <<<"$out"; } \
   && ok "pane-run 300ms 检测超时给出 pane 与排查命令" || { bad "pane-run 超时输出不对（rc=${rc}）"; printf '%s\n' "$out"; }
 [[ "$(cat "$LMNOW")" -eq 300 ]] && ok "pane-run 超时由假时钟精确推进 300ms" || bad "pane-run 假时钟未停在 300ms"
 { grep -q '^not-sent: .* worker=cmd .* pane=w93:p7 ' "$LM/tasks/2099-02-01-panetimeout.md" \
@@ -2695,8 +2696,8 @@ printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd teleport' 'qwb_worker zco
 mk_launch_task badmode
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task badmode --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'herdr' && printf '%s' "$out" | grep -q 'pane-run' \
-   && ! printf '%s' "$out" | grep -q 'zcodecli-chat' && [[ ! -s "$STUBLOG" ]] \
+{ [[ "$rc" -ne 0 ]] && grep -q 'herdr' <<<"$out" && grep -q 'pane-run' <<<"$out" \
+   && ! grep -q 'zcodecli-chat' <<<"$out" && [[ ! -s "$STUBLOG" ]] \
    && [[ ! -d "$LM/qwbuddy/.controller.lock" ]] && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-badmode.md"; } \
   && ok "非法启动方式在全部副作用前拒绝并列出合法方式" || { bad "非法启动方式拒绝不完整（rc=${rc}）"; printf '%s\n' "$out"; }
 
@@ -2704,7 +2705,7 @@ printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd -p' 'qwb_wor
 mk_launch_task headless
 rm -rf "$LM/qwbuddy/.controller.lock"; : > "$STUBLOG"
 out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm bash qwbuddy/bin/qwb-run.sh --task headless --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'headless' && [[ ! -s "$STUBLOG" ]] \
+{ [[ "$rc" -ne 0 ]] && grep -q 'headless' <<<"$out" && [[ ! -s "$STUBLOG" ]] \
    && ! grep -q '^dispatch:' "$LM/tasks/2099-02-01-headless.md"; } \
   && ok "pane-run 拒绝 -p 等 headless 命令且零副作用" \
   || { bad "pane-run headless 禁令未生效（rc=${rc}）"; printf '%s\n' "$out"; }
@@ -2888,7 +2889,7 @@ printf 'QWB_WORKSPACE="wA3"\n' >> "$ENSP/qwbuddy/config.sh"   # 调用者是 wte
 ensreset; mk_plist "$DYN/pane-list.json" "w93:p1,agent"
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 { [[ "$rc" -eq 0 ]] && grep -q 'tab create --workspace wA3' "$STUBLOG" \
-   && grep -q 'workspace=wA3' "$ENSP/qwbuddy/.watch" && ! printf '%s' "$out" | grep -q '未声明 QWB_WORKSPACE'; } \
+   && grep -q 'workspace=wA3' "$ENSP/qwbuddy/.watch" && ! grep -q '未声明 QWB_WORKSPACE' <<<"$out"; } \
   && ok "--ensure 建 tab 带 --workspace wA3，.watch 记 workspace=wA3（rc=${rc}）" \
   || { bad "--ensure 未用项目 workspace（rc=${rc}）"; printf '%s\n' "$out"; cat "$ENSP/qwbuddy/.watch" 2>/dev/null; }
 # 48g2 负例：ensure 声明的 workspace 不存在 → 拒绝，不建 tab、不登记
@@ -3178,7 +3179,7 @@ grep -qF '项目自己的常驻规则' "$BIF" && ok "init 幂等：已存在 bri
 # 场景：无附页 → 行为与今天一致（无附页节、stderr 无附页字样、退出 0）
 rm -f "$BIF"
 bi_out="$(bi_run)"; bi_rc=$?
-{ [[ "$bi_rc" -eq 0 ]] && ! grep -q '常驻附页' "$BI_T" && ! printf '%s' "$bi_out" | grep -q '附页'; } \
+{ [[ "$bi_rc" -eq 0 ]] && ! grep -q '常驻附页' "$BI_T" && ! grep -q '附页' <<<"$bi_out"; } \
   && ok "无附页：派发退出 0、任务书无附页节、stderr 无附页字样" \
   || bad "无附页派发不对（rc=${bi_rc}，out=${bi_out}）"
 
@@ -3226,7 +3227,7 @@ new_fp="$(printf '%s' "$(cat "$BIF")" | shasum | cut -d' ' -f1)"
 cp "$BI_T" "$BI_T.snap"
 rm -f "$BIF"; mkdir "$BIF"
 bi_out="$(bi_run)"; bi_rc=$?
-{ [[ "$bi_rc" -ne 0 ]] && printf '%s' "$bi_out" | grep -q '可读的常规文件' && cmp -s "$BI_T" "$BI_T.snap"; } \
+{ [[ "$bi_rc" -ne 0 ]] && grep -q '可读的常规文件' <<<"$bi_out" && cmp -s "$BI_T" "$BI_T.snap"; } \
   && ok "附页是目录：拒绝派发（rc≠0），任务书与派发前逐字节一致" \
   || bad "附页目录拒绝不对（rc=${bi_rc}，out=${bi_out}）"
 rmdir "$BIF"; rm -f "$BI_T.snap"
@@ -3369,7 +3370,7 @@ mp_task mpcollide
 mp_set QWB_WORKER_LAUNCH "cmd=pane-run:cmd"; mp_set QWB_WORKER_ARGS "cmd=--yolo"
 mp_pre
 out="$(mp_run --task mpcollide --worker cmd --here 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '重复启动定义' \
+{ [[ "$rc" -ne 0 ]] && grep -q '重复启动定义' <<<"$out" \
    && mp_clean mpcollide; } \
   && ok "pane-run 工人在 ARGS 里配值 → 拒绝且零副作用（rc=${rc}）" \
   || { bad "pane-run 冲突未拦住或留了副作用（rc=${rc}）"; printf '%s\n' "$out"; }
@@ -3393,7 +3394,7 @@ for hform in '-p' '--print' '--exec' 'exec'; do
   mp_set QWB_WORKER_ARGS "claude=--dangerously-skip-permissions ${hform}"
   mp_pre
   out="$(mp_run --task mphead --worker claude --here 2>&1)"; rc=$?
-  { [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -qi 'headless' && mp_clean mphead; } \
+  { [[ "$rc" -ne 0 ]] && grep -qi 'headless' <<<"$out" && mp_clean mphead; } \
     && ok "ARGS 含 headless 形式「${hform}」→ 拒绝且零副作用（rc=${rc}）" \
     || { bad "headless 形式「${hform}」未被拦（rc=${rc}）"; printf '%s\n' "$out"; }
 done
@@ -3423,8 +3424,8 @@ fi
 grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$TMP/qwbuddy/workers.sh" \
   && ok "qwb-init 装出的 workers.sh 带默认权限参数" || bad "安装的 workers.sh 缺默认参数"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$lintout" | grep -q 'LINT PASS' \
-   && printf '%s' "$lintout" | grep -q '键全部被.*引用'; } \
+{ [[ "$rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lintout" \
+   && grep -q '键全部被.*引用' <<<"$lintout"; } \
   && ok "lint 过且「config 无死键」PASS" \
   || { bad "lint 未过或无死键检查 PASS（rc=${rc}）"; printf '%s\n' "$lintout"; }
 mp_pre
@@ -3530,8 +3531,8 @@ printf '# block\nstate: running\nimplementation-authorized: explicit fixture sco
 : > "$STUBLOG"
 blk_out="$( cd "$BP" && PATH="$STUB:$PATH" env -u HERDR_PANE_ID bash "$BP/qwbuddy/bin/qwb-wake.sh" --project "$BP" --block --max-ms 5000 2>&1 )"; blk_rc=$?
 { [[ "$blk_rc" -eq 2 ]] \
-  && printf '%s' "$blk_out" | grep -q '2099-01-07-blk' \
-  && printf '%s' "$blk_out" | grep -qF 'done: 工人完成 block 场景' \
+  && grep -q '2099-01-07-blk' <<<"$blk_out" \
+  && grep -qF 'done: 工人完成 block 场景' <<<"$blk_out" \
   && grep -q '^wake:' "$BLK"; } \
   && ok "--block 有变化：rc=2 + 摘要含票名与 done 行 + 写 wake 行" \
   || bad "--block 有变化路径不对（rc=${blk_rc}，out=${blk_out}）"
@@ -3621,7 +3622,7 @@ DEADPID=$(sleep 0.1 & echo $!); sleep 0.4
 echo "$DEADPID" > "$HP/qwbuddy/.hook.lock/pid"
 hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
 { [[ "$hook_rc" -eq 2 ]] \
-  && printf '%s' "$hook_out" | grep -qF 'done: hook 场景可动作变化' \
+  && grep -qF 'done: hook 场景可动作变化' <<<"$hook_out" \
   && [[ ! -d "$HP/qwbuddy/.hook.lock" ]] \
   && grep -q '^wake:' "$HOOK"; } \
   && ok "hook 残留锁接管：rc=2 + 摘要 + 锁已清 + wake 行" \
@@ -3664,7 +3665,7 @@ print("SETTINGS-OK")
 PYEOF
 }
 { [[ "$rc1" -eq 0 && "$rc2" -eq 0 ]] \
-  && printf '%s' "$out2" | grep -q '已有 qwb-hook-claude-stop.sh' \
+  && grep -q '已有 qwb-hook-claude-stop.sh' <<<"$out2" \
   && chk_settings; } \
   && ok "init 合并 settings.json：两次后恰一条 qwb hook、幂等跳过、别人内容原样、合法 JSON" \
   || bad "init 合并断言失败（rc1=${rc1}，rc2=${rc2}，out=${out2}）"
@@ -3672,9 +3673,9 @@ PYEOF
 # 场景（失败路径）：settings.json 内容非法 → rc≠0、stderr 指出文件与未写入、字节不变
 printf '{not json' > "$SETJ"; cp "$SETJ" "$TMP/settings.bad"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$TMP" 2>&1)"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '不是合法 JSON' \
-  && printf '%s' "$out" | grep -q '未写入' \
-  && printf '%s' "$out" | grep -q '其余安装已照常完成' \
+{ [[ "$rc" -ne 0 ]] && grep -q '不是合法 JSON' <<<"$out" \
+  && grep -q '未写入' <<<"$out" \
+  && grep -q '其余安装已照常完成' <<<"$out" \
   && cmp -s "$SETJ" "$TMP/settings.bad"; } \
   && ok "init 遇非法 JSON：拒绝、指明文件与未写入、字节不变、说明其余已装" \
   || bad "非法 JSON 拒绝不对（rc=${rc}，out=${out}）"
@@ -3687,7 +3688,7 @@ stat4() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPACE
 # hook 态：.hook.lock/pid 存活 → 「值守：hook（pid …）」
 mkdir "$TMP/qwbuddy/.hook.lock"; echo $$ > "$TMP/qwbuddy/.hook.lock/pid"
 out="$(stat4)"
-printf '%s' "$out" | grep -q "值守：hook（pid $$）" \
+grep -q "值守：hook（pid $$）" <<<"$out" \
   && ok "status 三态：hook 活 → 值守：hook" || { bad "status 未报 hook"; printf '%s\n' "$out"; }
 # tab 态：无 hook 锁，.watch 登记 + pane 前台有值守进程 → 「值守：tab（pane …）」
 rm -rf "$TMP/qwbuddy/.hook.lock"
@@ -3695,13 +3696,13 @@ printf 'pane=w54:p1 workspace=wtestW pid=111 started=x\n' > "$TMP/qwbuddy/.watch
 mk_plist "$DYN/pane-list.json" "w54:p1"
 mk_proc w54:p1 wake "$TMP"
 out="$(stat4)"
-printf '%s' "$out" | grep -q '值守：tab（pane w54:p1）' \
+grep -q '值守：tab（pane w54:p1）' <<<"$out" \
   && ok "status 三态：tab 值守 → 值守：tab（pane w54:p1）" || { bad "status 未报 tab"; printf '%s\n' "$out"; }
 # 未运行态：两者皆无 → 「值守：未运行」
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"; mkdir -p "$DYN"
 mk_plist "$DYN/pane-list.json"
 out="$(stat4)"
-printf '%s' "$out" | grep -q '值守：未运行' \
+grep -q '值守：未运行' <<<"$out" \
   && ok "status 三态：两者皆无 → 值守：未运行" || { bad "status 未报未运行"; printf '%s\n' "$out"; }
 
 echo "== 57. 模板新票不污染状态（列首状态行缺口回归）=="
@@ -3711,11 +3712,11 @@ TPLP="$TMP/tplproj"; mkdir -p "$TPLP"; bash "$ROOT/bin/qwb-init.sh" "$TPLP" >/de
 cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t.md"
 cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t2.md"
 out="$( cd "$TPLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh )"
-{ printf '%s' "$out" | grep -q '2099-01-01-t.md' && ! printf '%s' "$out" | grep -q '最近:'; } \
+{ grep -q '2099-01-01-t.md' <<<"$out" && ! grep -q '最近:' <<<"$out"; } \
   && ok "模板复制的新票 status 无「最近:」行" || bad "模板新票竟有「最近:」（模板列首示例污染）"
 out="$( cd "$TPLP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
-{ printf '%s' "$out" | grep -q '未结项（将叫醒）: 2099-01-01-t' \
-  && ! printf '%s' "$out" | grep -q '最近:'; } \
+{ grep -q '未结项（将叫醒）: 2099-01-01-t' <<<"$out" \
+  && ! grep -q '最近:' <<<"$out"; } \
   && ok "dry-run 同样无最近行（指纹基为空状态行）" || bad "dry-run 仍显示模板示例行"
 : > "$STUBLOG"
 ( cd "$TPLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
@@ -3755,11 +3756,11 @@ out="$( cd "$TPLP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bi
 printf '# 占位票\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: spec-resolved: <impl|spec>\n' > "$TPLP/tasks/2099-01-01-t4.md"
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$TPLP/qwbuddy/config.sh"
 lint_err="$( cd "$TPLP" && bash qwbuddy/bin/qwb-lint.sh 2>&1 >/dev/null )"; lint_rc=$?
-{ [[ "$lint_rc" -eq 0 ]] && printf '%s' "$lint_err" | grep -q '2099-01-01-t4.md' \
-  && printf '%s' "$lint_err" | grep -q '占位状态行'; } \
+{ [[ "$lint_rc" -eq 0 ]] && grep -q '2099-01-01-t4.md' <<<"$lint_err" \
+  && grep -q '占位状态行' <<<"$lint_err"; } \
   && ok "lint 第 8 项对列首占位行警告但不 FAIL（rc=0）" \
   || bad "lint 第 8 项行为不对（rc=${lint_rc}）"
-printf '%s' "$lint_err" | grep -q '2099-01-01-t3.md' \
+grep -q '2099-01-01-t3.md' <<<"$lint_err" \
   && bad "缩进行被 lint 第 8 项误报" || ok "lint 第 8 项不报缩进行（缩进不算列首）"
 
 echo "== 59. 主控锁残留自动回收（判活：pid 与 pane）=="
@@ -3770,13 +3771,13 @@ rm -rf "$LK"; mkdir "$LK"
 DEADPID="$(sleep 0.1 & echo $!)"; sleep 0.4
 printf '2020-01-01T00:00:00Z pid:%s\n' "$DEADPID" > "$LK/owner"
 out="$( cd "$LP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '回收残留锁' \
+{ [[ "$rc" -eq 0 ]] && grep -q '回收残留锁' <<<"$out" \
   && [[ "$(sed -n 's/^[^ ]* //p' "$LK/owner" | head -1)" == "me" ]]; } \
   && ok "死 pid 锁主 → 回收残留锁并获锁（rc=0）" || { bad "死 pid 未回收（rc=${rc}）：$out"; }
 # 59b pane 已不存在（stub 默认 pane_not_found）→ 自动回收
 rm -rf "$LK"; mkdir "$LK"; printf '2020-01-01T00:00:00Z wX:p9\n' > "$LK/owner"
 out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$out" | grep -q '回收残留锁' \
+{ [[ "$rc" -eq 0 ]] && grep -q '回收残留锁' <<<"$out" \
   && [[ "$(sed -n 's/^[^ ]* //p' "$LK/owner" | head -1)" == "me" ]]; } \
   && ok "pane_not_found 锁主 → 回收残留锁并获锁（rc=0）" || { bad "pane 死锁未回收（rc=${rc}）：$out"; }
 # 59c（失败路径）活锁照旧拒绝：owner 字节不变
@@ -3785,17 +3786,17 @@ sed "s|w8Z:pY|wX:p1|g" "$FIXDIR/pane-get-shell.json" > "$LP/dyn/get-wXp1.json"
 rm -rf "$LK"; mkdir "$LK"; printf '2020-01-01T00:00:00Z wX:p1\n' > "$LK/owner"
 cp "$LK/owner" "$LP/owner.snap"
 out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '锁已被占用' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '锁已被占用' <<<"$out" && cmp -s "$LK/owner" "$LP/owner.snap"; } \
   && ok "活锁（pane 在）照旧拒绝且 owner 字节不变" || { bad "活锁被误回收（rc=${rc}）"; }
 # 59d（失败路径）herdr 查询报错（非 pane_not_found）→ 拒绝不回收（fail-closed）
 rm -f "$LP/dyn/get-wXp1.json"   # stub .json 优先于 .err：不删会走不到查询失败分支（仍是 §59c 的活锁）
 printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$LP/dyn/get-wXp1.err"
 out="$( cd "$LP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$LP/dyn" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '无法判活' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '无法判活' <<<"$out" && cmp -s "$LK/owner" "$LP/owner.snap"; } \
   && ok "查询报错不回收（fail-closed）且 owner 字节不变" || { bad "查询失败竟回收/放行（rc=${rc}）"; }
 # 59e（失败路径）herdr 不在 PATH → 拒绝不回收
 out="$( cd "$LP" && PATH='/usr/bin:/bin' bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
-{ [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q '无法判活' && cmp -s "$LK/owner" "$LP/owner.snap"; } \
+{ [[ "$rc" -eq 1 ]] && grep -q '无法判活' <<<"$out" && cmp -s "$LK/owner" "$LP/owner.snap"; } \
   && ok "herdr 不在 PATH：拒绝不回收（fail-closed）" || { bad "无 herdr 竟回收（rc=${rc}）"; }
 
 echo "== 60. 孤儿 --block 不消费唤醒（主控锁复核）=="
@@ -3825,9 +3826,9 @@ done
 nrun="$(grep -c '^herdr pane run wX:p1 看账本' "$STUBLOG" || true)"
 runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | head -1)"
 { [[ "$nrun" -eq 1 ]] \
-  && printf '%s' "$runline" | grep -q '2099-01-01-b1' && printf '%s' "$runline" | grep -q '2099-01-02-b2' \
-  && printf '%s' "$runline" | grep -q '2099-01-03-b3' \
-  && printf '%s' "$runline" | grep -q 'done: 批量票 1 的进展行' && printf '%s' "$runline" | grep -q 'done: 批量票 3 的进展行' \
+  && grep -q '2099-01-01-b1' <<<"$runline" && grep -q '2099-01-02-b2' <<<"$runline" \
+  && grep -q '2099-01-03-b3' <<<"$runline" \
+  && grep -q 'done: 批量票 1 的进展行' <<<"$runline" && grep -q 'done: 批量票 3 的进展行' <<<"$runline" \
   && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-01-b1.md")" -eq 1 ]] \
   && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-02-b2.md")" -eq 1 ]] \
   && [[ "$(grep -c '^wake:' "$BP2/tasks/2099-01-03-b3.md")" -eq 1 ]]; } \
@@ -3848,21 +3849,21 @@ printf '# rw-r\nstate: running\nimplementation-authorized: explicit fixture scop
 printf '# rw-n\nstate: needs-decision\nwake: 2000-01-01T00:00:00Z state=needs-decision fp=%s\n' "$NDFP" > "$RWP/tasks/2099-01-02-rwn.md"
 printf '#!/usr/bin/env bash\necho 99999999999999\n' > "$RWP/far.sh"; chmod +x "$RWP/far.sh"
 out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"
-{ printf '%s' "$out" | grep -q '跳过：2099-01-02-rwn' && printf '%s' "$out" | grep -q '等裁决' \
+{ grep -q '跳过：2099-01-02-rwn' <<<"$out" && grep -q '等裁决' <<<"$out" \
   && [[ "$(grep -c '^wake:' "$RWP/tasks/2099-01-02-rwn.md")" -eq 1 ]] \
   && [[ "$(grep -c '^wake:' "$RWP/tasks/2099-01-01-rwr.md")" -eq 2 ]]; } \
   && ok "needs-decision 超期不重叫（跳过·等裁决），running 超期重叫" \
   || bad "REWAKE 收窄不对：out=${out:0:200}"
 runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | tail -1)"
-printf '%s' "$runline" | grep -q '2099-01-01-rwr' && ! printf '%s' "$runline" | grep -q '2099-01-02-rwn' \
+grep -q '2099-01-01-rwr' <<<"$runline" && ! grep -q '2099-01-02-rwn' <<<"$runline" \
   && ok "重叫投递文本只含 running 票" || bad "重叫文本混入 needs-decision"
 # --block 同一构造：exit 2 且摘要只含 running 那张（「跳过：… 等裁决」说明行合法存在，
 # 只断言「看账本：」摘要行本身不含 needs-decision 那张）
 printf '# rw-r\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
 blk_out="$( cd "$RWP" && PATH="$STUB:$PATH" QWB_NOW_MS_CMD="$RWP/far.sh" env -u HERDR_PANE_ID bash qwbuddy/bin/qwb-wake.sh --project "$RWP" --block --max-ms 999999999 2>&1 )"; rc=$?
 blk_summary="$(printf '%s\n' "$blk_out" | grep '^看账本：' | tail -1)"
-{ [[ "$rc" -eq 2 ]] && printf '%s' "$blk_summary" | grep -q '2099-01-01-rwr' \
-  && ! printf '%s' "$blk_summary" | grep -q '2099-01-02-rwn'; } \
+{ [[ "$rc" -eq 2 ]] && grep -q '2099-01-01-rwr' <<<"$blk_summary" \
+  && ! grep -q '2099-01-02-rwn' <<<"$blk_summary"; } \
   && ok "--block 同构造：rc=2 且摘要只含 running" || { bad "--block REWAKE 收窄不对（rc=${rc}）：${blk_out:0:200}"; }
 
 echo "== 63. worktree 初始化钩子 QWB_WORKTREE_SETUP =="
@@ -3907,7 +3908,7 @@ mk_wt_task wtfail
 printf "QWB_WORKTREE_SETUP='exit 3'\n" >> "$GP2/qwbuddy/config.sh"
 : > "$STUBLOG"
 out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task wtfail --worker pi 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'worktree 初始化失败' && printf '%s' "$out" | grep -q '3' \
+{ [[ "$rc" -ne 0 ]] && grep -q 'worktree 初始化失败' <<<"$out" && grep -q '3' <<<"$out" \
   && ! grep -q '^dispatch:' "$GP2/tasks/2099-01-01-wtfail.md" \
   && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
   && [[ -d "$GP2/.worktrees/wtfail" ]]; } \
@@ -3922,24 +3923,24 @@ mk_lost_ticket() {
 }
 mk_lost_ticket
 out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '工人丢失: pane wX:p9' \
+grep -q '工人丢失: pane wX:p9' <<<"$out" \
   && ok "pane 查不到 → status 标「工人丢失: pane wX:p9」" || { bad "status 未标丢失"; }
 : > "$STUBLOG"
 ( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
 runline="$(grep '^herdr pane run wX:p1 看账本' "$STUBLOG" | tail -1)"
-{ printf '%s' "$runline" | grep -q '2099-01-01-lost' && printf '%s' "$runline" | grep -q '工人丢失' \
+{ grep -q '2099-01-01-lost' <<<"$runline" && grep -q '工人丢失' <<<"$runline" \
   && [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 2 ]]; } \
   && ok "工人一消失指纹变一次：第一轮叫一次并写 wake 行" || { bad "丢失轮没叫或没写行"; }
 out="$( cd "$WLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 )"
-{ printf '%s' "$out" | grep -q '跳过：2099-01-01-lost' \
+{ grep -q '跳过：2099-01-01-lost' <<<"$out" \
   && [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 2 ]]; } \
   && ok "第二轮指纹未变：跳过且无新 wake 行（沿用去重）" || bad "丢失后反复重叫"
 # pane 在但 agent 空：前台shell不是旧后台PID死亡证明，必须unknown保留。
 mk_lost_ticket
 mkdir -p "$WLP/dyn"; sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" > "$WLP/dyn/get-wXp9.json"
 out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '工人状态未知' \
-  && ! printf '%s' "$out" | grep -q '工人丢失' \
+grep -q '工人状态未知' <<<"$out" \
+  && ! grep -q '工人丢失' <<<"$out" \
   && ok "退回shell但无死亡证据 → unknown，不猜工人丢失" || bad "shell未安全保持unknown"
 : > "$STUBLOG"
 ( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
@@ -3949,7 +3950,7 @@ printf '%s' "$out" | grep -q '工人状态未知' \
 mk_lost_ticket
 sed "s|w8Z:pY|wX:p9|g" "$FIXDIR/pane-get-shell.json" | sed 's|"agent_status":"unknown"|"agent":"pi","agent_status":"idle"|' > "$WLP/dyn/get-wXp9.json"
 out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '工人丢失' && bad "工人健在竟标丢失" || ok "工人在（agent 字段非空）不标丢失"
+grep -q '工人丢失' <<<"$out" && bad "工人健在竟标丢失" || ok "工人在（agent 字段非空）不标丢失"
 ( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 ) >/dev/null 2>&1
 { [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]]; } \
   && ok "对照：工人在 → 指纹与不做丢失判定一致，不再叫" || bad "工人在却因丢失指纹多叫一次"
@@ -3958,10 +3959,10 @@ mk_lost_ticket
 rm -f "$WLP/dyn/get-wXp9.json"   # stub .json 优先于 .err：不删会走不到查询失败分支
 printf '{"error":{"code":"io_error","message":"mocked pane get failure"},"id":"cli:test"}\n' > "$WLP/dyn/get-wXp9.err"
 out="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
-printf '%s' "$out" | grep -q '工人状态未知' \
+grep -q '工人状态未知' <<<"$out" \
   && ok "查询失败 → status 打印「工人状态未知」" || bad "查询失败未标未知"
 wake_err="$( cd "$WLP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$WLP/dyn" bash qwbuddy/bin/qwb-wake.sh --once --pane wX:p1 2>&1 >/dev/null )"
-{ [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]] && printf '%s' "$wake_err" | grep -q '无法确认工人状态'; } \
+{ [[ "$(grep -c '^wake:' "$WLP/tasks/2099-01-01-lost.md")" -eq 1 ]] && grep -q '无法确认工人状态' <<<"$wake_err"; } \
   && ok "查询失败 → 值守不当丢失（不新写 wake 行、stderr 一行说明）" || bad "查询失败被当丢失或没说明"
 
 echo "== 65. --task 精确 id 优先；worktree finish 只记本票账本 =="
@@ -3993,7 +3994,7 @@ mk_foo_task foo; mk_foo_task foo-bar
 [[ "$rc" -eq 0 ]] && grep -q '^dispatch:' "$GP2/tasks/2099-01-02-foo-bar.md" \
   && ok "--task foo-bar 命中 foo-bar" || bad "--task foo-bar 行为不对（rc=${rc}）"
 out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/qwb-run.sh --task fo --worker pi --here 2>&1 )"; rc=$?
-{ [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q '匹配到 2 份'; } \
+{ [[ "$rc" -ne 0 ]] && grep -q '匹配到 2 份' <<<"$out"; } \
   && ok "--task fo 仍报「匹配到 2 份」拒绝" || bad "模糊 id 未拒绝（rc=${rc}）"
 # worktree finish 精确命中本票任务书；目标必须是本仓登记的 worktree
 git -C "$GP2" worktree add -q -b foo "$GP2/.worktrees/foo" HEAD
@@ -4028,7 +4029,7 @@ mk_an_task "场景完善-01真实闭环"
 ( cd "$ANP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:an bash qwbuddy/bin/qwb-run.sh --task "场景完善-01真实闭环" --worker pi --here ) >/dev/null 2>&1; rc=$?
 anline="$(grep 'agent start' "$STUBLOG" | head -1)"
 an_expected="qwb--01-$(printf '%s' '场景完善-01真实闭环' | shasum | cut -c1-8)"
-{ [[ "$rc" -eq 0 ]] && printf '%s' "$anline" | grep -Fq "agent start ${an_expected} "; } \
+{ [[ "$rc" -eq 0 ]] && grep -Fq "agent start ${an_expected} " <<<"$anline"; } \
   && ok "中文 id 保留 -01 并附完整 id 短哈希（${anline:0:60}…）" \
   || bad "中文 id 兜底不对（rc=${rc}，line=${anline:0:80}）"
 grep -Fq "agent=${an_expected} " "$ANP/tasks/2099-01-01-场景完善-01真实闭环.md" \
@@ -4050,7 +4051,7 @@ GIP="$TMP/gitign"; mkdir -p "$GIP"
 ( cd "$GIP" && git init -q && git config user.email t@t && git config user.name t && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init )
 gi_run() { bash "$ROOT/bin/qwb-init.sh" "$GIP" 2>&1; }
 gi1="$(gi_run)"; gi_rc=$?
-{ [[ "$gi_rc" -eq 0 ]] && printf '%s' "$gi1" | grep -q '写入：.gitignore 追加 QW buddy 运行态'; } \
+{ [[ "$gi_rc" -eq 0 ]] && grep -q '写入：.gitignore 追加 QW buddy 运行态' <<<"$gi1"; } \
   && ok "init 写 .gitignore：stdout 一行「写入：.gitignore 追加 QW buddy 运行态」" \
   || { bad "init 写 .gitignore 失败（rc=${gi_rc}）"; printf '%s\n' "$gi1"; }
 [[ "$(head -1 "$GIP/.gitignore")" == 'node_modules/' ]] \
@@ -4068,7 +4069,7 @@ gi1="$(gi_run)"; gi_rc=$?
 gi_sha1="$(shasum "$GIP/.gitignore" | cut -d' ' -f1)"
 gi2="$(gi_run)"
 { [[ "$(shasum "$GIP/.gitignore" | cut -d' ' -f1)" == "$gi_sha1" ]] \
-  && printf '%s' "$gi2" | grep -q '跳过：.gitignore 已有'; } \
+  && grep -q '跳过：.gitignore 已有' <<<"$gi2"; } \
   && ok "幂等：再跑一次 .gitignore 字节不变，stdout「跳过：.gitignore 已有」" \
   || bad "二次 init 不幂等或 stdout 不对"
 # 无 .gitignore 的新项目 → 新建且首行即段标记
@@ -4086,7 +4087,7 @@ gs="$(git -C "$GIP" status --porcelain)"
   || bad "status 竟然脏：$gs"
 perl -i -ne 'print unless /^# QW buddy 运行态/ || /^\.worktrees\/$/ || /^qwbuddy\/\.(controller\.lock\/|watch|watch\.lock\/|hook\.lock\/|hook\.err|pi-watch\.err)$/' "$GIP/.gitignore"
 gs="$(git -C "$GIP" status --porcelain)"
-{ printf '%s' "$gs" | grep -q 'worktrees' && printf '%s' "$gs" | grep -q '.controller.lock'; } \
+{ grep -q 'worktrees' <<<"$gs" && grep -q '.controller.lock' <<<"$gs"; } \
   && ok "删掉 QW buddy 段后 .worktrees 与 .controller.lock 在 status 现身（反证段落有效）" \
   || bad "删段后反证失败：$gs"
 bash "$GIP/qwbuddy/bin/qwb-lock.sh" release --project "$GIP" >/dev/null
@@ -4097,15 +4098,15 @@ bash "$GIP/qwbuddy/bin/qwb-lock.sh" release --project "$GIP" >/dev/null
 printf '{"rules":[],"项目自己改过的规则":true}\n' > "$GIP/qwbuddy/dispatch-rules.json"
 gi3="$(gi_run)"
 { grep -qF '项目自己改过的规则' "$GIP/qwbuddy/dispatch-rules.json" \
-  && printf '%s' "$gi3" | grep -q '保留：qwbuddy/dispatch-rules.json 已存在，不覆盖'; } \
+  && grep -q '保留：qwbuddy/dispatch-rules.json 已存在，不覆盖' <<<"$gi3"; } \
   && ok "再跑 init 不覆盖项目改过的规则文件（幂等）" \
   || bad "init 覆盖了项目自己的 dispatch-rules.json"
 DP3="$TMP/oldpath"; mkdir -p "$DP3/config"
 printf '# 简\n' > "$DP3/brief.md"
 printf '%s\n' '{"rules":[{"when":"x","worker":"pi"}],"default":{"worker":"pi"}}' > "$DP3/config/dispatch-rules.json"
 dp_out="$(cd "$DP3" && TYPESAFE_API_KEY=stub PATH="$DFB:$PATH" bash "$ROOT/bin/qwb-dispatch.sh" brief.md 2>&1 >/dev/null)"; dp_rc=$?
-{ [[ "$dp_rc" -eq 0 ]] && printf '%s' "$dp_out" | grep -q 'no rules' \
-  && ! printf '%s' "$dp_out" | grep -q '合法 worker'; } \
+{ [[ "$dp_rc" -eq 0 ]] && grep -q 'no rules' <<<"$dp_out" \
+  && ! grep -q '合法 worker' <<<"$dp_out"; } \
   && ok "旧路径 config/ 存在而新路径缺失 → 报 no rules（不读旧路径、不做兼容）" \
   || bad "旧路径回退不应发生：rc=${dp_rc}，out=$dp_out"
 
@@ -4118,21 +4119,21 @@ cp "$ROOT"/qwb.config.sh "$MRP/"
 mkdir -p "$MRP/qwbuddy"
 printf 'QWB_GATE_FAST="fast-999"\nQWB_GATE_FULL="full-999"\n' > "$MRP/qwbuddy/config.sh"
 lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
-{ [[ "$lrc" -ne 0 ]] && printf '%s' "$lint_out" | grep -q '质量门不一致' \
-  && printf '%s' "$lint_out" | grep -q 'fast-999' && printf '%s' "$lint_out" | grep -q 'full-999' \
-  && printf '%s' "$lint_out" | grep -q 'qwbuddy/config.sh=fast-999'; } \
+{ [[ "$lrc" -ne 0 ]] && grep -q '质量门不一致' <<<"$lint_out" \
+  && grep -q 'fast-999' <<<"$lint_out" && grep -q 'full-999' <<<"$lint_out" \
+  && grep -q 'qwbuddy/config.sh=fast-999' <<<"$lint_out"; } \
   && ok "双配置门值不同 → lint FAIL 且打印两边的值" \
   || { bad "双配置守卫未按预期 FAIL（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -12; }
 ( . "$ROOT/qwb.config.sh"
   printf 'QWB_GATE_FAST=%s\nQWB_GATE_FULL=%s\n' "$(printf '%q' "$QWB_GATE_FAST")" "$(printf '%q' "$QWB_GATE_FULL")" ) > "$MRP/qwbuddy/config.sh"
 lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
-{ [[ "$lrc" -eq 0 ]] && printf '%s' "$lint_out" | grep -q '质量门一致'; } \
+{ [[ "$lrc" -eq 0 ]] && grep -q '质量门一致' <<<"$lint_out"; } \
   && ok "两份配置门改成相同 → lint PASS" \
   || { bad "同门应 PASS（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -12; }
 rm "$MRP/qwbuddy/config.sh"
 lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
-{ [[ "$lrc" -eq 0 ]] && ! printf '%s' "$lint_out" | grep -q '质量门不一致' \
-  && ! printf '%s' "$lint_out" | grep -q '双配置'; } \
+{ [[ "$lrc" -eq 0 ]] && ! grep -q '质量门不一致' <<<"$lint_out" \
+  && ! grep -q '双配置' <<<"$lint_out"; } \
   && ok "只有一份配置 → 该项不报（其余项不误伤，LINT PASS）" \
   || { bad "单配置不应报双配置项（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
 
@@ -4190,7 +4191,7 @@ ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
 { [[ "$ru_rc" -eq 0 ]] && ! grep -q 'tab create' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
   && grep -q 'agent prompt qwb-reuset ' "$STUBLOG" \
   && grep -q '这是返工/续派' "$STUBLOG" \
-  && printf '%s' "$ru_out" | grep -q '复用既有工人 qwb-reuset（pane wX:p5）' \
+  && grep -q '复用既有工人 qwb-reuset（pane wX:p5）' <<<"$ru_out" \
   && [[ "$(grep '^dispatch:' "$ru_task" | tail -1)" == *"agent=qwb-reuset pane=wX:p5 "* ]]; } \
   && ok "同名 idle 工人 → 复用（不建 tab、不 start，dispatch 落现有 pane，stdout 含「复用既有工人」）" \
   || { bad "复用路径不对（rc=${ru_rc}）"; printf '%s\n' "$ru_out"; cat "$STUBLOG"; }
@@ -4200,7 +4201,7 @@ disp_before="$(grep -c '^dispatch:' "$ru_task")"
 : > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
 ru_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" \
   bash qwbuddy/bin/qwb-run.sh --task reuset --worker pi --here 2>&1 )"; ru_rc=$?
-{ [[ "$ru_rc" -ne 0 ]] && printf '%s' "$ru_out" | grep -q '还在 working' \
+{ [[ "$ru_rc" -ne 0 ]] && grep -q '还在 working' <<<"$ru_out" \
   && [[ "$(grep -c '^dispatch:' "$ru_task")" -eq "$disp_before" ]] \
   && ! grep -q 'agent prompt' "$STUBLOG" && ! grep -q 'agent start' "$STUBLOG" \
   && ! grep -q 'tab create' "$STUBLOG"; } \
@@ -4235,8 +4236,8 @@ rb_before="$(wc -l < "$rb_task" | tr -d ' ')"
 : > "$STUBLOG"; rm -rf "$RUP/qwbuddy/.controller.lock"
 rb_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR="$RUP/dyn" HERDR_FAIL=start \
   bash qwbuddy/bin/qwb-run.sh --task rollback --worker pi --here 2>&1 )"; rb_rc=$?
-{ [[ "$rb_rc" -ne 0 ]] && printf '%s' "$rb_out" | grep -q 'agent_name_taken' \
-  && printf '%s' "$rb_out" | grep -q 'agent start 失败' \
+{ [[ "$rb_rc" -ne 0 ]] && grep -q 'agent_name_taken' <<<"$rb_out" \
+  && grep -q 'agent start 失败' <<<"$rb_out" \
   && [[ "$(wc -l < "$rb_task" | tr -d ' ')" -eq "$((rb_before + 2))" ]] \
   && [[ "$(grep -c '^dispatch:' "$rb_task")" -eq 1 ]] \
   && [[ "$(grep -c '^not-sent:' "$rb_task")" -eq 1 ]] \
@@ -4248,20 +4249,20 @@ rb_out="$( cd "$RUP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ru HERDR_DYN_DIR=
 
 echo "== 70. 开局点名改用 qwb-status.sh（省 token）=="
 q1="$(awk '/^## 1\. 开局点名/{f=1;next} /^## 2\./{f=0} f' "$ROOT/templates/QWBUDDY.md")"
-{ printf '%s' "$q1" | grep -q 'qwb-status.sh' && printf '%s' "$q1" | grep -q '只读未结项' \
-  && ! printf '%s' "$q1" | grep -q '读每份头部'; } \
+{ grep -q 'qwb-status.sh' <<<"$q1" && grep -q '只读未结项' <<<"$q1" \
+  && ! grep -q '读每份头部' <<<"$q1"; } \
   && ok "QWBUDDY.md §1 含 qwb-status.sh 与「只读未结项」，不再含「读每份头部」" \
   || bad "§1 点名文案不对"
 ! grep -q '读每份头部' "$ROOT/templates/QWBUDDY.md" \
   && ok "QWBUDDY.md 全文不再有「读每份头部」旧文案" || bad "旧文案仍在"
 for hf in claude-hook agents-hook; do
   h2="$(grep '^[0-9]\.' "$ROOT/templates/$hf.md" | sed -n 2p)"
-  printf '%s' "$h2" | grep -q 'qwb-status.sh' \
+  grep -q 'qwb-status.sh' <<<"$h2" \
     && ok "$hf.md 第 2 条含 qwb-status.sh" \
     || bad "$hf.md 第 2 条未改：$h2"
 done
 lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; lrc=$?
-{ [[ "$lrc" -eq 0 ]] && printf '%s' "$lint_out" | grep -q 'LINT PASS'; } \
+{ [[ "$lrc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lint_out"; } \
   && ok "qwb-lint.sh 第 1 项仍 PASS（本仓 LINT PASS）" \
   || { bad "本仓 lint 不应受影响（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
 
@@ -4291,7 +4292,7 @@ run_pi_ext() {
   "${runner[@]}" "$ROOT/tests/pi-ext.test.mjs" 2>&1
 }
 extout="$(run_pi_ext)"; extrc=$?
-{ [[ $extrc -eq 0 ]] && printf '%s' "$extout" | grep -q 'pi-ext tests: 18 passed'; } \
+{ [[ $extrc -eq 0 ]] && grep -q 'pi-ext tests: 18 passed' <<<"$extout"; } \
   && ok "pi 扩展单元测试 18 项通过（锁主/晚获锁/退出交付/投递重试/退避/清理）" \
   || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
@@ -4306,21 +4307,21 @@ echo "== 72. qwb-init.sh 装 Pi 扩展：新建 / 幂等不重写 / 备份覆盖
 P3="$TMP/piext-proj"; mkdir -p "$P3"
 DST="$P3/.pi/extensions/qwb-watch.ts"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
-{ [[ $rc -eq 0 ]] && [[ -f "$DST" ]] && printf '%s' "$out" | grep -q '重启 pi 或 /reload'; } \
+{ [[ $rc -eq 0 ]] && [[ -f "$DST" ]] && grep -q '重启 pi 或 /reload' <<<"$out"; } \
   && ok "init 新建 .pi/extensions/qwb-watch.ts 并提示重启生效" \
   || { bad "init 新建扩展失败（rc=$rc）"; }
 mt() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
 m_before="$(mt "$DST")"; sleep 1
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ "$(mt "$DST")" == "$m_before" ]] \
-    && printf '%s' "$out" | grep -q '内容一致' && [[ ! -f "$DST.bak" ]]; } \
+    && grep -q '内容一致' <<<"$out" && [[ ! -f "$DST.bak" ]]; } \
   && ok "init 幂等：同内容不重写（mtime 不变）、无备份" \
   || { bad "init 幂等不对（rc=$rc，mtime 前=$m_before 后=$(mt "$DST")）"; }
 printf '\n// 项目本地改动\n' >> "$DST"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ -f "$DST.bak" ]] && grep -q '项目本地改动' "$DST.bak" \
     && ! grep -q '项目本地改动' "$DST" \
-    && printf '%s' "$out" | grep -q '备份为 qwb-watch.ts.bak'; } \
+    && grep -q '备份为 qwb-watch.ts.bak' <<<"$out"; } \
   && ok "init 遇不同内容：备份 .bak 后覆盖、stdout 说明" \
   || { bad "init 备份覆盖不对（rc=$rc，out=$out）"; }
 
@@ -4331,19 +4332,19 @@ stat69() { ( cd "$TMP" && PATH="$STUB:$PATH" HERDR_DYN_DIR="$DYN" HERDR_WORKSPAC
 ( exec sleep 30 ) & wpid=$!
 printf 'kind=pi-ext pid=%s started=x cmd=y\n' "${wpid}" > "$TMP/qwbuddy/.watch"
 out="$(stat69)"
-printf '%s' "$out" | grep -q "值守：pi-ext（pid ${wpid}）" \
+grep -q "值守：pi-ext（pid ${wpid}）" <<<"$out" \
   && ok "status：.watch kind=pi-ext 活 pid → 值守：pi-ext（pid …）" \
   || { bad "status 未报 pi-ext"; printf '%s\n' "$out"; }
 kill "${wpid}" 2>/dev/null; wait "${wpid}" 2>/dev/null
 out="$(stat69)"
-{ printf '%s' "$out" | grep -q '值守：未运行' && printf '%s' "$out" | grep -q 'pi-ext'; } \
+{ grep -q '值守：未运行' <<<"$out" && grep -q 'pi-ext' <<<"$out"; } \
   && ok "status：pi-ext pid 死 → 值守：未运行" \
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
 
 echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(bash "$ROOT/tests/runtime-readiness.sh" 2>&1)"; runtime_rc=$?
-if [[ "$runtime_rc" -eq 0 ]] && printf '%s' "$runtime_out" | grep -q 'RUNTIME READINESS PASS' &&
+if [[ "$runtime_rc" -eq 0 ]] && grep -q 'RUNTIME READINESS PASS' <<<"$runtime_out" &&
   [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 20 ]]; then
   ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 20 项通过"
 else
@@ -4791,6 +4792,51 @@ PY
 )
 jev_roles_smoke || bad "JEV agents HTTP 全链路"
 # JEV_ROLES_END
+
+echo "== 87. lint 大输出与占位警告 UTF-8 截断回归 =="
+LBIG="$TMP/lint-big"; mkdir -p "$LBIG"
+bash "$ROOT/bin/qwb-init.sh" "$LBIG" >/dev/null || bad "大输出 lint 夹具安装失败"
+printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$LBIG/qwbuddy/config.sh"
+LBIG_TASK="$LBIG/tasks/2099-01-01-big.md"
+python3 - "$LBIG_TASK" <<'PY'
+from pathlib import Path
+import sys
+# 未截断原文超过 200KB；另覆盖第 79–82 字符为中文与不足 80 字符的制表符短行。
+rows = ['working: <占位> ' + '长' * 1200 for _ in range(100)]
+rows += ['blocked: ' + 'a' * 69 + '中文字符' + '填' * 1200 + ' <占位>',
+         'done: <短> 保留\t制表符']
+Path(sys.argv[1]).write_text('# 大输出夹具\nstate: running\n' + '\n'.join(rows) + '\n', encoding='utf-8')
+PY
+LBIG_LOG="$TMP/lint-big.out"
+bash "$ROOT/bin/qwb-lint.sh" --project "$LBIG" >"$LBIG_LOG" 2>&1; big_lint_rc=$?
+big_lint_out="$(<"$LBIG_LOG")"
+{ [[ "$big_lint_rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$big_lint_out"; } \
+  && ok "大账本 lint 仍退出 0 且 LINT PASS" || bad "大账本 lint 未通过"
+[[ "$(wc -c <"$LBIG_LOG")" -lt 65536 ]] \
+  && ok "截断后的 lint 总输出小于 64KB" || bad "lint 警告输出仍超过 64KB"
+if python3 - "$LBIG_TASK" "$LBIG_LOG" <<'PY'
+from pathlib import Path
+import re, sys
+rows = Path(sys.argv[1]).read_bytes().decode('utf-8').splitlines()
+rows = [line for line in rows if re.match(r'^(working|done|blocked|needs-decision):.*<[^>]*>', line)]
+text = Path(sys.argv[2]).read_bytes().decode('utf-8')
+shown = re.findall(r'（占位状态行: (.*?)）', text)
+expected = [line[:80] + '…' if len(line) > 80 else line for line in rows]
+assert len(shown) == 102 and shown == expected, '警告引用丢失、超长或改变短行'
+assert all(len(line) <= 81 for line in shown), '警告引用超过 80 字符加省略号'
+PY
+then ok "102 条警告保留且按 80 个字符截断，UTF-8 与短行原文不变"
+else bad "警告截断损坏 UTF-8、丢引用或改变短行"
+fi
+big_lint_bad=0
+for ((big_lint_i=0; big_lint_i<20; big_lint_i++)); do
+  # 与第 51 节相同的退出码与两个存在性条件，不关闭 pipefail，不重试洗绿。
+  { [[ "$big_lint_rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$big_lint_out" \
+    && grep -q '键全部被.*引用' <<<"$big_lint_out"; } || big_lint_bad=$((big_lint_bad + 1))
+done
+[[ "$big_lint_bad" -eq 0 ]] \
+  && ok "第 51 节同型断言连续 20 次全部通过" || bad "第 51 节同型断言仍有假阴性"
+
 
 # 新节必须加在本行之前
 echo

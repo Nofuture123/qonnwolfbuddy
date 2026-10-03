@@ -298,8 +298,15 @@ placeholder_warn=""
 for f in "$PROJECT_ROOT"/tasks/*.md; do
   grep -q '^state:' "$f" || continue
   while IFS= read -r line; do
-    placeholder_warn="${placeholder_warn} $(basename "$f")（占位状态行: ${line}）"
-  done < <(grep -E '^(working|done|blocked|needs-decision):.*<[^>]*>' "$f" || true)
+    placeholder_warn="${placeholder_warn} ${f##*/}（占位状态行: ${line}）"
+  # 保留原 grep 判定；每文件一次 Perl 按 Unicode 字符截取，不改短行的制表符/回车。
+  done < <(grep -E '^(working|done|blocked|needs-decision):.*<[^>]*>' "$f" | perl -MEncode=decode,encode,FB_DEFAULT -ne '
+    binmode STDOUT, ":raw";
+    chomp;
+    my $text = decode("UTF-8", $_, FB_DEFAULT);
+    $text = substr($text, 0, 80) . "\x{2026}" if length($text) > 80;
+    print encode("UTF-8", $text), "\n";
+  ' || true)
 done
 if [[ -z "$placeholder_warn" ]]; then
   pass "任务书正文无列首占位状态行"
