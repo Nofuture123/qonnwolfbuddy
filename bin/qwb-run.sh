@@ -425,7 +425,10 @@ validate_reuse() {
     printf "%s\t%s\t%s\t%s",$p->{pane_id},$p->{agent},$cwd,$p->{workspace_id};' || true)"
   [[ -n "$pane_meta" ]] \
     || { echo "错误：复用 pane $ag_pane 身份无法解析，拒绝投递" >&2; return 1; }
-  IFS=$'\t' read -r pane_id pane_kind pane_cwd pane_ws <<<"$pane_meta"
+  pane_id="$(printf '%s' "$pane_meta" | cut -f1)"
+  pane_kind="$(printf '%s' "$pane_meta" | cut -f2)"
+  pane_cwd="$(printf '%s' "$pane_meta" | cut -f3)"
+  pane_ws="$(printf '%s' "$pane_meta" | cut -f4)"
   pane_dir="$(cd "$pane_cwd" 2>/dev/null && pwd -P)" \
     || { echo "错误：复用 pane cwd 无法确认：$pane_cwd" >&2; return 1; }
   [[ "$ag_kind" == "$WORKER_HARNESS" && "$pane_kind" == "$WORKER_HARNESS" \
@@ -459,7 +462,12 @@ if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
       printf "%s\t%s\t%s\t%s\t%s\t%s", $a->{name}, $a->{agent_status},
         $a->{pane_id}, $a->{agent}, $cwd, $a->{workspace_id};' || true)"
     if [[ -n "$ag_meta" ]]; then
-      IFS=$'\t' read -r ag_name ag_stat ag_pane ag_kind ag_cwd ag_ws <<<"$ag_meta"
+      ag_name="$(printf '%s' "$ag_meta" | cut -f1)"
+      ag_stat="$(printf '%s' "$ag_meta" | cut -f2)"
+      ag_pane="$(printf '%s' "$ag_meta" | cut -f3)"
+      ag_kind="$(printf '%s' "$ag_meta" | cut -f4)"
+      ag_cwd="$(printf '%s' "$ag_meta" | cut -f5)"
+      ag_ws="$(printf '%s' "$ag_meta" | cut -f6)"
       [[ "$ag_name" == "$NAME" ]] \
         || { echo "错误：查询同名工人 ${NAME} 却得到 ${ag_name}，拒绝复用" >&2; exit 1; }
       case "$ag_stat" in
@@ -749,22 +757,23 @@ elif [[ -z "$PANE" ]]; then
   else
     out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
   fi
-  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）；
-  # 同一次解码顺带取 tab_id，两列输出（仿 worktree space_meta 写法），严格校验与报错文案不变
-  pane_tab="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
+  # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
+  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
     my $j = eval { decode_json(<STDIN>) };
-    my $rp = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH") ? $j->{result}{root_pane} : undef;
-    my $pv = $rp ? $rp->{pane_id} : undef;
-    my $tv = $rp ? $rp->{tab_id} : undef;
-    printf "%s\t%s",
-      ((defined $pv && !ref $pv && $pv ne "" && encode_json($pv) =~ /^"/) ? $pv : ""),
-      ((defined $tv && !ref $tv && $tv ne "") ? $tv : "");
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{pane_id} : undef;
+    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
   ')"
-  PANE="$(printf '%s' "$pane_tab" | cut -f1)"
   [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
   # tab id 供启动失败时回滚关 tab（缺失只警告不拒绝——关不掉大不了留个空 tab）
-  TAB_ID="$(printf '%s' "$pane_tab" | cut -f2)"
+  TAB_ID="$(printf '%s' "$out" | perl -MJSON::PP=decode_json -0777 -e '
+    my $j = eval { decode_json(<STDIN>) };
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{tab_id} : undef;
+    print((defined $v && !ref $v && $v ne "") ? $v : "");
+  ')"
 fi
 
 # op_id收据在投递前写好；失败后锁内重读原路径，不复用任何旧offset/FD。
