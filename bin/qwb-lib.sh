@@ -517,23 +517,6 @@ qwb_is_project_worktree() {
   return 1
 }
 
-# pane get 的共享值守契约：cwd<TAB>agent<TAB>workspace；0=成功/3=不存在/2=查询失败。
-# 空字段输出 - 占位，保证各列非空，避免 TAB IFS read 合并空列。
-# 保留原宽松字段转换；严格身份核验不能复用此契约。
-# wake 旧调用点需要原始空列和数组地址字符串，未证明字节等价，暂不迁移。
-qwb_pane_info() {
-  local out
-  if ! out="$(herdr pane get "$1" 2>&1)"; then
-    grep -q 'pane_not_found' <<< "$out" && return 3 || return 2
-  fi
-  printf '%s' "$out" | perl -MJSON::PP=decode_json -e '
-    my $j = eval { decode_json(join "", <STDIN>) } or exit 2;
-    my $p = $j->{result}{pane} or exit 2;
-    printf "%s\t%s\t%s", map { $_ eq "" ? "-" : $_ }
-      ($p->{foreground_cwd} // $p->{cwd} // ""), ($p->{agent} // ""), ($p->{workspace_id} // "");
-  ' || return 2
-}
-
 # 调用方已有 pane get 应答时只解析，不重复查询；workspace 接受非引用标量。
 qwb_pane_workspace() {
   perl -MJSON::PP=decode_json -0777 -e '
