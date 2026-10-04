@@ -673,11 +673,15 @@ sub reusable_receipts {
   my @failed=grep { $_->{receipt}{rc}!=0 } @matching;
   return grep { my $r=$_->{receipt}; $r->{rc}==0 && !grep { $r->{started_at}<=$_->{receipt}{ended_at} } @failed } @matching;
 }
+sub spec_body {
+  my $s=shift; $s=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
+  return $s;
+}
 sub gate_context {
   my $observe=shift // 0;
   my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
   fail('规格/场景已变；原收据失效，交主控重授权') unless $observe || $data->{spec_rev}==$b->{spec_rev} && scen_fp($body) eq $b->{scenarios_fp};
-  my $spec=$body; $spec=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
+  my $spec=spec_body($body);
   fail('规格正文已变') unless $observe || sha256_hex(encode('UTF-8',$spec)) eq $b->{spec_sha256};
   my $c=encode('UTF-8',$b->{candidate});
   fail('候选路径变化') unless (realpath($c) // '') eq $c && capture('git','-C',$c,'rev-parse','--show-toplevel') eq $c;
@@ -1289,7 +1293,7 @@ if ($cmd eq 'land-authorize') {
   $b->{environment}=text(realpath(encode('UTF-8',$b->{environment})) // fail('环境证据不存在'));
   $b->{spec_rev}=$data->{spec_rev}; $b->{scenarios_fp}=scen_fp($body);
   # 绑定规格正文，不绑定会不断增长的运行时账本正文。
-  my $spec=$body; $spec=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
+  my $spec=spec_body($body);
   $b->{spec_sha256}=sha256_hex(encode('UTF-8',$spec));
   my @policy_refs=$body=~/^test-policy:[ \t]*(\S+)[ \t]*$/mg;
   if (@policy_refs) {
