@@ -1,5 +1,5 @@
 # QW buddy 配置——bash 可直接 source；这就是唯一来源，直接改这里
-QWB_WORKERS="codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high pi-sol-high omp-gemini"   # 工人表；每个名字须在 workers.sh 有且仅有一条声明
+QWB_WORKERS="pi claude pi-sol-high pi-astra-high pi-astra-low claude-opus-medium claude-fable-low"   # 工人表；每个名字须在 workers.sh 有且仅有一条声明
 # 启动方式与逐项 argv 见同目录 workers.sh。旧 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS
 # 必须用母本仓 qwb-init.sh --migrate-worker-config <项目根> 显式迁移。
 QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
@@ -25,8 +25,9 @@ QWB_WORKSPACE=""                       # 本项目的 herdr workspace id（如 w
 QWB_GATE_FAST=""                       # 快门：快、无外部依赖，改一行跑它
 QWB_GATE_FULL=""                       # 全门：完整检查，合并前跑
 # —— 以下仅为人/AI 阅读，脚本不读 ——
-# 工人能力档：codex=强实现（复杂代码、重构）｜pi=快速便宜（常规执行、机械改动、调研）｜claude=难活/审核（架构判断、对抗审查、前端）
-#             默认工人表里的 devin/omp 也在 workers.sh（同样最高权限启动）；能力档按实际产品判断
-# 派工规则：复杂架构/高风险→强档；常规实现/机械改动→快档；审核必须换模型家族；联网/实时信息按能力挑
-#           派工前可查 quota-axi；模型判定 = 智力档 × 额度现状（额度只是参考）
+# 工人能力档：pi-sol-high=常规实现、机械改动、批量小活、纯规划、调研、维护
+#             pi-astra-high→claude-fable-low=复杂架构、跨模块、高风险；claude-fable-low=顾问、复杂规划
+# 独立审核：pi-astra-low；实现者是 astra 时改用 claude-opus-medium，审核者模型须与实现者不同
+# 只有一个候选的类别不可用时停止，由主控报使用者，不自动换模型。
+# 派工前可查 quota-axi；模型判定 = 智力档 × 额度现状（额度只是参考）
 # 硬规矩：工人一律 Herdr 窗口交互式运行（禁 headless）；零通知使用者；只用 Herdr；超时一律毫秒
