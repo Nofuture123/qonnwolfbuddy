@@ -67,6 +67,18 @@ trap 'qwb_test_drain && rm -rf "$TMP" || exit 1' EXIT
 mkdir -p "$TMP/home/.codex"; printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$TMP/home/.codex/config.toml"
 export HOME="$TMP/home"
 bash "$ROOT/bin/qwb-init.sh" "$TMP" >/dev/null || bad "qwb-init.sh 运行失败"
+# Snapshot before any fixture can mutate the installation; never hand it to a test.
+GOLDEN="$TMP/golden-install"
+GOLDEN_MANIFEST="$TMP/golden-install.json"
+mkdir -p "$GOLDEN"
+cp -R "$TMP/qwbuddy" "$TMP/tasks" "$TMP/.claude" "$TMP/.pi" \
+  "$TMP/.gitignore" "$TMP/AGENTS.md" "$TMP/CLAUDE.md" "$GOLDEN/" \
+  && python3 -B "$ROOT/tests/smoke-install.py" snapshot "$GOLDEN" "$GOLDEN_MANIFEST" \
+  || bad "黄金安装快照准备失败"
+clone_install() {
+  python3 -B "$ROOT/tests/smoke-install.py" copy "$GOLDEN" "$TMP" "$1"
+}
+
 
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
 for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
@@ -1394,7 +1406,7 @@ lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
 npass="$(printf '%s' "$lintout" | grep -c '^PASS' || true)"  # 0 匹配时 grep -c 退出码 1，照同文件写法吞掉
 [[ "$npass" -ge 4 ]] \
   && ok "lint 逐项 PASS 输出可见" || bad "lint 无逐项 PASS 输出"
-HL="$TMP/healthy"; mkdir -p "$HL"; bash "$ROOT/bin/qwb-init.sh" "$HL" >/dev/null
+HL="$TMP/healthy"; mkdir -p "$HL"; clone_install "$HL" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HL/qwbuddy/config.sh"
 bash "$ROOT/bin/qwb-lint.sh" --project "$HL" >/dev/null 2>&1 \
   && ok "健康安装项目 lint 退出 0" || bad "健康项目 lint 非 0"
@@ -1637,7 +1649,7 @@ bash "$ROOT/bin/qwb-test.sh" fast --project "$BADT" >/dev/null 2>&1 \
 
 echo "== 30. M3 负例：lint 三处漏检 =="
 # 30a：任务书有 state: 字段但值为空 → lint 必须 FAIL（修复前被跳过）
-ES="$TMP/esproj"; mkdir -p "$ES"; bash "$ROOT/bin/qwb-init.sh" "$ES" >/dev/null
+ES="$TMP/esproj"; mkdir -p "$ES"; clone_install "$ES" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$ES/qwbuddy/config.sh"
 printf '# t\nstate: \n' > "$ES/tasks/2099-01-26-emptystate.md"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ES" 2>&1)"; rc=$?
@@ -1648,7 +1660,7 @@ rm "$ES/tasks/2099-01-26-emptystate.md"; printf '# lessons\n' > "$ES/tasks/lesso
 bash "$ROOT/bin/qwb-lint.sh" --project "$ES" >/dev/null 2>&1 \
   && ok "无 state 字段的文档不误报" || bad "无 state 字段文档被误报"
 # 30b：export 形式声明的死键 + 只在纯注释里被「引用」的键 → 都算死键
-EK="$TMP/ekproj"; mkdir -p "$EK"; bash "$ROOT/bin/qwb-init.sh" "$EK" >/dev/null
+EK="$TMP/ekproj"; mkdir -p "$EK"; clone_install "$EK" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_UNUSED_KEY=1\nQWB_COMMENT_ONLY=1\n' >> "$EK/qwbuddy/config.sh"
 printf '%s\n' '#!/usr/bin/env bash' '# 只在注释里提到 QWB_COMMENT_ONLY，不算读取' > "$EK/qwbuddy/bin/qwb-note.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$EK" 2>&1)"; rc=$?
@@ -1657,7 +1669,7 @@ lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$EK" 2>&1)"; rc=$?
 grep -q 'QWB_COMMENT_ONLY' <<<"$lintout" \
   && ok "仅注释引用仍算死键" || bad "仅注释引用被当成已读取"
 # 30c：非 qwb- 前缀脚本里的 $VAR+非ASCII 写法 → FAIL（修复前只扫 qwb-*.sh）
-HX="$TMP/hxproj"; mkdir -p "$HX"; bash "$ROOT/bin/qwb-init.sh" "$HX" >/dev/null
+HX="$TMP/hxproj"; mkdir -p "$HX"; clone_install "$HX" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$HX/qwbuddy/config.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$X你好"' > "$HX/qwbuddy/bin/helper.sh"
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$HX" 2>&1)"; rc=$?
@@ -1694,7 +1706,7 @@ nout="$( cd "$TMP" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ctl bash qwbuddy/bi
 { [[ "$nrc" -ne 0 ]] && grep -q '失败路径' <<<"$nout"; } \
   && ok "无失败路径场景的任务书被拒（rc=${nrc}）" || bad "只有 happy path 竟派发成功（rc=${nrc}）"
 # 31c 正例 + 冻结指纹：装好且门已声明的独立项目里派发 → scenarios-fp 写入
-MP="$TMP/mproj"; mkdir -p "$MP"; bash "$ROOT/bin/qwb-init.sh" "$MP" >/dev/null
+MP="$TMP/mproj"; mkdir -p "$MP"; clone_install "$MP" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$MP/qwbuddy/config.sh"
 MPT="$MP/tasks/2099-01-32-mscen.md"
 cat > "$MPT" <<'EOF'
@@ -1907,7 +1919,7 @@ grep -q '^scenarios-fp:' "$MPT2" && ok "基线已重建写回" || bad "未重建
 grep -q 'accept-new-scenarios' "$MPT2" && ok "任务书留了重建说明行" || bad "未留重建说明行"
 
 echo "== 36. R2-M3：死键判定——字面量/纯赋值不算读取 =="
-LK="$TMP/lkproj"; mkdir -p "$LK"; bash "$ROOT/bin/qwb-init.sh" "$LK" >/dev/null
+LK="$TMP/lkproj"; mkdir -p "$LK"; clone_install "$LK" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\nexport QWB_AUDIT_UNUSED=1\n' >> "$LK/qwbuddy/config.sh"
 # 假引用 1：只打印字面量（无 $）→ 仍须判死键
 printf '%s\n' '#!/usr/bin/env bash' 'echo QWB_AUDIT_UNUSED' > "$LK/qwbuddy/bin/helper.sh"
@@ -1940,7 +1952,7 @@ grep -q 'spec-resolved' "$TMP/qwbuddy/QWBUDDY.md" && ok "安装的 QWBUDDY.md �
 grep -q '三个审点' "$TMP/qwbuddy/roles/审核者.md" && ok "安装的 审核者.md 含审票三个审点" || bad "审核者.md 缺审票节"
 # 独立 git 项目：默认派发会开 worktree——拒绝路径必须证明 worktree 没被创建
 SG="$TMP/specgate"; mkdir -p "$SG"
-bash "$ROOT/bin/qwb-init.sh" "$SG" >/dev/null
+clone_install "$SG" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$SG/qwbuddy/config.sh"
 git -C "$SG" init -q
 git -C "$SG" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
@@ -2008,7 +2020,7 @@ grep -q '规格疑点未处理' <<<"$out" \
   && ok "疑点被后续 done: 遮不住（最近行与疑点行同显）" || bad "疑点被后续普通日志遮住"
 # 39b：对照——最后相关事件是 spec-resolved 的票不标
 SG2="$TMP/specgate2"; mkdir -p "$SG2"
-bash "$ROOT/bin/qwb-init.sh" "$SG2" >/dev/null
+clone_install "$SG2" >/dev/null
 printf '# sgres\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nblocked: spec-defect: 旧疑点\nworking: spec-resolved: spec；已改票\ndone: 完成\n' \
   > "$SG2/tasks/2099-01-51-sgres.md"
 out="$( cd "$SG2" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh 2>&1 )"
@@ -2155,7 +2167,7 @@ nout="$( cd "$SG" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:sg bash qwbuddy/bin/
 
 echo "== 41. SDG④ 隔离副本幂等：返工/修订后再派不撞已存在；脏目录拒绝（验收报回的主路径）=="
 SG3="$TMP/specidem"; mkdir -p "$SG3"
-bash "$ROOT/bin/qwb-init.sh" "$SG3" >/dev/null
+clone_install "$SG3" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$SG3/qwbuddy/config.sh"
 git -C "$SG3" init -q
 git -C "$SG3" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
@@ -2237,7 +2249,7 @@ echo "== 42. user_开局无需手工启动值守（qwb-wake.sh --ensure 幂等�
 # 场景（票内 user_开局无需手工启动值守 / user_失活值守明确可见）：
 #   Given 项目已安装、主控存活、尚无本项目有效值守  When 主控按开局步骤调 --ensure
 #   Then 本 workspace 内建一个可见值守 tab、记录身份、启动 qwb-wake.sh；重复调用复用不重复创建
-ENSP="$TMP/ensproj"; mkdir -p "$ENSP"; bash "$ROOT/bin/qwb-init.sh" "$ENSP" >/dev/null
+ENSP="$TMP/ensproj"; mkdir -p "$ENSP"; clone_install "$ENSP" >/dev/null
 DYN="$TMP/herdr-dyn"
 wsan() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9'; }
 ensrun() { ( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID="${ENWS:-wtestW}" HERDR_PANE_ID=wtest:ctl \
@@ -2613,7 +2625,7 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 echo "== 47. worker launch modes：herdr 默认 / pane-run（cmd 与 zcode）=="
 assert_file "$ROOT/tests/fixtures/herdr/agent-get-cmd.json"
 assert_file "$ROOT/tests/fixtures/herdr/agent-get-error.json"
-LM="$TMP/launch-modes"; mkdir -p "$LM"; bash "$ROOT/bin/qwb-init.sh" "$LM" >/dev/null
+LM="$TMP/launch-modes"; mkdir -p "$LM"; clone_install "$LM" >/dev/null
 printf '%s\n' 'QWB_WORKERS="codex cmd zcode"' 'QWB_AGENT_START_MS=300' >> "$LM/qwbuddy/config.sh"
 
 mk_launch_task() {
@@ -2739,7 +2751,7 @@ echo "== 48. F：工人 tab 落在项目 workspace（QWB_WORKSPACE 三级解析 
 # 场景（票 §1）：显式声明优先｜声明了但 herdr 查不到即拒绝（任何副作用之前）｜未声明按 worktree.repo_root 匹配｜
 #   未声明且无匹配回退调用者 workspace 并警告｜多匹配取 focused（都不 focused 取第一个+警告）｜--ensure 同款｜
 #   workspace list 查询失败即拒绝｜响应不合契约即拒绝。workspace list 应答取自真录 workspace-list.json。
-WSJ="$TMP/wsproj"; mkdir -p "$WSJ"; bash "$ROOT/bin/qwb-init.sh" "$WSJ" >/dev/null
+WSJ="$TMP/wsproj"; mkdir -p "$WSJ"; clone_install "$WSJ" >/dev/null
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$WSJ/qwbuddy/config.sh"
 WSDYN="$TMP/ws-dyn"; mkdir -p "$WSDYN"
 WSERR="$TMP/ws-err.log"; WST="$WSJ/tasks/2099-03-01-"
@@ -3256,7 +3268,7 @@ echo "== 51. 工人最高权限启动：QWB_WORKER_ARGS 按工人追加 herdr ag
 #   pane-run 工人在 ARGS 里配了值则拒绝（零副作用）｜pane-run 命令行带权限参数照常且过 headless 检查｜
 #   参数里混入 headless 形式则拒绝（零副作用）｜模板默认值可被 lint 与 source 接受。
 # 真实调用序列仍全部经 stub herdr；stub 应答取自 tests/fixtures/herdr/ 真录（agent-start.json 等）。
-MPX="$TMP/maxperm"; mkdir -p "$MPX"; bash "$ROOT/bin/qwb-init.sh" "$MPX" >/dev/null
+MPX="$TMP/maxperm"; mkdir -p "$MPX"; clone_install "$MPX" >/dev/null
 printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' \
   'QWB_WORKERS="codex claude devin omp pi cmd"' >> "$MPX/qwbuddy/config.sh"
 MPXT="$MPX/tasks/2099-04-01-"
@@ -3727,7 +3739,7 @@ grep -q '值守：未运行' <<<"$out" \
 echo "== 57. 模板新票不污染状态（列首状态行缺口回归）=="
 # 场景：把 templates/TASK.md 原样复制为两张新票（state: running）→
 #   status 无「最近:」行；wake --once 后各票 wake 行 fp == sha1("running\n")（最后状态行为空）
-TPLP="$TMP/tplproj"; mkdir -p "$TPLP"; bash "$ROOT/bin/qwb-init.sh" "$TPLP" >/dev/null
+TPLP="$TMP/tplproj"; mkdir -p "$TPLP"; clone_install "$TPLP" >/dev/null
 cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t.md"
 cp "$ROOT/templates/TASK.md" "$TPLP/tasks/2099-01-01-t2.md"
 out="$( cd "$TPLP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-status.sh )"
@@ -3783,7 +3795,7 @@ grep -q '2099-01-01-t3.md' <<<"$lint_err" \
   && bad "缩进行被 lint 第 8 项误报" || ok "lint 第 8 项不报缩进行（缩进不算列首）"
 
 echo "== 59. 主控锁残留自动回收（判活：pid 与 pane）=="
-LP="$TMP/lockproj"; mkdir -p "$LP"; bash "$ROOT/bin/qwb-init.sh" "$LP" >/dev/null
+LP="$TMP/lockproj"; mkdir -p "$LP"; clone_install "$LP" >/dev/null
 LK="$LP/qwbuddy/.controller.lock"
 # 59a 死 pid → 自动回收
 rm -rf "$LK"; mkdir "$LK"
@@ -3819,7 +3831,7 @@ out="$( cd "$LP" && PATH='/usr/bin:/bin' bash qwbuddy/bin/qwb-lock.sh acquire --
   && ok "herdr 不在 PATH：拒绝不回收（fail-closed）" || { bad "无 herdr 竟回收（rc=${rc}）"; }
 
 echo "== 60. 孤儿 --block 不消费唤醒（主控锁复核）=="
-OP="$TMP/orphanproj"; mkdir -p "$OP"; bash "$ROOT/bin/qwb-init.sh" "$OP" >/dev/null
+OP="$TMP/orphanproj"; mkdir -p "$OP"; clone_install "$OP" >/dev/null
 mkdir "$OP/qwbuddy/.controller.lock"; printf '2020-01-01T00:00:00Z wX:p1\n' > "$OP/qwbuddy/.controller.lock/owner"
 mk_orphan_ticket() { printf '# o\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 新进展待消费\n' > "$OP/tasks/2099-01-01-orphan.md"; }
 mk_orphan_ticket
@@ -3836,7 +3848,7 @@ mk_orphan_ticket
   && ok "HERDR_PANE_ID 未设：跳过复核照常消费（rc=2）" || { bad "无 HERDR_PANE_ID 路径不对（rc=${rc}）"; }
 
 echo "== 61. 一轮一条投递 + 投递失败一行不写 =="
-BP2="$TMP/batchproj"; mkdir -p "$BP2"; bash "$ROOT/bin/qwb-init.sh" "$BP2" >/dev/null
+BP2="$TMP/batchproj"; mkdir -p "$BP2"; clone_install "$BP2" >/dev/null
 for i in 1 2 3; do
   printf '# b%s\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\ndone: 批量票 %s 的进展行\n' "$i" "$i" > "$BP2/tasks/2099-01-0$i-b$i.md"
 done
@@ -3861,7 +3873,7 @@ out="$( cd "$BP2" && PATH="$STUB:$PATH" HERDR_FAIL=run bash qwbuddy/bin/qwb-wake
   && ok "投递失败：三票一行 wake 都不写、主循环不死（rc=0）" || bad "失败路径写了 wake 或 rc≠0（rc=${rc}）"
 
 echo "== 62. REWAKE 兜底只对 running（blocked/needs-decision 等裁决不重叫）=="
-RWP="$TMP/rewakeproj"; mkdir -p "$RWP"; bash "$ROOT/bin/qwb-init.sh" "$RWP" >/dev/null
+RWP="$TMP/rewakeproj"; mkdir -p "$RWP"; clone_install "$RWP" >/dev/null
 RUNFP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
 NDFP="$(printf 'needs-decision\n' | shasum | cut -d' ' -f1)"
 printf '# rw-r\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nwake: 2000-01-01T00:00:00Z state=running fp=%s\n' "$RUNFP" > "$RWP/tasks/2099-01-01-rwr.md"
@@ -3888,7 +3900,7 @@ blk_summary="$(printf '%s\n' "$blk_out" | grep '^看账本：' | tail -1)"
 echo "== 63. worktree 初始化钩子 QWB_WORKTREE_SETUP =="
 GP2="$TMP/wtproj"; mkdir -p "$GP2"
 ( cd "$GP2" && git init -q && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m init )
-bash "$ROOT/bin/qwb-init.sh" "$GP2" >/dev/null
+clone_install "$GP2" >/dev/null
 mk_wt_task() { # $1=id
 cat > "$GP2/tasks/2099-01-01-$1.md" <<EOF
 # $1
@@ -3934,7 +3946,7 @@ out="$( cd "$GP2" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:wt bash qwbuddy/bin/
   && ok "钩子失败：拒绝派发（退出码 3 上报）、零副作用、副本保留" || { bad "钩子失败处理不对（rc=${rc}）：${out:0:200}"; }
 
 echo "== 64. 工人丢失：缺pane叫一次，shell/未知保留，不猜后台死亡 =="
-WLP="$TMP/lostproj"; mkdir -p "$WLP"; bash "$ROOT/bin/qwb-init.sh" "$WLP" >/dev/null
+WLP="$TMP/lostproj"; mkdir -p "$WLP"; clone_install "$WLP" >/dev/null
 LFP="$(printf 'running\ndone: 完成一半' | shasum | cut -d' ' -f1)"   # 实现指纹输入无尾随换行
 mk_lost_ticket() {
   # 种子 wake 行用新鲜时间戳：2020 年会被 REWAKE 超期判定合法重叫，破坏「指纹一致不重叫」的对照
@@ -4023,7 +4035,7 @@ git -C "$GP2" worktree add -q -b foo "$GP2/.worktrees/foo" HEAD
   && ok "worktree finish 精确命中 foo（记账落对文件）" || { bad "finish 记账落点不对（rc=${rc}）"; }
 
 echo "== 66. 中文 agent 名保留 ASCII 残段并附完整 id 短哈希 =="
-ANP="$TMP/agentname"; mkdir -p "$ANP"; bash "$ROOT/bin/qwb-init.sh" "$ANP" >/dev/null
+ANP="$TMP/agentname"; mkdir -p "$ANP"; clone_install "$ANP" >/dev/null
 mk_an_task() { # $1=id
 cat > "$ANP/tasks/2099-01-01-$1.md" <<EOF
 # $1
@@ -4157,7 +4169,7 @@ lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$MRP" 2>&1)"; lrc=$?
   || { bad "单配置不应报双配置项（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
 
 echo "== 69. 返工重派：复用既有工人 / 同名在干拒绝 / agent start 失败回滚 =="
-RUP="$TMP/reuse"; mkdir -p "$RUP"; bash "$ROOT/bin/qwb-init.sh" "$RUP" >/dev/null
+RUP="$TMP/reuse"; mkdir -p "$RUP"; clone_install "$RUP" >/dev/null
 cat > "$RUP/tasks/2099-01-01-reuset.md" <<'EOF'
 # reuset
 state: blocked
@@ -4865,7 +4877,7 @@ smoke_result jev-roles || bad "JEV agents HTTP 全链路"
 
 echo "== 87. lint 大输出与占位警告 UTF-8 截断回归 =="
 LBIG="$TMP/lint-big"; mkdir -p "$LBIG"
-bash "$ROOT/bin/qwb-init.sh" "$LBIG" >/dev/null || bad "大输出 lint 夹具安装失败"
+clone_install "$LBIG" >/dev/null || bad "大输出 lint 夹具安装失败"
 printf 'QWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n' >> "$LBIG/qwbuddy/config.sh"
 LBIG_TASK="$LBIG/tasks/2099-01-01-big.md"
 python3 - "$LBIG_TASK" <<'PY'
@@ -4907,6 +4919,10 @@ done
 [[ "$big_lint_bad" -eq 0 ]] \
   && ok "第 51 节同型断言连续 20 次全部通过" || bad "第 51 节同型断言仍有假阴性"
 
+
+# Successful integrity checks stay silent, preserving the existing PASS count.
+python3 -B "$ROOT/tests/smoke-install.py" check "$GOLDEN" "$GOLDEN_MANIFEST" \
+  || bad "黄金安装在使用期间被修改"
 
 echo "== 88. 值守退出回收订阅读账及孙进程 =="
 # The probe checks product-owned groups before any shared fixture cleanup can hide a leak.
