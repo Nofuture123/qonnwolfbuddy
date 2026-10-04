@@ -393,7 +393,7 @@ sub planning_validate {
 sub validate {
   # 协议存在与JSON值真假无关；null/false/0必须拒绝，不能剥标记降级legacy。
   return unless $has_protocol || defined($data);
-  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), exists($data->{handoffs}) ? 'handoffs' : (), exists($data->{gate}) ? 'gate' : (), exists($data->{land}) ? 'land' : (), exists($data->{land_history}) ? 'land_history' : (), exists($data->{planning}) ? 'planning' : (), exists($data->{planning_authority}) ? 'planning_authority' : (), exists($data->{test_requests}) ? 'test_requests' : (), exists($data->{ci}) ? 'ci' : ());
+  keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration), grep { exists $data->{$_} } qw(handoffs gate land land_history planning planning_authority test_requests ci));
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
