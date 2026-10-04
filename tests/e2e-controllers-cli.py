@@ -19,7 +19,7 @@ def invoke(*args):
 help_result = invoke("--help")
 assert help_result.returncode == 0, help_result.stderr
 for expected in ("--controller codex|claude|pi", "gpt-6-luna/max", "opus/high",
-                 "zai-coding-cn/glm-5.3-flash/high", "~/.codex/config.toml",
+                 "magpie/codex/gpt-6.1-sol/high", "~/.codex/config.toml",
                  'service_tier="default"', "TUI 模型/状态行出现 fast 即失败",
                  "~/.pi/agent/trust.json", "~/.claude.json"):
     assert expected in help_result.stdout, expected

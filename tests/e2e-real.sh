@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 用法: bash tests/e2e-real.sh --worker devin|cmdc [--controller codex|claude|pi] [--controller-model <模型>] [--controller-effort <档位>] [--timeout-ms 2700000] [--report <新文件>] [--keep]
 
-默认主控/模型/推理档：codex gpt-6-luna/max；claude opus/high；pi zai-coding-cn/glm-5.3-flash/high。
+默认主控/模型/推理档：codex gpt-6-luna/max；claude opus/high；pi magpie/codex/gpt-6.1-sol/high。
 前提：Herdr pane 内运行；所选主控与工人 CLI 已登录。交互运行会真实调用模型并产生花费。
 脚本在隔离 /tmp Git 项目与新 named Herdr session 运行；可在另一终端用
   herdr --session <脚本输出的会话名>
@@ -38,7 +38,7 @@ done
 case "$CONTROLLER" in
   codex) MODEL="${MODEL:-gpt-6-luna}"; EFFORT="${EFFORT:-max}" ;;
   claude) MODEL="${MODEL:-opus}"; EFFORT="${EFFORT:-high}" ;;
-  pi) MODEL="${MODEL:-zai-coding-cn/glm-5.3-flash}"; EFFORT="${EFFORT:-high}" ;;
+  pi) MODEL="${MODEL:-magpie/codex/gpt-6.1-sol}"; EFFORT="${EFFORT:-high}" ;;
 esac
 [[ "$TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "错误：--timeout-ms 须为正整数" >&2; exit 2; }
 [[ "${HERDR_ENV:-}" == 1 ]] || { echo "错误：须从 Herdr pane 运行真实 E2E" >&2; exit 1; }
