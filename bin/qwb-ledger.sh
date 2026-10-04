@@ -351,7 +351,8 @@ sub scenario {
 }
 sub scenarios_ok {
   my ($s,$heading)=@_; $heading //= qr/\A## 验收场景\n/;
-  return $s =~ $heading && $s =~ /Given/ && $s =~ /When/ && $s =~ /Then/ && $s =~ /失败|拒绝|fail|error/i && index($s,'<!-- qwb-collab-')<0;
+  # Align failure keywords with dispatch gates: bin/qwb-run.sh:286 and bin/qwb-lint.sh:212.
+  return $s =~ $heading && $s =~ /Given/ && $s =~ /When/ && $s =~ /Then/ && $s =~ /失败|拒绝|报错|异常|负例|非法|fail|error/i && index($s,'<!-- qwb-collab-')<0;
 #line 247
 }
 sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[0]))) }
