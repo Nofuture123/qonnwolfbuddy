@@ -819,6 +819,7 @@ sub graph_check {
   }
   return \@evidence;
 }
+sub accepted_history { $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted') }
 sub start_check {
   my $selected=shift; fail('用户专属问题未解除') if $data && grep { $_->{resumed} eq '' } values %{$data->{questions}};
   if (!$data || !$data->{planning}) {
@@ -828,7 +829,7 @@ sub start_check {
   }
   my $p=$data->{planning}; my $a=$p->{authorization} // fail('首次启动无明确实施授权/预算');
   fail('修订尚待handoff，不启动旧规格') if $p->{pending_revision};
-  fail('已验收历史不重复派工') if $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted');
+  fail('已验收历史不重复派工') if accepted_history();
   fail('工人/权限未授权，不可用default兜底') if defined($selected) && $selected ne 'auto' && !grep { $_ eq $selected } @{$a->{workers}};
   fail('本代规划授权已失效') if $planner_native && !$planner;
   my $s=read_file("$root/qwbuddy/workers.sh");
@@ -967,7 +968,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'plan-authorize') {
   fail('仅主控明确启动授权') unless $controller && @args==1;
   my ($a)=json_file($args[0]); $a=authorization($a);
-  my $p=$data->{planning} // fail('先以new登记本票规划'); fail('claim在途/已验收历史不改') if $data->{claim} || $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted');
+  my $p=$data->{planning} // fail('先以new登记本票规划'); fail('claim在途/已验收历史不改') if $data->{claim} || accepted_history();
   $p->{authorization}=$a; $p->{ready}={}; $line="working: implementation-authorized spec_rev=$data->{spec_rev} budget=$a->{budget}"; append_body($line);
 } elsif ($cmd eq 'start-check') {
   start_check($args[0]); print "ready\n"; exit;
@@ -1006,7 +1007,7 @@ if ($cmd eq 'land-authorize') {
   my $e=graph_check('land',1); $data->{planning}{landed}={spec_rev=>$data->{spec_rev},evidence=>$args[0],dependencies=>$e}; $line="working: landed-evidence $args[0]"; append_body($line);
 } elsif ($cmd eq 'plan-revision') {
   fail('修订请求必须CAS') if $expect eq ''; my $p=$data->{planning} // fail('无规划票');
-  fail('已验收历史不改，新需求另开后续票') if $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted');
+  fail('已验收历史不改，新需求另开后续票') if accepted_history();
   my ($r)=json_file($args[0]); keys_only($r,qw(source_task source_event spec constraints scenarios needs)); needs_ok($r->{needs}); $r->{source}=durable_source(delete($r->{source_task}),delete($r->{source_event}));
   fail('修订request在途，先对账') if $p->{pending_revision};
   fail('新场景缺少正常/拒绝行为') unless $r->{scenarios}=~/\A## 验收场景\n/ && $r->{scenarios}=~/Given/ && $r->{scenarios}=~/When/ && $r->{scenarios}=~/Then/ && $r->{scenarios}=~/失败|拒绝|fail|error/i && index($r->{scenarios},'<!-- qwb-collab-')<0;
@@ -1487,7 +1488,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'revise' && $data && $data->{planning} && $data->{planning}{pending_revision}) {
   my $p=$data->{planning}; my $r=$p->{pending_revision};
   fail('应用修订须CAS/明确source，不能覆盖在途claim') unless $expect ne '' && @args==1 && $args[0] eq $r->{source}{event} && !$data->{claim} && $r->{spec_rev}==$data->{spec_rev};
-  fail('已验收历史不改') if $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted');
+  fail('已验收历史不改') if accepted_history();
   fail('gate尚未显式交出旧验收标准') if $data->{gate} && (!$p->{revision_handoff} || $p->{revision_handoff}{spec_rev}!=$data->{spec_rev});
   push @{$p->{revisions}},{spec_rev=>$data->{spec_rev},spec=>$p->{spec},constraints=>$p->{constraints},scenarios=>scenario($body),needs=>$p->{needs},source=>$r->{source},gate=>$data->{gate}};
   spec_replace($r->{spec},$r->{constraints},$r->{scenarios});
