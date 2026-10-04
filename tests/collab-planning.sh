@@ -71,7 +71,7 @@ file.write_text(json.dumps(s))
     if fixture:
         (temp/'fixture-env.json').write_text(json.dumps({k:env[k] for k in ['PATH','PL_NATIVE','PL_PROJECT','PL_PID','PL_LOG']}|{'source_root':str(ROOT),'note':'仅fakeHerdr fixture。PL_PID与角色PID为本轮测试父进程，测试结束后不能声称仍活；独立复现须显式重建原生边界替身。'},ensure_ascii=False))
     def process_chain(pid):
-        table=subprocess.check_output(['/bin/ps','-axo','pid=,ppid=,state=,etime=,wchan=,command='],text=True)
+        table=subprocess.check_output(['/bin/ps','-axo','pid=,ppid=,state=,etime=,wchan=,command=']).decode('utf-8',errors='replace')
         rows=[line for line in table.splitlines() if len(line.split(None,4))==5]
         children={pid}
         for _ in range(64):

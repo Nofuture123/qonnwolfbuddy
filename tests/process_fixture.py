@@ -19,11 +19,11 @@ def register(pid):
 
 def rows():
     probe = subprocess.Popen(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,command='],
-                             stdout=subprocess.PIPE, text=True)
+                             stdout=subprocess.PIPE)
     output, _ = probe.communicate()
     if probe.returncode:
         raise RuntimeError('cannot inspect owned test processes')
-    return [row for line in output.splitlines()
+    return [row for line in output.decode('utf-8', errors='replace').splitlines()
             if (row := line.split(None, 4)) and int(row[0]) != probe.pid]
 
 

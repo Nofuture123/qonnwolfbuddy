@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def processes(pids=()):
     args = ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,command=']
-    result = subprocess.run(args, capture_output=True, text=True, check=True)
-    rows = [line.split(None, 4) for line in result.stdout.splitlines()]
+    result = subprocess.run(args, capture_output=True, check=True)
+    rows = [line.split(None, 4) for line in result.stdout.decode('utf-8', errors='replace').splitlines()]
     return [row for row in rows if not row[3].startswith('Z') and
             (not pids or int(row[0]) in pids)]
 

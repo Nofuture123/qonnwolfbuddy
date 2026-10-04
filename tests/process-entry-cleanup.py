@@ -18,10 +18,10 @@ WIRE = str(ROOT / 'tests/fixtures/herdr/wire-server.py')
 
 def snapshot():
     probe = subprocess.Popen(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,command='],
-                             stdout=subprocess.PIPE, text=True)
+                             stdout=subprocess.PIPE)
     output, _ = probe.communicate()
     assert probe.returncode == 0
-    return [row for line in output.splitlines() if (row := line.split(None, 4))
+    return [row for line in output.decode('utf-8', errors='replace').splitlines() if (row := line.split(None, 4))
             and int(row[0]) != probe.pid]
 
 
