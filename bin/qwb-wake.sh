@@ -353,8 +353,23 @@ watch_ensure() {
   return "$rcr"
 }
 
+# 返回 1=投递失败、2=探测失败、3=登记失败；具体失败文案由两条入口保留。
+watch_launch() {
+  local pane="$1" workspace="$2" tries=0 nv=""
+  herdr pane run "$pane" "$WATCH_CMD" >/dev/null || return 1
+  while (( tries < 6 )); do
+    nv="$(pane_probe "$pane")"; [[ "$nv" == wake:* ]] && break
+    sleep 0.5; tries=$((tries + 1))
+  done
+  [[ "$nv" == wake:* ]] || return 2
+  WATCH_LAUNCH_PID="${nv#wake:}"; WATCH_LAUNCH_PID="${WATCH_LAUNCH_PID%@*}"
+  [[ -n "$workspace" ]] || workspace="$(watch_field workspace)"
+  watch_write "$pane" "$workspace" "$WATCH_LAUNCH_PID" || return 3
+  return 0
+}
+
 _ensure_body() {
-  local rp="" scanrc=0 v="" np="" nv="" tries=0
+  local rp="" scanrc=0 v="" np="" launchrc=0
   [[ -f "$WATCHF" ]] && rp="$(watch_field pane)"
   # 只扫描本项目选定的值守 workspace。
   watch_scan "$tabws" || scanrc=$?
@@ -422,19 +437,13 @@ _ensure_body() {
       err)
         echo "错误：登记 pane ${rp} 进程查询失败，无法确认值守状态——不擅自多开" >&2; return 1 ;;
       idle)
-        herdr pane run "$rp" "$WATCH_CMD" >/dev/null \
-          || { echo "错误：往 pane ${rp} 投递值守启动命令失败" >&2; return 1; }
-        while (( tries < 6 )); do
-          nv="$(pane_probe "$rp")"; [[ "$nv" == wake:* ]] && break
-          sleep 0.5; tries=$((tries + 1))
-        done
-        [[ "$nv" == wake:* ]] || {
-          echo "错误：已向 pane ${rp} 投递值守启动命令，但连续探测未确认进程出现——不算确保成功，未登记 .watch；请到该 pane 看实际报错后重跑" >&2
-          return 1; }
-        local wpid="${nv#wake:}"; wpid="${wpid%@*}"
-        watch_write "$rp" "$(watch_field workspace)" "$wpid" \
-          || { echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1; }
-        echo "值守已在原 pane 重启（pane ${rp} pid ${wpid}）"
+        watch_launch "$rp" "" || launchrc=$?
+        case "$launchrc" in
+          1) echo "错误：往 pane ${rp} 投递值守启动命令失败" >&2; return 1 ;;
+          2) echo "错误：已向 pane ${rp} 投递值守启动命令，但连续探测未确认进程出现——不算确保成功，未登记 .watch；请到该 pane 看实际报错后重跑" >&2; return 1 ;;
+          3) echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1 ;;
+        esac
+        echo "值守已在原 pane 重启（pane ${rp} pid ${WATCH_LAUNCH_PID}）"
         return 0 ;;
       busy) echo "登记 pane ${rp} 已被其他进程占用，另开新 tab（不动旧 pane）" ;;
       gone) echo "登记 pane ${rp} 已不存在，另开新 tab" ;;
@@ -448,19 +457,13 @@ _ensure_body() {
     my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
     print($j->{result}{root_pane}{pane_id} // "");' || true)"
   [[ -n "$np" ]] || { echo "错误：tab create 响应缺 root_pane.pane_id" >&2; return 1; }
-  herdr pane run "$np" "$WATCH_CMD" >/dev/null \
-    || { echo "错误：新 tab ${np} 投递值守启动命令失败" >&2; return 1; }
-  while (( tries < 6 )); do
-    nv="$(pane_probe "$np")"; [[ "$nv" == wake:* ]] && break
-    sleep 0.5; tries=$((tries + 1))
-  done
-  [[ "$nv" == wake:* ]] || {
-    echo "错误：已建值守 tab ${np} 并投递启动命令，但连续探测未确认进程出现——不算确保成功，未登记 .watch；请到 pane ${np} 看实际报错后重跑" >&2
-    return 1; }
-  local wpid="${nv#wake:}"; wpid="${wpid%@*}"
-  watch_write "$np" "$tabws" "$wpid" \
-    || { echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1; }
-  echo "已在 workspace ${tabws} 新建值守 tab 并启动（pane ${np} pid ${wpid}）"
+  watch_launch "$np" "$tabws" || launchrc=$?
+  case "$launchrc" in
+    1) echo "错误：新 tab ${np} 投递值守启动命令失败" >&2; return 1 ;;
+    2) echo "错误：已建值守 tab ${np} 并投递启动命令，但连续探测未确认进程出现——不算确保成功，未登记 .watch；请到 pane ${np} 看实际报错后重跑" >&2; return 1 ;;
+    3) echo "错误：值守身份登记写入失败（${WATCHF}）" >&2; return 1 ;;
+  esac
+  echo "已在 workspace ${tabws} 新建值守 tab 并启动（pane ${np} pid ${WATCH_LAUNCH_PID}）"
   return 0
 }
 
@@ -541,7 +544,7 @@ ts_epoch() {
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 OPEN_N=0; POSTURE_QUIET=0
 collect_due() {
-  local out="$1" f st last fp lwf we lostpane="" lostrc=1 pending retry posture plan_data plan_result plan_rc owner
+  local out="$1" f st last fp lwf we lostpane="" pending retry posture plan_data plan_result plan_rc owner
   OPEN_N=0; POSTURE_QUIET=0
   if [[ -e "$PROJECT_ROOT/qwbuddy/.posture.md" || -L "$PROJECT_ROOT/qwbuddy/.posture.md" ]]; then
     if posture="$(bash "$(dirname "$LIB")/qwb-ledger.sh" mode-status --project "$PROJECT_ROOT")"; then
@@ -585,8 +588,7 @@ collect_due() {
     last="$(grep -E '^(working|done|blocked|needs-decision):' "$f" 2>/dev/null | tail -1 || true)"
     lostpane=""
     if [[ "$st" == "running" && "$DRY" -eq 0 ]]; then
-      lostpane="$(worker_lost "$f")" && lostrc=0 || lostrc=$?
-      [[ "$lostrc" -ne 0 ]] && lostpane=""
+      lostpane="$(worker_lost "$f")" || lostpane=""
     fi
     # fp 输入 = state\n最后状态行；running 票判定为丢失时再追加 \nlost=<pane>
     # （直接管道进 shasum：命令替换会剥尾随换行；尾部 || true 保 pipefail 下群组非空退出不炸）
@@ -606,11 +608,13 @@ collect_due() {
       fi
       if [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
         we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
-        if [[ -n "$we" ]] && (( $(now_ms) - we * 1000 < QWB_REWAKE_MS )); then
-          [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
-          continue
+        if [[ -z "$we" ]] || (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
+          we=""
         fi
       else
+        we=skip
+      fi
+      if [[ -n "$we" ]]; then
         [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
         continue
       fi
@@ -637,6 +641,13 @@ compose_msg() {
     [[ -n "$lostpane" ]] && DUE_MSG="${DUE_MSG}（工人丢失）"
     sep=" "
   done < "$1"
+}
+
+# 两次身份复核共用相同的 canonical JSON，不减少核验次数。
+gate_proof() {
+  local proof
+  proof="$(qwb_gate_identity "$PROJECT_ROOT" "$1" "$2")" || proof='{}'
+  printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))'
 }
 
 # 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
@@ -681,8 +692,7 @@ route_gate_due() {
       idx=-1
       for i in "${!targets[@]}"; do [[ "${targets[i]}" != "$target" ]] || idx="$i"; done
       if (( idx < 0 )); then
-        proof="$(qwb_gate_identity "$PROJECT_ROOT" "$actor" "$role")" || proof='{}'
-        proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+        proof="$(gate_proof "$actor" "$role")"
         if [[ "$proof" == "$grant" ]]; then
           idx="${#targets[@]}"; targets+=("$target"); grants+=("$grant"); actors+=("$actor"); roles+=("$role"); batches+=("$dir/$idx")
           : > "${batches[idx]}"
@@ -697,8 +707,7 @@ route_gate_due() {
   done < "$duef"
   for i in "${!targets[@]}"; do
     # 投递前再核代次；失效只交主控，不把旧pane/session当新实例。
-    proof="$(qwb_gate_identity "$PROJECT_ROOT" "${actors[i]}" "${roles[i]}")" || proof='{}'
-    proof="$(printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))')"
+    proof="$(gate_proof "${actors[i]}" "${roles[i]}")"
     if [[ "$proof" != "${grants[i]}" ]]; then
       cat "${batches[i]}" >> "$keep"; continue
     fi
@@ -731,33 +740,33 @@ route_gate_due() {
 }
 
 check_round() {
-  local duef
-  duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
+  due_create
+  local duef="$QWB_DUE_FILE"
   : > "$duef"
-  collect_due "$duef" || { rm -f "$duef"; return 3; }
+  collect_due "$duef" || { due_cleanup; return 3; }
   if [[ "$DRY" -eq 0 && -s "$duef" && -n "$PANE" ]]; then
-    route_gate_due "$duef" "$PANE" || { rm -f "$duef"; return 3; }
+    route_gate_due "$duef" "$PANE" || { due_cleanup; return 3; }
   fi
   if [[ ! -s "$duef" ]]; then
     if (( OPEN_N == 0 && POSTURE_QUIET == 0 )); then echo "账本无未结项"; fi
-    rm -f "$duef"
+    due_cleanup
     return 0
   fi
   compose_msg "$duef"
-  if [[ "$DRY" -eq 1 ]]; then rm -f "$duef"; return 0; fi
-  [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; rm -f "$duef"; exit 1; }
+  if [[ "$DRY" -eq 1 ]]; then due_cleanup; return 0; fi
+  [[ -n "$PANE" ]] || { echo "错误：有未结项但不知道主控 pane（--pane / QWB_CONTROLLER_PANE / config.sh QWB_CONTROLLER_PANE）" >&2; due_cleanup; exit 1; }
   # 先逐票核验wake-only权限，拒绝不投递；登记在启动探针后完成，循环启动首轮可稍后重试。
   local f st fp last lostpane write_failed=0
   while IFS=$'\t' read -r f st fp last lostpane; do
     qwb_ledger "$PROJECT_ROOT" "$f" wake-check "$PANE" "$st" "$fp" >/dev/null \
       || { echo "错误：值守写入未授权/协议非法，不投递：$f" >&2; write_failed=1; break; }
   done < "$duef"
-  if (( write_failed )); then rm -f "$duef"; return 1; fi
+  if (( write_failed )); then due_cleanup; return 1; fi
   # 先持久记录传输尝试；即使API前崩溃也保留待办且重投有界。
   while IFS=$'\t' read -r f st fp last lostpane; do
     record_transport "$f" "$last" || { write_failed=1; break; }
   done < "$duef"
-  if (( write_failed )); then rm -f "$duef"; return 3; fi
+  if (( write_failed )); then due_cleanup; return 3; fi
   # 一轮只发一条投递，API成功不代表received或handled。
   if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
     while IFS=$'\t' read -r f st fp last lostpane; do
@@ -768,36 +777,27 @@ check_round() {
   else
     echo "错误：投递失败（pane ${PANE}）：本轮 ${DUE_N} 张票一行 wake 都不写、保持未叫，下轮重试" >&2
   fi
-  rm -f "$duef"
+  due_cleanup
   return "$write_failed"
 }
 
-# 毫秒级计时：优先 bash5 内建 EPOCHREALTIME（零子进程；小数点随 locale 可能是「,」，
-# 先去掉全部非数字得微秒整数再整除 1000，输出格式与 perl 版一致：纯整数、无换行）。
-# bash 3.2 无此变量，回落 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
-# 测试注入点：QWB_NOW_MS_CMD 非空时执行它取毫秒值，调用次数不变——默认行为不变。
-now_ms() {
-  if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
-  if [[ -n "${EPOCHREALTIME:-}" ]]; then
-    local us="${EPOCHREALTIME//[^0-9]/}"
-    printf '%d' "$(( us / 1000 ))"
-    return
-  fi
-  perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""; QWB_DUE_FILE=""
+# 创建期间只记中断；mktemp 忽略 INT/TERM，确保建好文件后路径能完整读回。
+# 路径登记后恢复既有退出码，再由 EXIT 同时回收 due 文件与订阅器。
+due_create() {
+  local interrupted=0 rc=0
+  trap 'interrupted=130' INT
+  trap 'interrupted=143' TERM
+  QWB_DUE_FILE="$(trap '' INT TERM; mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")" || rc=$?
+  trap 'trap "" INT TERM; exit 130' INT
+  trap 'trap "" INT TERM; exit 143' TERM
+  if (( interrupted != 0 )); then trap '' INT TERM; exit "$interrupted"; fi
+  return "$rc"
 }
-
-# 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转。
-# printf -v 直接写变量拼小数秒，不起子 shell。
-# 测试注入点：QWB_SLEEP_CMD 非空时把毫秒传给它执行，不真睡——默认行为不变。
-sleep_ms() {
-  local ms="$1" secs
-  (( ms > 0 )) || ms=1
-  if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
-  printf -v secs '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))"
-  sleep "$secs"
+due_cleanup() {
+  [[ -z "$QWB_DUE_FILE" ]] || rm -f "$QWB_DUE_FILE"
+  QWB_DUE_FILE=""
 }
-
-EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""
 # 内建 read 保留首行原有换行；IFS= 保留首尾空白与反斜杠。
 # 先重定向 stderr，缺文件时也安静返回 0；无结尾换行时仍输出已读内容。
 event_mark() {
@@ -810,19 +810,23 @@ event_mark() {
   fi
 }
 event_cleanup() {
+  # 监督进程会转发信号；同一中断可能再次到达，不能截断 EXIT 清理。
+  trap '' INT TERM
+  due_cleanup
   if [[ -n "$EVENT_PID" ]]; then
     kill "$EVENT_PID" 2>/dev/null || true
     wait "$EVENT_PID" 2>/dev/null || true
   fi
   [[ -z "$EVENT_DIR" ]] || rm -rf "$EVENT_DIR"
 }
+# --once/--dry-run 也会创建 due 文件；复用同一 EXIT 清理，不覆盖订阅器收尾。
+trap event_cleanup EXIT
+trap 'trap "" INT TERM; exit 130' INT
+trap 'trap "" INT TERM; exit 143' TERM
 event_start() {
   EVENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwb-events.XXXXXX")"
   bash "$(dirname "$LIB")/qwb-herdr.sh" subscribe --project "$PROJECT_ROOT" --notice "$EVENT_DIR/notice" &
   EVENT_PID=$!
-  trap event_cleanup EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
   local deadline=$(( $(now_ms) + 1000 ))
   [[ -z "${block_deadline:-}" ]] || (( deadline <= block_deadline )) || deadline="$block_deadline"
   while [[ ! -s "$EVENT_DIR/notice" ]] && kill -0 "$EVENT_PID" 2>/dev/null && (( $(now_ms) < deadline )); do sleep 0.05; done
@@ -887,7 +891,7 @@ block_owner_ok() {
   # HERDR_PANE_ID 为空（非 herdr 环境，如 smoke）跳过复核。
   [[ -n "${HERDR_PANE_ID:-}" ]] || return 0
   local owner=""
-  owner="$(sed -n 's/^[^ ]*[[:space:]]*//p' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner" 2>/dev/null | head -1)"
+  owner="$(qwb_lock_owner "$PROJECT_ROOT")"
   [[ "$owner" == "$HERDR_PANE_ID" ]]
 }
 
@@ -903,17 +907,17 @@ record_transport() {
 }
 
 block_round() {
-  local duef
-  duef="$(mktemp "${TMPDIR:-/tmp}/qwb-due.XXXXXX")"
+  due_create
+  local duef="$QWB_DUE_FILE"
   : > "$duef"
-  collect_due "$duef" || { rm -f "$duef"; return 3; }
+  collect_due "$duef" || { due_cleanup; return 3; }
   local any="$OPEN_N" f st fp last lostpane
   if [[ -s "$duef" ]]; then
-    if ! block_owner_ok; then rm -f "$duef"; return 0; fi
-    route_gate_due "$duef" "${HERDR_PANE_ID:-pid:$PPID}" || { rm -f "$duef"; return 3; }
+    if ! block_owner_ok; then due_cleanup; return 0; fi
+    route_gate_due "$duef" "${HERDR_PANE_ID:-pid:$PPID}" || { due_cleanup; return 3; }
   fi
   if [[ -s "$duef" ]]; then
-    if ! block_owner_ok; then rm -f "$duef"; return 0; fi
+    if ! block_owner_ok; then due_cleanup; return 0; fi
     compose_msg "$duef"
     local lost_host=0 write_failed=0
     while IFS=$'\t' read -r f st fp last lostpane; do
@@ -924,13 +928,13 @@ block_round() {
       qwb_ledger "$PROJECT_ROOT" "$f" wake "$target" "$st" "$fp" >/dev/null \
         || { echo "错误：wake 行写入失败：$f" >&2; write_failed=1; break; }
     done < "$duef"
-    if (( write_failed )); then rm -f "$duef"; return 3; fi
-    if (( lost_host )); then rm -f "$duef"; return 0; fi
+    if (( write_failed )); then due_cleanup; return 3; fi
+    if (( lost_host )); then due_cleanup; return 0; fi
     printf '看账本：%d 张未结项有进展 →%s。只需读这些票。\n' "$DUE_N" "$DUE_MSG"
-    rm -f "$duef"
+    due_cleanup
     return 2
   fi
-  rm -f "$duef"
+  due_cleanup
   (( any )) || return 0
   return 1
 }
@@ -946,7 +950,7 @@ if [[ "$BLOCK" -eq 1 ]]; then
     # 每轮判定前复核主控锁：锁不在手 = 本值守是孤儿（主控会话已退出 / 锁被新主控接管），
     # exit 0、不写任何 wake 行，不消费唤醒
     if ! block_owner_ok; then
-      echo "值守：主控锁不在本进程（owner=$(sed -n 's/^[^ ]*[[:space:]]*//p' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner" 2>/dev/null | head -1)，本进程 ${HERDR_PANE_ID}），孤儿值守退出不消费唤醒"
+      echo "值守：主控锁不在本进程（owner=$(qwb_lock_owner "$PROJECT_ROOT")，本进程 ${HERDR_PANE_ID}），孤儿值守退出不消费唤醒"
       exit 0
     fi
     brc=0; block_round || brc=$?

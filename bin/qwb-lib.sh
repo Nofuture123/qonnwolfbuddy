@@ -4,6 +4,48 @@
 # 本文件只定义函数：不执行动作、不设置 shell 选项（set -euo pipefail 归调用方）。
 # 因此它自己不是可运行脚本——QWBUDDY.md §9 表里按「库文件，不直接运行」列出。
 
+# 首行去掉时间戳及其后的空白；无锁/空文件安静输出空串。
+qwb_lock_owner() {
+  local file="$1/qwbuddy/.controller.lock/owner"
+  if [[ -f "$file" ]]; then
+    sed -n '1{s/^[^ ]*[[:space:]]*//p;}' "$file" 2>/dev/null || true
+  fi
+}
+
+# 毫秒级计时：优先 bash5 内建 EPOCHREALTIME（零子进程；小数点随 locale 可能是「,」，
+# 先去掉全部非数字得微秒整数再整除 1000，输出格式与 perl 版一致：纯整数、无换行）。
+# bash 3.2 无此变量，回落 perl Time::HiRes（硬约束允许的基础工具，无新依赖）。
+# 测试注入点：QWB_NOW_MS_CMD 非空时执行它取毫秒值，调用次数不变——默认行为不变。
+now_ms() {
+  if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local us="${EPOCHREALTIME//[^0-9]/}"
+    printf '%d' "$(( us / 1000 ))"
+    return
+  fi
+  perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
+}
+
+# 小数秒 sleep（GNU 与 BSD/macOS 的 sleep 都接受小数）：$1 = 毫秒，下限 1ms 防空转。
+# printf -v 直接写变量拼小数秒，不起子 shell。
+# 测试注入点：QWB_SLEEP_CMD 非空时把毫秒传给它执行，不真睡——默认行为不变。
+sleep_ms() {
+  local ms="$1" secs
+  (( ms > 0 )) || ms=1
+  if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
+  printf -v secs '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))"
+  sleep "$secs"
+}
+
+qwb_shell_quote() { # 把一个值写成 workers.sh 里的单引号 Bash 实参（内嵌单引号也保真）
+  local rest="$1" quoted="'"
+  while [[ "$rest" == *"'"* ]]; do
+    quoted="${quoted}${rest%%\'*}'\\''"
+    rest="${rest#*\'}"
+  done
+  printf "%s%s'" "$quoted" "$rest"
+}
+
 qwb_load_workers() {
   local PROJECT_ROOT="$1" WORKERS_CONF listed w seen count
   WORKERS_CONF="$PROJECT_ROOT/qwbuddy/workers.sh"
@@ -248,6 +290,23 @@ qwb_scenario_block() {
   ' "$1"
 }
 
+# 完整读取场景块；grep 不提前退出，保持 lint 在 pipefail 下的大块输入语义。
+qwb_scenario_check() {
+  local blk
+  blk="$(cat)"
+  if ! { printf '%s\n' "$blk" | grep 'Given' >/dev/null \
+      && printf '%s\n' "$blk" | grep 'When' >/dev/null \
+      && printf '%s\n' "$blk" | grep 'Then' >/dev/null; } \
+    && [[ "$(printf '%s\n' "$blk" | grep -cE '^#{1,6}[[:space:]]+user_' || true)" -lt 2 ]]; then
+    printf '%s' no-scenario
+  elif ! printf '%s\n' "$blk" | grep -E '^#{1,6}|^[[:space:]]*Then' \
+    | grep -iE '失败|拒绝|报错|异常|负例|非法|fail|error' >/dev/null; then
+    printf '%s' no-failure-path
+  else
+    printf '%s' ok
+  fi
+}
+
 # 已迁票的持久未结义务，不依赖末行working/done。损坏协议也按未结处理。
 qwb_task_obligations() {
   grep -q '<!-- qwb-collab-' "$2" || return 0
@@ -256,7 +315,7 @@ qwb_task_obligations() {
   printf '%s' "$data" | qwb_task_obligations_json
 }
 
-# 点名复用同一次 reader 的 JSON；义务判定保持 qwb_task_obligations 原规则。
+# 点名复用同一次 reader 的 JSON；来源排除与 qwb-ledger.sh handoff-pending 的事件筛选对齐。
 qwb_task_obligations_json() {
   perl -MJSON::PP -MDigest::SHA=sha256_hex -0777 -e '
     my $d=decode_json(<STDIN>);
@@ -269,7 +328,7 @@ qwb_task_obligations_json() {
     print "handoff=$_ " for sort grep { !$h->{$_}{handled} } keys %$h;
     for my $e (@{$d->{events}}) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
+      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
     }
   '
 }

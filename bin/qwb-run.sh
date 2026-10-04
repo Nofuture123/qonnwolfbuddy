@@ -218,16 +218,8 @@ for arg in "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}"; do
   has_headless_arg "$arg" && { echo "错误：工人 '${WORKER}' 参数含 headless 形式：${arg}" >&2; exit 1; }
 done
 if [[ "$LAUNCH_MODE" == pane-run ]]; then
-  quote_shell_arg() {
-    local rest="$1" quoted="'"
-    while [[ "$rest" == *"'"* ]]; do
-      quoted="${quoted}${rest%%\'*}'\\''"
-      rest="${rest#*\'}"
-    done
-    printf "%s%s'" "$quoted" "$rest"
-  }
   for arg in "${WORKER_ARGV[@]}"; do
-    quoted="$(quote_shell_arg "$arg")"
+    quoted="$(qwb_shell_quote "$arg")"
     PANE_COMMAND="${PANE_COMMAND:+${PANE_COMMAND} }${quoted}"
   done
 fi
@@ -795,17 +787,6 @@ deliver() {   # $1=步骤名，其余=命令；输出留在 DELIVER_OUT
   local step="$1" rc=0; shift
   DELIVER_OUT="$("$@" 2>&1)" || rc=$?
   [[ "$rc" -eq 0 ]] || delivery_failed "$step" "$rc" "$DELIVER_OUT"
-}
-
-now_ms() {
-  if [[ -n "${QWB_NOW_MS_CMD:-}" ]]; then "$QWB_NOW_MS_CMD"; return; fi
-  perl -MTime::HiRes=time -e 'printf "%d", time()*1000'
-}
-sleep_ms() {
-  local ms="$1"
-  (( ms > 0 )) || ms=1
-  if [[ -n "${QWB_SLEEP_CMD:-}" ]]; then "$QWB_SLEEP_CMD" "$ms"; return; fi
-  sleep "$(printf '%d.%03d' "$(( ms / 1000 ))" "$(( ms % 1000 ))")"
 }
 
 record_worker_activity() {
