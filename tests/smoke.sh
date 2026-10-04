@@ -113,7 +113,8 @@ STUB="$TMP/stubbin"; STUBLOG="$TMP/herdr-calls.log"
 FIXDIR="$ROOT/tests/fixtures/herdr"
 mkdir -p "$STUB"
 WIRELOG="$TMP/herdr-wire.jsonl"
-export HERDR_TEST_SOCKET="$TMP/api.sock"
+HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+export HERDR_TEST_SOCKET
 python3 -B "$FIXDIR/wire-server.py" "$HERDR_TEST_SOCKET" "$WIRELOG" & WIREPID=$!
 for _ in {1..100}; do [[ -S "$HERDR_TEST_SOCKET" ]] && break; sleep 0.01; done
 [[ -S "$HERDR_TEST_SOCKET" ]] || bad "离线原生socket夹具未就绪"

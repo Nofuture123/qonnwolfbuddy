@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import socket
 import threading
+from process_fixture import socket_path as fixture_socket_path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_TMP_ROOT = ROOT / ".qwb-tmp"
@@ -148,7 +149,7 @@ def project(base):
     # External wire boundary: confirm the move response while leaving the already-last owned Space in order.
     # Daemon threads die with this test process; sockets belong only to each temporary fixture.
     api = socket.socket(socket.AF_UNIX)
-    socket_path = str(base / "api.sock")
+    socket_path = fixture_socket_path()
     api.bind(socket_path); api.listen()
     def serve():
         while True:

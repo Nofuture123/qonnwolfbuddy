@@ -11,7 +11,7 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [[ "${1:-}" != not-sent ]]; then
 python3 -B - "$ROOT" <<'PY'
-from process_fixture import TemporaryDirectory
+from process_fixture import TemporaryDirectory, socket_path
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
@@ -25,7 +25,7 @@ with TemporaryDirectory(prefix='s-') as tmp:
         (p/f'tasks/{n}.md').write_text(f'state: running\ndispatch: 2099-01-0{n+1} pane=w:p{n} dir={p}\nworking: initial\n')
     roles=p/'qwbuddy/.roles'; roles.mkdir()
     (roles/'planner.json').write_text(json.dumps(dict(version=1,root=str(p.resolve()),phase='active',pane='w:role')))
-    stub=b/'stub'; stub.mkdir(); sockpath=str(b/'events.sock'); log=b/'calls'; requests=[]
+    stub=b/'stub'; stub.mkdir(); sockpath=socket_path(); log=b/'calls'; requests=[]
     (stub/'herdr').write_text('''#!/usr/bin/env python3
 import json,os,sys
 from pathlib import Path
@@ -65,7 +65,7 @@ else: print(json.dumps({'result':{'type':'ok'}}))
     print(f'PASS non-latest registered worker subscribed; delivery latency={latency:.3f}s')
 PY
 python3 -B - "$ROOT" <<'PY'
-from process_fixture import TemporaryDirectory
+from process_fixture import TemporaryDirectory, socket_path
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
@@ -81,7 +81,7 @@ with TemporaryDirectory(prefix='s-') as tmp:
     wt=root/'.worktrees/case'
     assert run('git','-C',str(root),'worktree','add','-qb','case',str(wt)).returncode==0
     task=root/'tasks/case.md'; task.write_text(f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n')
-    state=b/'state.json'; sockpath=str(b/'api.sock')
+    state=b/'state.json'; sockpath=socket_path()
     def w(i):
         return dict(workspace_id=i,focused=i=='wOther',active_tab_id=i+':t1',worktree=dict(repo_root=str(root),checkout_path=str(wt) if i=='wTask' else str(root),is_linked_worktree=i=='wTask'))
     def pane(i):
@@ -232,7 +232,7 @@ else: sys.exit(9)
     print('PASS owned ordering/confirmed close preserve unrelated focus; unknown ownership/long idle tool/live Pi refuse')
 PY
 python3 -B - "$ROOT" <<'PY'
-from process_fixture import TemporaryDirectory
+from process_fixture import TemporaryDirectory, socket_path
 import hashlib, json, os, shutil, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
@@ -247,7 +247,7 @@ with TemporaryDirectory(prefix='s-') as tmp:
     for name in ['TASK.md','QWBUDDY.md']: shutil.copy(ROOT/'templates'/name,p/'qwbuddy'/name)
     t=p/'tasks/case.md'; t.write_text('state: running\n')
     (p/'tasks/observer.md').write_text(f'state: verified\ndispatch: now pane=w:p0 dir={p}\n')
-    stub=b/'stub'; stub.mkdir(); log=b/'calls'; socketpath=str(b/'stream.sock')
+    stub=b/'stub'; stub.mkdir(); log=b/'calls'; socketpath=socket_path()
     (stub/'lsof').write_text('#!/usr/bin/env bash\nexit 1\n'); (stub/'lsof').chmod(0o755)
     (stub/'herdr').write_text(r'''#!/usr/bin/env python3
 import json,os,sys

@@ -81,7 +81,40 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
         super().cleanup()
 
 
+def check_socket_path(path):
+    size = len(os.fsencode(path))
+    if size > 103:
+        root = Path(path).parent.parent
+        raise ValueError(f'测试 socket 路径超限：实际 {size} 字节，上限 103 字节；'
+                         f'仓库根实际 {len(os.fsencode(root))} 字节，最多 97 字节'
+                         f'（固定后缀 6 字节）：{path}')
+
+
+def socket_path():
+    # The existing supervisor owns both the processes and these shallow directories.
+    root = Path(__file__).resolve().parents[1]
+    check_socket_path(root / '.00' / 's')
+    record = Path(os.environ['QWB_TEST_SOCKET_DIRS'])
+    while True:
+        directory = root / ('.' + secrets.token_hex(1))
+        try:
+            directory.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with record.open('a') as output:
+            output.write(str(directory) + '\n')
+    except BaseException:
+        directory.rmdir()
+        raise
+    return str(directory / 's')
+
+
 def main():
+    if sys.argv[1] == 'socket':
+        print(socket_path())
+        return 0
     if sys.argv[1] == 'drain':
         drain()
         return 0
@@ -93,9 +126,15 @@ def main():
         return 0
     command = sys.argv[1] == '--command'
     script = sys.argv[1]
-    base = Path(__file__).resolve().parents[1] / '.qwb-tmp'
+    root = Path(__file__).resolve().parents[1]
+    try:
+        check_socket_path(root / '.00' / 's')
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+    base = root / '.qwb-tmp'
     base.mkdir(exist_ok=True)
-    # Darwin AF_UNIX paths allow only 103 bytes; keep the fixture parent short.
+    # Keep process records and ordinary files in the existing ignored fixture root.
     while True:
         # ponytail: 256 concurrent scopes; shorten the base before increasing name length.
         directory = str(base / secrets.token_hex(1))
@@ -106,8 +145,11 @@ def main():
             continue
     records = Path(directory) / 'groups'
     records.touch()
+    socket_dirs = Path(directory) / 'socket-directories'
+    socket_dirs.touch()
     env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
-               QWB_TEST_GROUPS=str(records), QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
+               QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
+               QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
     child = None
@@ -131,6 +173,8 @@ def main():
         if child is not None:
             drain()
             child.wait()
+        for path in socket_dirs.read_text().splitlines():
+            shutil.rmtree(path)
         shutil.rmtree(directory)
     return rc if rc >= 0 else 128 - rc
 
