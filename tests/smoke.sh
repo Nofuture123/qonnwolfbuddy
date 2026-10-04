@@ -2910,7 +2910,14 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 sed -i '' '/^QWB_WORKSPACE=/d' "$ENSP/qwbuddy/config.sh"
 
 echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/响应校验/key 纪律 + qwb-run auto 集成）=="
-bash "$ROOT/tests/optional-routing.sh" && ok "可选路由公开 CLI 结构化契约" || bad "可选路由公开 CLI 结构化契约"
+# optional-routing owns its project and HOME; inline cases use $DT and $TMP.
+# Buffer the inline output so both independent runs still print in the old order.
+python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
+  export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+  exec bash "$1"
+' smoke-routing "$ROOT/tests/optional-routing.sh" > "$TMP/optional-routing.log" 2>&1 &
+optional_pid=$!
+{
 # 假 curl 手法沿 firstmate tests/fm-dispatch-resolve.test.sh：记录 argv/请求体/fd3 头/子进程环境，
 # 按 FAKE_CURL_* 应答。零网络、零真 key。
 DT="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
@@ -3152,6 +3159,11 @@ auto_run; a_rc=$?; AUTO_KEY=''
   && ok "规则解析出 QWB_WORKERS 外工人 → 整词校验拒绝" \
   || { bad "ghost 未拒（rc=${a_rc}）"; cat "$DT/run.err"; }
 rm -rf "$DT"
+} > "$TMP/jev-inline.log" 2>&1
+wait "$optional_pid"; optional_rc=$?
+cat "$TMP/optional-routing.log"
+[[ "$optional_rc" -eq 0 ]] && ok "可选路由公开 CLI 结构化契约" || bad "可选路由公开 CLI 结构化契约"
+cat "$TMP/jev-inline.log"
 
 echo "== 50. brief-include：常驻附页原样追加 / 无附页零改动 / 不可读拒绝 / 重复派发不叠加 =="
 rm -rf "$TMP/qwbuddy/.controller.lock"   # 前面节（JEV auto）的派发持过锁；本节统一用固定 pane id 当主控
