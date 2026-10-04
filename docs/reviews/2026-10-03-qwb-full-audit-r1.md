@@ -269,8 +269,9 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 | 4 | `ded7d88` + 4 个修复提交 | Pi magpie sol high | devin | 通过，断言全 PASS |
 | 5 | 同上 | Claude Code opus high | cmdc | cmdc 报额度不足，未产出改动；主控按规则标 `blocked` 并停下 |
 | 6 | `20ea2cc`（最终 main） | Pi magpie sol high | devin | **通过，rc=0，断言全 PASS**。[记录](2026-10-04-e2e-real-pi-sol-devin.md) |
+| 7 | `47de4b6`（运行代码同 `20ea2cc`，其后只有文档提交） | Claude Code opus high | devin | **通过，rc=0，13 项断言全 PASS**；Stop hook 唤醒 2 次送达、逐轮跳过行 0、收尾后送达 0；主控提示投递到输出 DONE 约 2.5 分钟。[记录](2026-10-04-e2e-real-claude-devin.md) |
 
-已证实：Pi 主控加 devin 工人这一种组合，在当前源码上无人工介入走完派发、值守唤醒、验收、合入、删副本、关 Space。未证实：Claude Code 主控修复后的完整闭环；Codex 主控（周额度仅剩 19%，未跑）；cmdc 工人（额度不足）；其余工人的原生进程形态；`--writer-proof-missing` 在真 Herdr 上的演练；首次信任提示、长时间值守与重启恢复、生产场景试用。
+已证实：Pi 主控加 devin 工人、Claude Code 主控加 devin 工人这两种组合，在当前源码上无人工介入走完派发、值守唤醒、验收、合入、删副本、关 Space。未证实：Codex 主控（周额度仅剩 19%，未跑）；cmdc 工人（额度不足）；其余工人的原生进程形态；`--writer-proof-missing` 在真 Herdr 上的演练；首次信任提示、长时间值守与重启恢复、生产场景试用。
 
 ### 最终实测（main @ 20ea2cc 对比起点 4678ba0，同机、负载约 2–4、新旧背靠背各 7 次取最小）
 
