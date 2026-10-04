@@ -179,7 +179,7 @@ exec "$LAND_REAL_MV" "$@"
             return {'pid':pid,'pid_start':start}
         finally:
             if child.poll() is None: child.terminate(); child.wait(timeout=20)
-    if os.environ['QWB_LAND_CASE'] in ('all','agent-shapes'):
+    if os.environ['QWB_LAND_CASE']=='agent-shapes':
         t,c,op,m,head=accepted('agent-shapes')
         ledger('dispatch',t,op,'worker-pane',f'dispatch: op_id={op} worker=sol pane=worker-pane dir={c}')
         ledger('append',t,f'worktree-space: id=task-space root-tab=task-tab path={c}')
@@ -439,3 +439,5 @@ exec "$LAND_REAL_MV" "$@"
         print('PASS user_合并成功记账或清理失败 '+failure+' 同op补事实/partial，无重复merge')
         if failure=='endpoint':(p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
 PY
+# Run the new matrix in its own supervised project, preserving the original status/land fixtures.
+if [[ "${1:-all}" == all ]]; then bash "$0" agent-shapes; fi

@@ -3,7 +3,7 @@
 # 断言字符串由 check 的 eval 执行，变量在 eval 时展开。
 # shellcheck disable=SC2016,SC2034
 set -u
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+export TMPDIR="${QWB_TEST_SCOPE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
