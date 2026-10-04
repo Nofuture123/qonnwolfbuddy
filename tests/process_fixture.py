@@ -166,17 +166,21 @@ def main():
         records.touch()
         socket_dirs = Path(directory) / 'socket-directories'
         socket_dirs.touch()
-        env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
-                   QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
-                   QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
-        env['PYTHONDONTWRITEBYTECODE'] = '1'
-        env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
         parent_record = os.environ.get('QWB_TEST_GROUPS')
+        parent_owner = os.environ.get('QWB_TEST_SCOPE_OWNER')
         scope_owner = secrets.token_hex(16)
         (Path(directory) / 'scope-owner').write_text(scope_owner)
+        env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
+                   QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
+                   QWB_TEST_SUPERVISOR_PID=str(os.getpid()), QWB_TEST_SCOPE_OWNER=scope_owner)
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
+        env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
         # A killed nested supervisor may not reach its own finally. Its parent
         # keeps a generation-bound directory receipt and drains processes first.
         if parent_record:
+            marker = Path(parent_record).with_name('scope-owner')
+            if not parent_owner or not marker.exists() or marker.read_text() != parent_owner:
+                raise RuntimeError('parent test scope has retired or changed owner')
             with Path(parent_record).with_name('socket-directories').open('a') as record:
                 record.write(directory + '\t' + scope_owner + '\n')
         if pending_signal is not None:
