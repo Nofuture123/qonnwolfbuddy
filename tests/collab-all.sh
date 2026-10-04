@@ -3,7 +3,7 @@
 # 用法：
 #   bash tests/collab-all.sh            # 跑默认清单（下方显式写死的测试）
 #   bash tests/collab-all.sh <脚本…>    # 跑指定脚本，替代默认清单（验收失败路径用）
-# 每个测试一个后台进程，最多四项同时跑，stdout+stderr 各写一份日志；结束后按清单顺序汇报，
+# 每个测试一个后台进程，最多六项同时跑，stdout+stderr 各写一份日志；结束后按清单顺序汇报，
 # 末行汇总，任一失败退出码 1。一个失败不影响其他测试的运行与汇报。
 #
 # 清单内测试使用各自的 mktemp/tempfile 项目与 AF_UNIX 路径，环境变量仅影响该进程。
@@ -126,9 +126,9 @@ trap 'exit 143' TERM
 total=${#TESTS[@]}
 # 每个测试自己记退出码+耗时：父进程按清单序 wait，先结束的测试会被后面的等待拖住，
 # 到时才读表会把所有测试都报成总时长——所以耗时必须由子进程自己写状态文件。
-# 先启动最慢四项，避免 socket 回归排在短项之后；输出仍按 TESTS 原序。
+# 先启动耗时较长的项，避免 socket/入口回归排在短项之后；输出仍按 TESTS 原序。
 ORDER=()
-for name in tests/collab-gate.sh tests/socket-path-regression.py tests/collab-herdr.sh tests/collab-land.sh; do
+for name in tests/collab-gate.sh tests/socket-path-regression.py tests/collab-herdr.sh tests/collab-land.sh tests/collab-planning.sh tests/process-entry-cleanup.py tests/collab-test-policy.sh tests/collab-roles.sh; do
   for ((i=0; i<total; i++)); do
     [[ "${TESTS[$i]#* }" != "$name" ]] || ORDER+=("$i")
   done
@@ -138,10 +138,10 @@ for ((i=0; i<total; i++)); do
   PIDS[i]=""
 done
 
-# ponytail: 四个槽限制进程开销；仅在同机实测证明更快时增加。
+# ponytail: 六个槽限制进程开销；仅在同机实测证明更快时增加。
 next=0; running=0
 while [[ "$next" -lt "$total" || "$running" -gt 0 ]]; do
-  while [[ "$next" -lt "$total" && "$running" -lt 4 ]]; do
+  while [[ "$next" -lt "$total" && "$running" -lt 6 ]]; do
     i=${ORDER[$next]}
     ( s=$(date +%s)
       read -r interpreter script <<< "${TESTS[$i]}"

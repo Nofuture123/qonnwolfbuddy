@@ -148,19 +148,19 @@ def update(delta):
         if delta<0:state['completed']+=1
         record.seek(0);record.truncate();json.dump(state,record)
 update(1)
-if int(Path(__file__).stem)<4:
+if int(Path(__file__).stem)<6:
     deadline=time.monotonic()+20
     while True:
         with counter.open() as record:
             fcntl.flock(record,fcntl.LOCK_SH)
-            if json.load(record)['max']>=4:break
+            if json.load(record)['max']>=6:break
         assert time.monotonic()<deadline
         time.sleep(.01)
 time.sleep(.1);update(-1)
 sys.exit(7 if Path(__file__).stem=='2' else 0)
 '''
     scripts = []
-    for index in range(6):
+    for index in range(8):
         path = jobs / f'{index}.py'; path.write_text(body); scripts.append(str(path))
     for shell in ['bash', '/bin/bash']:
         counter.write_text(json.dumps(dict(active=0, max=0, completed=0)))
@@ -168,9 +168,9 @@ sys.exit(7 if Path(__file__).stem=='2' else 0)
                                 env=dict(os.environ, COLLAB_COUNTER=str(counter)),
                                 capture_output=True, text=True, timeout=20)
         state = json.loads(counter.read_text())
-        assert result.returncode == 1 and state == dict(active=0, max=4, completed=6), (result, state)
+        assert result.returncode == 1 and state == dict(active=0, max=6, completed=8), (result, state)
         rows = [line for line in result.stdout.splitlines() if line.startswith(('PASS  ', 'FAIL  '))]
-        assert len(rows) == 6 and all(path in row for path, row in zip(scripts, rows)), rows
-        assert rows[2].startswith('FAIL') and sum(row.startswith('PASS') for row in rows) == 5, rows
-        assert result.stdout.splitlines()[-1] == 'COLLAB-ALL FAIL（1/6 项）', result.stdout
-    print('PASS collab pool bounds four slots, reports all six jobs in order and preserves failure')
+        assert len(rows) == 8 and all(path in row for path, row in zip(scripts, rows)), rows
+        assert rows[2].startswith('FAIL') and sum(row.startswith('PASS') for row in rows) == 7, rows
+        assert result.stdout.splitlines()[-1] == 'COLLAB-ALL FAIL（1/8 项）', result.stdout
+    print('PASS collab pool bounds six slots, reports all eight jobs in order and preserves failure')
