@@ -171,6 +171,14 @@ def main():
                    QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
+        parent_record = os.environ.get('QWB_TEST_GROUPS')
+        scope_owner = secrets.token_hex(16)
+        (Path(directory) / 'scope-owner').write_text(scope_owner)
+        # A killed nested supervisor may not reach its own finally. Its parent
+        # keeps a generation-bound directory receipt and drains processes first.
+        if parent_record:
+            with Path(parent_record).with_name('socket-directories').open('a') as record:
+                record.write(directory + '\t' + scope_owner + '\n')
         if pending_signal is not None:
             raise SystemExit(128 + pending_signal)
         # This new session contains only this invocation's inherited descendants.
@@ -191,7 +199,14 @@ def main():
             drain()
             child.wait()
         if socket_dirs is not None and socket_dirs.exists():
-            for path in socket_dirs.read_text().splitlines():
+            entries = socket_dirs.read_text().splitlines()
+            while entries:
+                path, _, owner = entries.pop().partition('\t')
+                marker = Path(path) / 'scope-owner'
+                if owner:
+                    if not marker.exists() or marker.read_text() != owner:
+                        continue
+                    entries.extend((Path(path) / 'socket-directories').read_text().splitlines())
                 # Entries may retire their owned exports before their supervisor exits.
                 if Path(path).exists():
                     shutil.rmtree(path)
