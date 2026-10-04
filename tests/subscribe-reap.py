@@ -155,12 +155,13 @@ PY
                     register(group)
         try:
             wake = subprocess.Popen(['/bin/bash', str(qw/'bin/qwb-wake.sh'), '--project', str(project),
-                                     '--block', '--max-ms', '10000'], env=env,
+                                     '--block', '--max-ms', '60000'], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                     start_new_session=True,
                                     preexec_fn=lambda:signal.signal(signal.SIGINT,signal.SIG_DFL))
             own(wake.pid)
-            deadline = time.monotonic()+10
+            # Startup precedes the measured read; allow slow scheduling without changing its 2s window.
+            deadline = time.monotonic()+30
             while not waiting.exists():
                 assert wake.poll() is None and time.monotonic()<deadline, ('wake did not reach wait hook', wake.poll())
                 time.sleep(.001)
