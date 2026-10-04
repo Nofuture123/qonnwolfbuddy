@@ -35,9 +35,14 @@ def export(destination):
 
 try:
     export(directory)
-    for script, arguments in [('tests/smoke.sh', ['root-tab-missing']),
-                              ('tests/collab-herdr.sh', [])]:
-        result = run(['/bin/bash', script, *arguments], cwd=directory, capture_output=True, text=True)
+    for interpreter, script, arguments in [('/bin/bash', 'tests/smoke.sh', ['root-tab-missing']),
+                                           (sys.executable, 'tests/worktree-space.py', []),
+                                           ('/bin/bash', 'tests/collab-herdr.sh', [])]:
+        env = os.environ.copy()
+        env.pop('QWB_TEST_SOCKET_DIRS', None)
+        runner = subprocess.run if interpreter == sys.executable else run
+        result = runner([interpreter, script, *arguments], cwd=directory, env=env,
+                        capture_output=True, text=True)
         assert result.returncode == 0, (script, result.stdout, result.stderr)
         assert not any(line.startswith('FAIL') for line in result.stdout.splitlines()), result.stdout
         print(f'PASS {script}: root={len(os.fsencode(directory))} bytes, socket=103 bytes', flush=True)

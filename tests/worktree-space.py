@@ -9,8 +9,12 @@ import shutil
 import subprocess
 import tempfile
 import socket
+import sys
 import threading
-from process_fixture import socket_path as fixture_socket_path
+from process_fixture import run, socket_path as fixture_socket_path
+
+if __name__ == '__main__' and 'QWB_TEST_SOCKET_DIRS' not in os.environ:
+    sys.exit(run([sys.executable, __file__, *sys.argv[1:]]).returncode)
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_TMP_ROOT = ROOT / ".qwb-tmp"
