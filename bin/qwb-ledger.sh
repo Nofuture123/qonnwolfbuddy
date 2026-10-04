@@ -726,6 +726,11 @@ sub gate_context {
   return {%policy,task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
 }
 # land复用已accept的04证据；不授门禁新权限，不在main锁里跑门/审核。
+sub last_spec_event {
+  my $s=shift; my $spev='';
+  while ($s =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+  return $spev;
+}
 sub land_ready {
   my $c=gate_context(); my $g=$data->{gate};
   fail('未验收或验收条件已变') unless $g->{verdict} eq 'accepted' && $c->{status} eq 'clean' && @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
@@ -734,7 +739,7 @@ sub land_ready {
   }
   fail('成立缺陷/安全意见未结') if grep { $_->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ } values %{$g->{findings}};
   for my $q (values %{$data->{questions}}) { fail('相关问题未恢复') if $q->{resumed} eq '' }
-  my $spev=''; while ($body =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+  my $spev=last_spec_event($body);
   fail('规格疑点未决') if $spev =~ /^blocked:/;
   return $c;
 }
@@ -1223,7 +1228,7 @@ if ($cmd eq 'land-authorize') {
     }
     for my $f (values %{$g->{findings}}) { fail('成立缺陷/安全意见未决') if $f->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ }
     for my $q (values %{$data->{questions}}) { fail('用户专属问题尚未恢复') unless $q->{resumed} ne '' }
-    my $spev=''; while ($body =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+    my $spev=last_spec_event($body);
     fail('规格疑点未决') if $spev =~ /^blocked:/;
     # accepted只记verdict，保留claim/待land/cleanup，不扩五值state。
   } else {
@@ -1483,7 +1488,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'prepare') {
   my ($fp,$brief)=@args;
   fail('场景在预检后已变化') unless defined($fp) && $fp =~ /\A[0-9a-f]{40}\z/ && scen_fp($body) eq $fp;
-  my $spev=''; while ($body =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
+  my $spev=last_spec_event($body);
   fail('未处理规格疑点') if $spev =~ /^blocked:/;
   fail('场景基线冲突') if fp_of($body) ne '' && fp_of($body) ne $fp;
   field('state','running'); field('scenarios-fp',$fp);
