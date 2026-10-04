@@ -4,21 +4,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-用法: bash tests/e2e-real.sh --worker devin|cmdc [--controller codex|claude|pi] [--controller-model <模型>] [--controller-effort <档位>] [--timeout-ms 2700000] [--report <新文件>] [--keep]
+用法: bash tests/e2e-real.sh --worker pi|claude [--controller claude|pi] [--controller-model <模型>] [--controller-effort <档位>] [--timeout-ms 2700000] [--report <新文件>] [--keep]
 
-默认主控/模型/推理档：codex gpt-6-luna/max；claude opus/high；pi magpie/codex/gpt-6.1-sol/high。
+默认主控/模型/推理档：claude sonnet/low；pi magpie/codex/gpt-6.1-sol/high。
+默认工人/模型/推理档：pi magpie/codex/gpt-6.1-sol/high；claude claude-opus-5-5/medium。
 前提：Herdr pane 内运行；所选主控与工人 CLI 已登录。交互运行会真实调用模型并产生花费。
 脚本在隔离 /tmp Git 项目与新 named Herdr session 运行；可在另一终端用
   herdr --session <脚本输出的会话名>
 附着旁观。默认结束时 stop/delete 会话；--keep 保留会话供排障。报告文件必须不存在。
-全局状态：codex 用启动参数覆盖信任，~/.codex/config.toml 跑前跑后须不变；
-codex 固定 service_tier="default"，TUI 模型/状态行出现 fast 即失败；
+全局状态（主控与工人）：
 pi 用 --approve 并把会话存在临时目录，~/.pi/agent/trust.json 跑前跑后须不变；
 claude 只在识别出信任框后接受一次，由 CLI 自行写 ~/.claude.json，报告 projects 新键。
 EOF
 }
 
-WORKER=""; CONTROLLER=codex; MODEL=""; EFFORT=""; TIMEOUT_MS=2700000; REPORT=""; KEEP=0
+WORKER=""; CONTROLLER=claude; MODEL=""; EFFORT=""; TIMEOUT_MS=2700000; REPORT=""; KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -32,12 +32,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-[[ "$WORKER" == devin || "$WORKER" == cmdc ]] || { echo "错误：--worker 只接受 devin|cmdc" >&2; exit 2; }
-[[ "$CONTROLLER" == codex || "$CONTROLLER" == claude || "$CONTROLLER" == pi ]] \
-  || { echo "错误：--controller 只接受 codex|claude|pi" >&2; exit 2; }
+[[ "$WORKER" == pi || "$WORKER" == claude ]] || { echo "错误：--worker 只接受 pi|claude" >&2; exit 2; }
+[[ "$CONTROLLER" == claude || "$CONTROLLER" == pi ]] \
+  || { echo "错误：--controller 只接受 claude|pi" >&2; exit 2; }
 case "$CONTROLLER" in
-  codex) MODEL="${MODEL:-gpt-6-luna}"; EFFORT="${EFFORT:-max}" ;;
-  claude) MODEL="${MODEL:-opus}"; EFFORT="${EFFORT:-high}" ;;
+  claude) MODEL="${MODEL:-sonnet}"; EFFORT="${EFFORT:-low}" ;;
   pi) MODEL="${MODEL:-magpie/codex/gpt-6.1-sol}"; EFFORT="${EFFORT:-high}" ;;
 esac
 [[ "$TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "错误：--timeout-ms 须为正整数" >&2; exit 2; }
@@ -57,8 +56,8 @@ SESSION="qwb-e2e-${CONTROLLER}-${WORKER}-$(date +%s)-$$"
 SOCKET="$HOME/.config/herdr/sessions/$SESSION/herdr.sock"
 SERVER_PID=""
 case "$WORKER" in
-  devin) WORKER_MODEL=swe-2-max ;;
-  cmdc) WORKER_MODEL=deepseek/deepseek-v4-flash ;;
+  pi) WORKER_MODEL=magpie/codex/gpt-6.1-sol/high ;;
+  claude) WORKER_MODEL=claude-opus-5-5/medium ;;
 esac
 CONTROLLER_VERSION="$("$CONTROLLER" --version)" || { echo "错误：无法读取主控 CLI 版本" >&2; exit 1; }
 echo "真实 E2E：主控=${CONTROLLER} ${MODEL}/${EFFORT}；worker=${WORKER} ${WORKER_MODEL}"

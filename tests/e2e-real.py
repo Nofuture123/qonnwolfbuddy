@@ -43,10 +43,9 @@ LAST_SPACES = []
 DONE = False
 BLOCKED = False
 INVALID_UTF8_OBSERVED = False
-STATE_PATH = {"codex": Path.home() / ".codex/config.toml",
-              "pi": Path.home() / ".pi/agent/trust.json",
-              "claude": Path.home() / ".claude.json"}[CONTROLLER]
-STATE_BEFORE = None
+STATE_PATHS = {"pi": Path.home() / ".pi/agent/trust.json",
+               "claude": Path.home() / ".claude.json"}
+STATE_BEFORE = {}
 CLAUDE_PROJECTS_BEFORE = set()
 CLAUDE_PROJECTS_ADDED = []
 SESSION_PATH = None
@@ -77,17 +76,23 @@ def claude_projects(raw):
     return set(projects)
 
 
+def snapshot_global_state():
+    return {tool: STATE_PATHS[tool].read_bytes() if STATE_PATHS[tool].exists() else None
+            for tool in {CONTROLLER, WORKER}}
+
+
 def check_global_state():
     global CLAUDE_PROJECTS_ADDED
-    if STATE_BEFORE is None:
-        return
-    if CONTROLLER == "claude":
-        CLAUDE_PROJECTS_ADDED = sorted(claude_projects(STATE_PATH.read_bytes()) - CLAUDE_PROJECTS_BEFORE)
-        event(f"Claude ~/.claude.json projects 新增键：{CLAUDE_PROJECTS_ADDED}")
-    else:
-        CHECKS["global_state_unchanged"] = STATE_PATH.read_bytes() == STATE_BEFORE
-        if not CHECKS["global_state_unchanged"]:
-            event(f"全局文件字节变化：{STATE_PATH}")
+    for tool, before in STATE_BEFORE.items():
+        path = STATE_PATHS[tool]
+        after = path.read_bytes() if path.exists() else None
+        if tool == "claude":
+            CLAUDE_PROJECTS_ADDED = sorted(claude_projects(after) - CLAUDE_PROJECTS_BEFORE) if after else []
+            event(f"Claude ~/.claude.json projects 新增键：{CLAUDE_PROJECTS_ADDED}")
+        else:
+            CHECKS["global_state_unchanged"] = after == before
+            if not CHECKS["global_state_unchanged"]:
+                event(f"全局文件字节变化：{path}")
 
 
 def run(args, *, cwd=None, env=None, timeout=60, check=True):
@@ -136,9 +141,6 @@ def controller_session_path():
     if CONTROLLER == "claude" and session.get("kind") == "id":
         matches = list((Path.home() / ".claude/projects").glob(f"*/{session['value']}.jsonl"))
         return matches[0] if len(matches) == 1 else None
-    if CONTROLLER == "codex" and session.get("kind") == "id":
-        matches = list((Path.home() / ".codex/sessions").glob(f"**/*{session['value']}.jsonl"))
-        return matches[0] if len(matches) == 1 else None
     return None
 
 
@@ -183,37 +185,6 @@ def assistant_tool_calls(entries):
                 yield json.dumps(item, ensure_ascii=False)
 
 
-def codex_block_command(item):
-    if item.get("type") != "CommandExecution":
-        return None
-    command = item.get("command") or []
-    if (len(command) != 3 or command[0] not in ("/bin/zsh", "/bin/bash", "/bin/sh")
-            or command[1] not in ("-lc", "-c")):
-        return None
-    try:
-        argv = shlex.split(command[-1])
-    except ValueError:
-        return None
-    if (argv[:3] == ["bash", "qwbuddy/bin/qwb-wake.sh", "--block"]
-            and (len(argv) == 3 or
-                 (len(argv) == 5 and argv[3] == "--max-ms" and argv[4].isdigit()))):
-        return command[-1]
-    return None
-
-
-def codex_wake_result(entries):
-    for entry in entries:
-        if entry.get("type") != "event_msg":
-            continue
-        item = (entry.get("payload") or {}).get("item") or {}
-        command = codex_block_command(item)
-        if (command and item.get("status") in ("completed", "failed")
-                and isinstance(item.get("exit_code"), int)
-                and "done:" in (item.get("stdout") or "")):
-            return command, item["exit_code"], (item.get("stdout") or "")[-500:]
-    return None
-
-
 def timestamp_seconds(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else None
 
@@ -223,13 +194,6 @@ def finish_event_time(entries):
     completed = []
     for entry in entries:
         stamp = timestamp_seconds(entry.get("timestamp", ""))
-        if CONTROLLER == "codex" and entry.get("type") == "event_msg":
-            item = (entry.get("payload") or {}).get("item") or {}
-            command = " ".join(item.get("command") or [])
-            if (item.get("type") == "CommandExecution" and "qwb-worktree.sh finish" in command
-                    and "--merged" in command and item.get("exit_code") == 0):
-                completed.append(stamp)
-            continue
         message = entry.get("message") or {}
         if message.get("role") == "assistant":
             for item in message.get("content", []):
@@ -255,31 +219,20 @@ def wake_observations(entries):
     seen_commands = set()
     for entry in entries:
         stamp = entry.get("timestamp", "")
-        if CONTROLLER == "codex" and entry.get("type") == "event_msg":
-            item = (entry.get("payload") or {}).get("item") or {}
-            command = codex_block_command(item)
-            if command and item.get("exit_code") == 2:
-                messages.append((stamp, item.get("stdout") or ""))
-            if item.get("type") == "CommandExecution":
-                key = item.get("id")
-                if key not in seen_commands:
-                    seen_commands.add(key)
-                    polling.append(" ".join(item.get("command") or []))
-        else:
-            user = message_text(entry, "user")
-            if CONTROLLER == "claude" and "Stop hook blocking error from command \"Stop\"" in user and "看账本：" in user:
-                messages.append((stamp, user))
-            elif CONTROLLER == "pi" and user.startswith("[qwb-wake]"):
-                messages.append((stamp, user))
-            if entry.get("type") in ("message", "assistant"):
-                message = entry.get("message") or {}
-                if message.get("role", entry.get("type")) == "assistant":
-                    for item in message.get("content", []):
-                        if item.get("type") in ("tool_use", "toolCall") and item.get("name", "").lower() == "bash":
-                            key = item.get("id")
-                            if key not in seen_commands:
-                                seen_commands.add(key)
-                                polling.append((item.get("input") or item.get("arguments") or {}).get("command", ""))
+        user = message_text(entry, "user")
+        if CONTROLLER == "claude" and "Stop hook blocking error from command \"Stop\"" in user and "看账本：" in user:
+            messages.append((stamp, user))
+        elif CONTROLLER == "pi" and user.startswith("[qwb-wake]"):
+            messages.append((stamp, user))
+        if entry.get("type") in ("message", "assistant"):
+            message = entry.get("message") or {}
+            if message.get("role", entry.get("type")) == "assistant":
+                for item in message.get("content", []):
+                    if item.get("type") in ("tool_use", "toolCall") and item.get("name", "").lower() == "bash":
+                        key = item.get("id")
+                        if key not in seen_commands:
+                            seen_commands.add(key)
+                            polling.append((item.get("input") or item.get("arguments") or {}).get("command", ""))
     wakes = []
     for stamp, body in messages:
         when = timestamp_seconds(stamp)
@@ -306,42 +259,30 @@ def wait_idle(pane, seconds=120):
         if result:
             state = result["result"]["agent"]["agent_status"]
             if state == "blocked":
-                view = pane_read(pane, BASE / "controller-transcript.txt", 90)
-                if CONTROLLER == "codex" and trust_prompt_is_current(view):
-                    raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
                 raise RuntimeError(f"主控 pane {pane} 进入 blocked；见 controller-transcript.txt")
             if state == "idle":
                 return
         view = pane_read(pane, BASE / "controller-transcript.txt", 90)
-        if CONTROLLER == "codex" and trust_prompt_is_current(view):
-            raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
     raise RuntimeError(f"主控 pane {pane} 启动后未进入 idle")
 
 
-def trust_prompt_is_current(view):
-    text = view.lower()
-    prompt_at = max(text.rfind("trust this folder?"), text.rfind("trust this directory"))
-    return (prompt_at >= 0 and "trust and continue" in text[prompt_at:]
-            and prompt_at > text.rfind("ask codex to do anything"))
-
-
-def claude_trust_prompt(view):
-    return (f"Accessing workspace:\n\n {REPO.resolve()}" in view
+def claude_trust_prompt(view, directory):
+    return (f"Accessing workspace:\n\n {directory.resolve()}" in view
             and "Quick safety check: Is this a project you created or one you trust?" in view
             and "❯ No, exit" in view and "Yes, I trust this folder" in view
             and "Enter to confirm · Esc to cancel" in view)
 
 
-def accept_claude_trust():
+def accept_claude_trust(pane, directory):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
-        view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
-        if claude_trust_prompt(view):
-            h("pane", "send-keys", CONTROL_PANE, "Down")
-            selected = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 90)
+        view = pane_read(pane, BASE / "controller-transcript.txt", 90)
+        if claude_trust_prompt(view, directory):
+            h("pane", "send-keys", pane, "Down")
+            selected = pane_read(pane, BASE / "controller-transcript.txt", 90)
             if "❯ Yes, I trust this folder" not in selected or "Enter to confirm · Esc to cancel" not in selected:
                 raise RuntimeError("Claude 信任框选择未确认，不按 Enter")
-            h("pane", "send-keys", CONTROL_PANE, "Enter")
+            h("pane", "send-keys", pane, "Enter")
             event("Claude 已识别信任框并选择 Yes，仅按一次 Enter")
             return
         if "Claude Code v" in view and "❯" in view:
@@ -352,7 +293,7 @@ def accept_claude_trust():
 
 def setup():
     global CONTROL_PANE, BASE_SPACES
-    for name in ("herdr", CONTROLLER, "devin", "cmdc"):
+    for name in dict.fromkeys(("herdr", CONTROLLER, WORKER)):
         if name == CONTROLLER:
             VERSIONS[name] = [os.environ["QWB_E2E_CONTROLLER_VERSION"]]
         else:
@@ -371,10 +312,12 @@ def setup():
         f"QWB_GATE_FULL=\"cmp -s e2e/hello.txt <(printf 'QWB E2E OK {NONCE}\\n')\"\n"
     )
     workers = REPO / "qwbuddy/workers.sh"
-    if WORKER == "devin":
-        workers.write_text("qwb_worker devin herdr --model swe-2-max --permission-mode dangerous --respect-workspace-trust false\n")
+    if WORKER == "pi":
+        session_dir = BASE / "worker-pi-sessions"
+        session_dir.mkdir()
+        workers.write_text("qwb_worker pi herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high --session-dir " + shlex.quote(str(session_dir)) + "\n")
     else:
-        workers.write_text("qwb_worker cmdc pane-run cmdc --yolo --trust --skip-onboarding -m deepseek/deepseek-v4-flash\n")
+        workers.write_text("qwb_worker claude herdr claude -- --dangerously-skip-permissions --model claude-opus-5-5 --effort medium --add-dir " + shlex.quote(str(REPO.resolve())) + "\n")
     TICKET.write_text(
         f"# e2e\nstate: running\n\n## 背景与范围\n只在本隔离项目的任务 worktree 新建 e2e/hello.txt，不访问其他项目。\n"
         f"\n## 验收场景\n### 正常\nGiven 默认任务 worktree\nWhen 新增 e2e/hello.txt，内容恰为 QWB E2E OK {NONCE} 后跟一个换行，并提交\nThen 主控从 Git 提交与文件字节独立核对\n"
@@ -393,15 +336,6 @@ def controller_model_visible(view, controller, model, effort):
     """Check current or legacy TUI identity without running the live E2E flow."""
     model_token = re.escape(model)
     effort_token = re.escape(effort) + r"(?=$|[\s·•])"
-    if controller == "codex":
-        model_status_lines = [line for line in view.splitlines()
-                              if re.search(r"(?i)\bmodel:|\bcontext\b|\bweekly\b", line)]
-        status_lines = [line for line in model_status_lines if re.search(r"(?i)\bcontext\b|\bweekly\b", line)]
-        if any(re.search(r"(?i)\bfast\b", line) for line in model_status_lines):
-            raise RuntimeError("Codex TUI 模型/状态行出现 fast，拒绝运行真实 E2E")
-        legacy = re.search(rf"(?im)^.*model:\s*{model_token}\s+{effort_token}", view)
-        current = re.search(rf"(?im)^\s*{model_token}\s+{effort_token}\s*[·•][^\n]*\bcontext\b", view)
-        return bool((legacy or current) and status_lines)
     if controller == "claude":
         return bool(re.search(rf"(?i)\b{model_token}\b.*\bwith {re.escape(effort)} effort\b", view))
     provider, separator, model_id = model.partition("/")
@@ -412,14 +346,7 @@ def controller_model_visible(view, controller, model, effort):
 
 
 def start_controller():
-    if CONTROLLER == "codex":
-        # Herdr 把 /tmp 解析为 /private/tmp；仅本次启动覆盖信任，不写全局配置。
-        trust = f'projects."{REPO.resolve()}".trust_level="trusted"'
-        trust_table = f'projects={{{json.dumps(str(REPO.resolve()))}={{trust_level="trusted"}}}}'
-        argv = ["codex", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}",
-                "-c", 'service_tier="default"', "-c", trust, "-c", trust_table,
-                "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]
-    elif CONTROLLER == "claude":
+    if CONTROLLER == "claude":
         argv = ["claude", "--model", MODEL, "--effort", EFFORT,
                 "--permission-mode", "bypassPermissions"]
     else:
@@ -432,13 +359,11 @@ def start_controller():
                 "--thinking", EFFORT, "--session-dir", str(session_dir)]
     h("pane", "run", CONTROL_PANE, shlex.join(argv))
     if CONTROLLER == "claude":
-        accept_claude_trust()
+        accept_claude_trust(CONTROL_PANE, REPO)
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         time.sleep(1)
         view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
-        if CONTROLLER == "codex" and trust_prompt_is_current(view):
-            raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
         model_ok = controller_model_visible(view, CONTROLLER, MODEL, EFFORT)
         if model_ok:
             break
@@ -446,8 +371,6 @@ def start_controller():
         raise RuntimeError(f"{CONTROLLER} TUI 未显示请求的模型与推理档：{MODEL}/{EFFORT}；见 controller-transcript.txt")
     wait_idle(CONTROL_PANE)
     event(f"{CONTROLLER} TUI 已核对模型={MODEL} 推理档={EFFORT}")
-    if CONTROLLER == "codex":
-        event('Codex service_tier="default"，模型/状态行均无 fast')
     prompt = (
         "你现在是 QW buddy。按 qwbuddy/QWBUDDY.md 开局；账本里的未结票派给 " + WORKER +
         " 工人（默认新建 worktree，不传 --name），按你所在宿主的唯一值守入口等待。工人报 done 后独立验收"
@@ -494,17 +417,12 @@ def monitor():
                     if obj.get("workspace_id") != TASK_SPACE:
                         raise RuntimeError(f"工人 pane {pane} 不在任务 Space {TASK_SPACE}")
                     CHECKS["worker_space_observed"] = True
-                    pane_read(pane, BASE / "worker-transcript.txt", 100)
+                    view = pane_read(pane, BASE / "worker-transcript.txt", 100)
+                    if WORKER == "claude" and claude_trust_prompt(view, WT):
+                        accept_claude_trust(pane, WT)
         ctl = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 140)
         controller_finished = statuses.get("controller") in ("idle", "done")
-        # The submitted prompt contains both markers. Herdr's recent transcript
-        # eventually scrolls that prompt away, so counting two occurrences loses
-        # a completed answer. Codex prints "Worked for" after its final answer.
-        def final_marker(marker):
-            return re.search(r"(?m)^\s*" + re.escape(marker) +
-                             r"(?:[^\n]*)\n(?:[ \t]*\n)*[ \t]*Worked for\b", ctl) is not None
-
-        entries = session_entries() if CONTROLLER != "codex" else []
+        entries = session_entries()
         if CONTROLLER == "pi":
             count = sum(message_text(entry, "user").startswith("[qwb-wake]") for entry in entries)
             if count != pi_wake_count:
@@ -514,10 +432,8 @@ def monitor():
                 BLOCKED = True
                 event(f"Pi followUp 排空超时：账本 wake={sum(line.startswith('wake:') for line in lines)}，会话消息={count}")
                 break
-        marked_blocked = (final_marker("QWB_E2E_CONTROLLER_BLOCKED") if CONTROLLER == "codex"
-                          else completed_marker(entries, "QWB_E2E_CONTROLLER_BLOCKED"))
-        marked_done = (final_marker("QWB_E2E_CONTROLLER_DONE") if CONTROLLER == "codex"
-                       else completed_marker(entries, "QWB_E2E_CONTROLLER_DONE"))
+        marked_blocked = completed_marker(entries, "QWB_E2E_CONTROLLER_BLOCKED")
+        marked_done = completed_marker(entries, "QWB_E2E_CONTROLLER_DONE")
         if CONTROLLER == "pi" and marked_done and pi_done_seen_at is None:
             pi_done_seen_at = time.monotonic()
             event(f"Pi 已输出 DONE，等待 {PI_DRAIN_QUIET_S}s 无新 followUp 后统计排队消息")
@@ -539,7 +455,7 @@ def monitor():
                 DONE = True
                 event("主控输出 DONE")
                 break
-        if statuses.get("worker") == "blocked" or (CONTROLLER == "codex" and statuses.get("controller") == "blocked"):
+        if statuses.get("worker") == "blocked":
             BLOCKED = True
             event(f"agent 进入 blocked：{statuses}")
             break
@@ -564,11 +480,10 @@ def assert_result():
         bool(re.search(r"(?m)^done:", text)), bool(re.search(r"(?m)^wake:", text)),
         "worktree: merged" in text, bool(re.search(r"(?m)^state: verified\s*$", text)),
     ))
-    if WORKER == "devin":
-        dispatch = [line for line in text.splitlines()
-                    if line.startswith("dispatch:") and f"worker={WORKER}" in line]
-        CHECKS["devin_agent_name"] = bool(dispatch and
-            re.search(r"(?:^| )agent=" + re.escape(EXPECTED_AGENT) + r"(?: |$)", dispatch[-1]))
+    dispatch = [line for line in text.splitlines()
+                if line.startswith("dispatch:") and f"worker={WORKER}" in line]
+    CHECKS["worker_agent_name"] = bool(dispatch and
+        re.search(r"(?:^| )agent=" + re.escape(EXPECTED_AGENT) + r"(?: |$)", dispatch[-1]))
     CHECKS["main_content"] = (REPO / "e2e/hello.txt").read_bytes() == EXPECTED if (REPO / "e2e/hello.txt").exists() else False
     branch = run(["git", "-C", str(REPO), "show-ref", "--verify", "--quiet", f"refs/heads/{TASK_ID}"], check=False)
     config = run(["git", "-C", str(REPO), "config", "--local", "--get-regexp", rf"^branch\.{TASK_ID}\."], check=False)
@@ -592,21 +507,16 @@ def assert_result():
     FINISH_AT = finish_event_time(entries)
     if FINISH_AT is not None:
         event(f"成功收尾命令时刻：{dt.datetime.fromtimestamp(FINISH_AT, dt.timezone.utc).isoformat()}")
-    if CONTROLLER == "codex":
-        wake = codex_wake_result(entries)
-        CHECKS["host_wake"] = bool(wake)
-        HOST_WAKE_EXCERPT = f"前台命令={wake[0]}；rc={wake[1]}；stdout={wake[2]}" if wake else ""
+    user_texts = [message_text(entry, "user") for entry in entries]
+    if CONTROLLER == "claude":
+        wake = [value for value in user_texts if "Stop hook blocking error from command \"Stop\"" in value
+                and "done:" in value]
     else:
-        user_texts = [message_text(entry, "user") for entry in entries]
-        if CONTROLLER == "claude":
-            wake = [value for value in user_texts if "Stop hook blocking error from command \"Stop\"" in value
-                    and "done:" in value]
-        else:
-            wake = [value for value in user_texts if "[qwb-wake]" in value and "done:" in value]
-        foreground = any(re.search(r"qwb-wake\.sh.*--block", call) for call in assistant_tool_calls(entries))
-        CHECKS["host_wake"] = bool(wake) and not foreground
-        HOST_WAKE_EXCERPT = wake[-1][-500:] if wake else ""
-        CHECKS["no_foreground_wake"] = not foreground
+        wake = [value for value in user_texts if "[qwb-wake]" in value and "done:" in value]
+    foreground = any(re.search(r"qwb-wake\.sh.*--block", call) for call in assistant_tool_calls(entries))
+    CHECKS["host_wake"] = bool(wake) and not foreground
+    HOST_WAKE_EXCERPT = wake[-1][-500:] if wake else ""
+    CHECKS["no_foreground_wake"] = not foreground
     WAKE_MESSAGES, POLL_COMMANDS = wake_observations(entries)
     PI_LEDGER_WAKES = sum(line.startswith("wake:") for line in text.splitlines())
     PI_DELIVERED_WAKES = sum(msg["is_ledger_wake"] for msg in WAKE_MESSAGES)
@@ -638,8 +548,7 @@ def report(rc):
              f"- 工人：`{WORKER}`",
              f"- 中文票 id：`{TASK_ID}`", f"- 默认工人名预期：`{EXPECTED_AGENT}`",
              f"- 主控模型/推理档：`{MODEL}` / `{EFFORT}`",
-             f"- Codex service_tier：`{'default（TUI 模型/状态行无 fast）' if CONTROLLER == 'codex' else '不适用'}`",
-             f"- 工人模型：`{'swe-2-max' if WORKER == 'devin' else 'deepseek/deepseek-v4-flash'}`",
+             f"- 工人模型/推理档：`{'magpie/codex/gpt-6.1-sol/high' if WORKER == 'pi' else 'claude-opus-5-5/medium'}`",
              f"- 会话：`{SESSION}`", f"- 临时项目：`{REPO}`", f"- nonce：`{NONCE}`",
              f"- 工具版本：`{json.dumps(VERSIONS, ensure_ascii=False)}`", "",
              "## 时间线", "", *[f"- {line}" for line in TIMELINE], "", "## 断言", "",
@@ -662,12 +571,14 @@ def report(rc):
              *[f"- 消息 {index}：送达 `{msg['delivered_at']}`；跳过行 `{msg['skip_lines']}`；收尾后 `{msg['after_finish']}`"
                for index, msg in enumerate(WAKE_MESSAGES, 1)],
              "", f"- 最终 rc：`{rc}`"]
-    if CONTROLLER == "claude":
-        lines.append(f"- ~/.claude.json projects 新增键：`{CLAUDE_PROJECTS_ADDED}`")
-    else:
-        lines.extend([f"- 全局文件：`{STATE_PATH}`",
-                      f"- 跑前 SHA-256：`{hashlib.sha256(STATE_BEFORE).hexdigest() if STATE_BEFORE is not None else '未取得'}`",
-                      f"- 跑后 SHA-256：`{hashlib.sha256(STATE_PATH.read_bytes()).hexdigest() if STATE_PATH.exists() else '文件不存在'}`"])
+    for tool, before in STATE_BEFORE.items():
+        path = STATE_PATHS[tool]
+        if tool == "claude":
+            lines.append(f"- ~/.claude.json projects 新增键：`{CLAUDE_PROJECTS_ADDED}`")
+        else:
+            lines.extend([f"- 全局文件：`{path}`",
+                          f"- 跑前 SHA-256：`{hashlib.sha256(before).hexdigest() if before is not None else '文件不存在'}`",
+                          f"- 跑后 SHA-256：`{hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else '文件不存在'}`"])
     if ERROR:
         lines.extend([f"- 错误：`{ERROR}`"])
     REPORT.open("x").write("\n".join(lines) + "\n")
@@ -677,9 +588,9 @@ def main():
     global ERROR, STATE_BEFORE, CLAUDE_PROJECTS_BEFORE
     rc = 1
     try:
-        STATE_BEFORE = STATE_PATH.read_bytes()
-        if CONTROLLER == "claude":
-            CLAUDE_PROJECTS_BEFORE = claude_projects(STATE_BEFORE)
+        STATE_BEFORE = snapshot_global_state()
+        if STATE_BEFORE.get("claude") is not None:
+            CLAUDE_PROJECTS_BEFORE = claude_projects(STATE_BEFORE["claude"])
         setup()
         start_controller()
         monitor()
@@ -694,7 +605,7 @@ def main():
     finally:
         try:
             check_global_state()
-            if CONTROLLER != "claude" and not CHECKS.get("global_state_unchanged", False):
+            if "pi" in STATE_BEFORE and not CHECKS.get("global_state_unchanged", False):
                 rc = 1
         except Exception as exc:
             CHECKS["global_state_unchanged"] = False
