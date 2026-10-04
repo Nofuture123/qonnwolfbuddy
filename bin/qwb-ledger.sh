@@ -343,6 +343,10 @@ sub scenario {
   }
   $block =~ s/\n+\z//; return $block;
 }
+sub scenarios_ok {
+  my ($s,$heading)=@_; $heading //= qr/\A## 验收场景\n/;
+  return $s =~ $heading && $s =~ /Given/ && $s =~ /When/ && $s =~ /Then/ && $s =~ /失败|拒绝|fail|error/i && index($s,'<!-- qwb-collab-')<0;
+}
 sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[0]))) }
 sub list_ok {
   my ($v,$label)=@_; fail("$label 非法") unless ref($v) eq 'ARRAY';
@@ -965,7 +969,7 @@ if ($cmd eq 'land-authorize') {
   my %installed;
   for my $path (map { "$bindir/qwb-$_.sh" } qw(lib run wake worktree ledger send role)) { my $s=read_file($path); $installed{$path}=sha256_hex($s) }
   $data={schema=>1,rev=>0,seq=>0,spec_rev=>0,phase=>'blocked',claim=>undef,workers=>{},questions=>{},events=>[],ops=>{},migration=>{task_sha256=>sha256_hex(''),confirm=>{map { $_=>'new ticket: no previous writers' } qw(run wake worktree worker controller old-fds external-actions)},installed=>\%installed}};
-  fail('新票必须自带可验证场景') unless defined($r->{scenarios}) && $r->{scenarios}=~/\A## 验收场景\n/ && $r->{scenarios}=~/Given/ && $r->{scenarios}=~/When/ && $r->{scenarios}=~/Then/ && $r->{scenarios}=~/失败|拒绝|fail|error/i && index($r->{scenarios},'<!-- qwb-collab-')<0;
+  fail('新票必须自带可验证场景') unless defined($r->{scenarios}) && scenarios_ok($r->{scenarios});
   $body="# 任务书：$r->{package_id}\nstate: blocked\n## 原始意图\n$source->{text}\n## 工程规格\n$r->{spec}\n## 必要约束\n$r->{constraints}\n$r->{scenarios}\n";
   $data->{planning}={request_id=>$r->{request_id},package_id=>$r->{package_id},packages=>$r->{packages},source=>$source,intent=>$r->{intent},spec=>$r->{spec},constraints=>$r->{constraints},paths=>$r->{paths},needs=>$r->{needs},authority=>$controller ? undef : $grant,authorization=>$controller ? undef : $grant->{authorization},creation_sha256=>$sha,artifacts=>{},ready=>{},revisions=>[],pending_revision=>undef,revision_handoff=>undef,landed=>undef};
   graph_check('start',0);
@@ -1022,7 +1026,7 @@ if ($cmd eq 'land-authorize') {
   fail('已验收历史不改，新需求另开后续票') if accepted_history();
   my ($r)=json_file($args[0]); keys_only($r,qw(source_task source_event spec constraints scenarios needs)); needs_ok($r->{needs}); $r->{source}=durable_source(delete($r->{source_task}),delete($r->{source_event}));
   fail('修订request在途，先对账') if $p->{pending_revision};
-  fail('新场景缺少正常/拒绝行为') unless $r->{scenarios}=~/\A## 验收场景\n/ && $r->{scenarios}=~/Given/ && $r->{scenarios}=~/When/ && $r->{scenarios}=~/Then/ && $r->{scenarios}=~/失败|拒绝|fail|error/i && index($r->{scenarios},'<!-- qwb-collab-')<0;
+  fail('新场景缺少正常/拒绝行为') unless scenarios_ok($r->{scenarios});
   $p->{pending_revision}={%$r,spec_rev=>$data->{spec_rev}}; $p->{ready}={};
   $line="working: revision-requested source=$r->{source}{event} handoff-required"; append_body($line);
 } elsif ($cmd eq 'revision-handoff') {
@@ -1515,7 +1519,7 @@ if ($cmd eq 'land-authorize') {
     fail('规格修订必须给expect') if $expect eq '';
     my ($block,$why)=@args; $reason=$why; $old=fp_of($body);
     my $current=scenario($body); fail('场景块不存在') if $current eq '';
-    fail('新场景块格式非法') unless $block =~ /\A\#{1,6}[^#]*验收场景/ && $block =~ /Given/ && $block =~ /When/ && $block =~ /Then/ && $block =~ /失败|拒绝|fail|error/i && index($block,'<!-- qwb-collab-')<0;
+    fail('新场景块格式非法') unless scenarios_ok($block,qr/\A\#{1,6}[^#]*验收场景/);
     $body =~ s/\Q$current\E/$block/; $new=scen_fp($body);
   } else { ($old,$new,$reason)=@args }
   fail('修订前置不满足') unless $old && $old =~ /\A[0-9a-f]{40}\z/ && $new && $new =~ /\A[0-9a-f]{40}\z/ && string_ok($reason) && $reason ne '' && fp_of($body) eq $old && scen_fp($body) eq $new;
