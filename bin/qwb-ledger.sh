@@ -549,6 +549,11 @@ sub native_reply {
   my $j=strict_json($s); fail('原生身份回复不是对象') unless ref($j) eq 'HASH';
   return ($j,$rc);
 }
+sub owner_dead {
+  my $old=shift; return !kill(0,$1) && $! == ESRCH if $old =~ /\Apid:([1-9][0-9]*)\z/;
+  my ($j,$rc)=native_reply('pane','get',$old);
+  return $rc && ($j->{error}{code} // '') eq 'pane_not_found';
+}
 my $wake_cmd=$cmd eq 'wake' || $cmd eq 'wake-check';
 my $handoff_watch=$cmd eq 'handoff-pending' || $cmd eq 'handoff-transport';
 my $watcher=0;
@@ -1398,8 +1403,7 @@ if ($cmd eq 'land-authorize') {
         my $old=$h->{accepted};
         fail('同pane新代际无法证明旧claim owner死亡，保留待办') if $old eq $actor && $h->{owner_fp} ne $owner_fp;
         if ($old ne $actor) {
-          if ($old =~ /\Apid:([1-9][0-9]*)\z/) { fail('旧claim owner仍活或未知') unless !kill(0,$1) && $! == ESRCH }
-          else { my ($j,$rc)=native_reply('pane','get',$old); fail('旧claim owner仍活或未知') unless $rc && ($j->{error}{code} // '') eq 'pane_not_found' }
+          fail('旧claim owner仍活或未知') unless owner_dead($old);
         }
         $h->{accepted}=$actor; $h->{received}=$actor; $h->{owner_fp}=$owner_fp; $h->{activity_at}=$now;
         $h->{wait_until}=0; $h->{wait_reason}='';
@@ -1551,11 +1555,10 @@ if ($cmd eq 'land-authorize') {
   my $e=strict_json($s); keys_only($e,qw(task_sha256 op_id previous_owner reconciled));
   fail('接管快照/op/原owner/对账证据不符') unless $e->{task_sha256} eq sha256_hex($raw) && $e->{op_id} eq $op && $e->{previous_owner} eq $old && string_ok($e->{reconciled}) && $e->{reconciled} ne '';
   if ($old =~ /\Apid:([1-9][0-9]*)\z/) {
-    fail('旧owner仍活或死亡未知') unless !kill(0,$1) && $! == ESRCH;
+    fail('旧owner仍活或死亡未知') unless owner_dead($old);
   } else {
     fail('旧owner身份非法') if $old eq '' || $old =~ /^pid:/;
-    my ($j,$rc)=native_reply('pane','get',$old);
-    fail('旧owner仍活或死亡未知') unless $rc && ($j->{error}{code} // '') eq 'pane_not_found';
+    fail('旧owner仍活或死亡未知') unless owner_dead($old);
   }
   # 转移原op所有权，不删claim/事件；补偿或release仍须随后显式进行。
   $data->{claim}{owner}=$actor; $data->{ops}{$op}{owner}=$actor;
