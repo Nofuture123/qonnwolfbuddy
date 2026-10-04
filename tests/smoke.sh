@@ -3524,7 +3524,7 @@ for nm in $dargs; do
   for w in $dworkers; do [[ "$nm" == "$w" ]] && { inself=1; break; }; done
   [[ "$inself" -eq 1 ]] || miss="${miss} ${nm}"
 done
-{ [[ -n "$dworkers" && -z "$miss" && "$(printf '%s' "$dworkers" | wc -w | tr -d ' ')" == "9" ]]; } \
+{ [[ -n "$dworkers" && -z "$miss" && "$(printf '%s' "$dworkers" | wc -w | tr -d ' ')" == "10" ]]; } \
   && ok "默认 workers.sh 的每个工人都在 QWB_WORKERS 且声明唯一" \
   || bad "默认 workers.sh 含未知或重复工人:${miss}"
 
