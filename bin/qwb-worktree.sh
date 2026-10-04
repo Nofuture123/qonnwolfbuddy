@@ -178,6 +178,18 @@ elif grep -q '^<!-- qwb-collab-v1$' "$TASK_FILE"; then
   FINISH_OP="$(qwb_op_id)"
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" claim "$FINISH_OP" >/dev/null || exit 1
 fi
+# 两处 land 收尾各只读一次同一份已验证的 branch/after 证明。
+parse_land_proof() {
+  local fields
+  fields="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["branch"]); print(d["after"])')" || return 1
+  proof_branch="${fields%$'\n'*}"
+  proof_oid="${fields##*$'\n'}"
+}
+
+foreground_is_shell() {
+  printf '%s' "$1" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};'
+}
+
 # 只探本票派发登记的端点；idle/done不是退出证明。端点未知保留候选。
 land_writers_stopped() {
   [[ -n "$LAND_PROOF" ]] || return 0
@@ -195,7 +207,7 @@ land_writers_stopped() {
     printf '%s' "$out" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{pane}; exit 1 unless ref($p) eq "HASH" && exists($p->{agent}) && !defined($p->{agent});' \
       || { echo '拒绝：本票写入者尚未退出（idle/done不等于已停）' >&2; return 1; }
     proc="$(herdr pane process-info --pane "$pane" 2>&1)" || return 1
-    printf '%s' "$proc" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};' \
+    foreground_is_shell "$proc" \
       || { echo '拒绝：本票写入者前台活动/未知' >&2; return 1; }
   done <<< "$panes"
 }
@@ -278,8 +290,7 @@ if [[ ! -d "$WT_DIR" ]]; then
   [[ "$ACTION" != keep && ! -L "$TASK_FILE" && ! -L "$WT_DIR" ]] \
     || { echo "错误：worktree 不存在或任务书是符号链接：${WT_DIR}" >&2; exit 1; }
   if [[ -n "$LAND_PROOF" ]]; then
-    proof_branch="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["branch"])')"
-    proof_oid="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["after"])')"
+    parse_land_proof
     refs="$(git -C "$PROJECT_ROOT" for-each-ref --format='%(refname)' "refs/heads/$proof_branch")" || exit 1
     if [[ -z "$refs" ]]; then
       listing="$(git -C "$PROJECT_ROOT" worktree list --porcelain)" || exit 1
@@ -444,6 +455,16 @@ partial_fail() {
   exit 1
 }
 
+# worktree 删除后的分支清理；调用方保留各动作自己的提示文案。
+delete_finished_branch() {
+  if git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$BRANCH"; then
+    partial_fail branch-checked-out-elsewhere
+  fi
+  git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
+    || partial_fail branch-delete
+  cleanup_branch_config
+}
+
 # Git 前置检查先于任何 Space 关闭；只关闭本票登记且没有活动写入者的 Space。
 prepare_space_close() {
   local record root_tab record_path last_dispatch dispatch_path task_pane pane_out pane_meta worker_tab
@@ -512,7 +533,7 @@ prepare_space_close() {
       printf '%s' "$pane_out" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{pane}; exit 1 unless ref($p) eq "HASH" && exists($p->{agent}) && !defined($p->{agent});' \
         || { echo '拒绝：land写入者尚未退出（idle/done不等于已停）' >&2; return 1; }
       proc="$(herdr pane process-info --pane "$pane_id" 2>&1)" || { echo '拒绝：land前台未知' >&2; return 1; }
-      printf '%s' "$proc" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};' \
+      foreground_is_shell "$proc" \
         || { echo '拒绝：land前台仍有活动写入者' >&2; return 1; }
     fi
     case "$state" in
@@ -547,8 +568,7 @@ case "$ACTION" in
   merged)
     landed=""
     if [[ -n "$LAND_PROOF" ]]; then
-      proof_oid="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["after"])')"
-      proof_branch="$(printf '%s' "$LAND_PROOF" | python3 -c 'import json,sys; print(json.load(sys.stdin)["branch"])')"
+      parse_land_proof
       [[ "$DETACHED" -eq 0 && "$BRANCH" == "$proof_branch" && "$HEAD_OID" == "$proof_oid" && "$(git -C "$PROJECT_ROOT" rev-parse refs/heads/main)" == "$proof_oid" ]] || { echo '拒绝：本地main/候选不是land精确C' >&2; exit 1; }
       landed="精确本地main land收据（${proof_oid}）"
     elif git -C "$PROJECT_ROOT" merge-base --is-ancestor "$HEAD_OID" HEAD 2>/dev/null; then
@@ -576,12 +596,7 @@ case "$ACTION" in
     if [[ "$DETACHED" -eq 1 ]]; then
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（detached HEAD ${HEAD_OID}，无分支可删）"
     elif branch_tip_unchanged; then
-      if git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$BRANCH"; then
-        partial_fail branch-checked-out-elsewhere
-      fi
-      git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
-        || partial_fail branch-delete
-      cleanup_branch_config
+      delete_finished_branch
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}），分支 ${BRANCH} 已删"
     else
       echo "已收尾（${landed}）：worktree ${WT_DIR} 已删（删除依据 OID ${HEAD_OID}）；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
@@ -622,12 +637,7 @@ case "$ACTION" in
       fi
       echo "已归档：tag ${TAG} → detached HEAD ${HEAD_OID}；worktree 已删${kept}"
     elif branch_tip_unchanged; then
-      if git -C "$PROJECT_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$BRANCH"; then
-        partial_fail branch-checked-out-elsewhere
-      fi
-      git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
-        || partial_fail branch-delete
-      cleanup_branch_config
+      delete_finished_branch
       echo "已归档：tag ${TAG} → ${HEAD_OID}（分支 ${BRANCH} 顶端）；worktree 已删，分支已删"
     else
       echo "已归档：tag ${TAG} → ${HEAD_OID}；worktree 已删；保留分支 ${BRANCH}（收尾期间已被推进或不存在，未删）"
