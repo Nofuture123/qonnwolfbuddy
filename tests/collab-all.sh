@@ -18,13 +18,13 @@ TMPBASE="$ROOT/.qwb-tmp"
 mkdir -p "$TMPBASE" || exit 1
 
 # 默认清单：显式写死，不用 glob——新增测试文件必须有人有意接入才进全门。
-# collab-land.sh 在 4678ba0 基线退出 1，暂不接入，失败输出另记主账本。
-# 根因待主控诊断，本脚本不修改该测试。
+# collab-land.sh 已补齐关闭 Space 的快照/RPC 假件，覆盖本地 land 与收尾恢复。
 DEFAULT_TESTS=(
   tests/collab-ci-diagnostics.sh
   tests/collab-gate.sh
   tests/collab-handoff.sh
   tests/collab-herdr.sh
+  tests/collab-land.sh
   tests/collab-ledger.sh
   tests/collab-planning.sh
   tests/collab-posture.sh

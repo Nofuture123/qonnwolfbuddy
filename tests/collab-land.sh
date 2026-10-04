@@ -12,7 +12,7 @@ export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'
 from process_fixture import TemporaryDirectory
-import fcntl, hashlib, json, os, shutil, subprocess, sys, tempfile, time
+import atexit, fcntl, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_LAND_ROOT'])
 with TemporaryDirectory(prefix='qwb-land-') as tmp:
@@ -39,13 +39,25 @@ a=sys.argv[1:]; f=Path(os.environ['LAND_NATIVE_STATE']); s=json.loads(f.read_tex
 with open(os.environ['LAND_NATIVE_LOG'],'a') as log: print(json.dumps(a),file=log)
 p=os.environ['LAND_PROJECT']; pid=int(os.environ['LAND_PID'])
 def out(x):print(json.dumps({'result':x}))
-if a[:2]==['workspace','list']:
+if a[:2]==['status','--json']:print(json.dumps({'server':{'socket':os.environ['LAND_SOCKET'],'session':os.environ.get('HERDR_SESSION')}}))
+elif a[:2]==['api','snapshot']:
+ if 'snapshot' not in s:
+  ids=['ws','task-space'] if os.environ.get('LAND_SPACE_PATH') and not s.get('space_closed') else ['ws']
+  s['snapshot']={'workspaces':[{'workspace_id':w} for w in ids],
+   'tabs':[{'workspace_id':w,'tab_id':'task-tab' if w=='task-space' else 'ctl-tab'} for w in ids],
+   'panes':[{'workspace_id':w,'tab_id':'task-tab' if w=='task-space' else 'ctl-tab','pane_id':'task-pane' if w=='task-space' else 'ctl'} for w in ids],
+   'focused_workspace_id':'ws','focused_tab_id':'ctl-tab','focused_pane_id':'ctl'}
+ out({'snapshot':s['snapshot']})
+elif a[:2]==['workspace','list']:
  w=[{'workspace_id':'ws','worktree':{'repo_root':p,'is_linked_worktree':False}}]
  if os.environ.get('LAND_SPACE_PATH') and not s.get('space_closed'):w.append({'workspace_id':'task-space','worktree':{'repo_root':p,'is_linked_worktree':True,'checkout_path':os.environ['LAND_SPACE_PATH']}})
  out({'workspaces':w})
 elif a[:2]==['tab','list']:out({'tabs':[{'tab_id':'task-tab'}]})
 elif a[:2]==['pane','list']:out({'panes':[{'pane_id':'task-pane','agent_status':'idle'}]})
-elif a[:2]==['workspace','close']:s['space_closed']=True;out({'type':'workspace_closed'})
+elif a[:2]==['workspace','close']:
+ s['space_closed']=True
+ for key in ['workspaces','tabs','panes']:s['snapshot'][key]=[x for x in s['snapshot'][key] if x['workspace_id']!=a[2]]
+ out({'type':'workspace_closed'})
 elif a[:2]==['tab','create']:out({'root_pane':{'pane_id':'gate-pane','tab_id':'gate-tab','terminal_id':'gate-terminal'}})
 elif a[:2]==['agent','get']:print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
 elif a[:2]==['agent','start']:
@@ -53,7 +65,7 @@ elif a[:2]==['agent','start']:
 elif a[:2]==['pane','get'] and a[2]=='task-pane':
  if os.environ.get('LAND_ENDPOINT')=='unknown':print(json.dumps({'error':{'code':'other_error'}}));sys.exit(1)
  out({'pane':{'pane_id':'task-pane','workspace_id':'task-space','tab_id':'task-tab','agent':None if os.environ.get('LAND_ENDPOINT')=='stopped' else 'pi','agent_status':'idle'}})
-elif a[:2]==['pane','process-info'] and a[-1]=='task-pane':out({'process_info':{'shell_pid':42,'foreground_process_group_id':42,'foreground_processes':[]}})
+elif a[:2]==['pane','process-info'] and a[-1]=='task-pane':out({'process_info':{'pane_id':'task-pane','shell_pid':42,'foreground_process_group_id':42,'foreground_processes':[{'pid':42,'argv0':'zsh','cwd':os.environ.get('LAND_SPACE_PATH',p)}]}})
 elif a[:2]==['pane','get']:
  d={'pane_id':a[2],'workspace_id':'ws','terminal_id':'gate-terminal','foreground_cwd':p}
  if a[2]!='gate-pane' or 'session' in s:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get('session','ctl-session')})
@@ -78,6 +90,37 @@ exec "$LAND_REAL_MV" "$@"
 ''')
     for f in stub.iterdir():f.chmod(0o755)
     env=os.environ|{'LC_ALL':'C','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','LAND_PROJECT':str(p),'LAND_PID':str(os.getpid()),'LAND_NATIVE_STATE':str(tmp/'native.json'),'LAND_NATIVE_LOG':str(tmp/'native.log'),'LAND_REAL_GIT':real_git,'LAND_REAL_MV':real_mv,'LAND_REAL_LSOF':real_lsof,'LAND_GIT_LOG':str(tmp/'git.log'),'LAND_FAIL_FLAG':str(tmp/'fail.flag')}
+    # Same newline-delimited RPC fixture as collab-herdr.sh; never use the live socket.
+    # Keep the socket in the short supervisor scope (Darwin AF_UNIX limit: 103 bytes).
+    sockpath=str(Path(os.environ['QWB_TEST_SCOPE_DIR'])/'land.sock')
+    api=socket.socket(socket.AF_UNIX); api.bind(sockpath); api.listen(); api.settimeout(.2)
+    def serve():
+        while True:
+            try: connection,_=api.accept()
+            except socket.timeout: continue
+            except OSError: return
+            with connection:
+                request=json.loads(connection.makefile('rb').readline())
+                state=Path(env['LAND_NATIVE_STATE']); native=json.loads(state.read_text()); snapshot=native['snapshot']
+                with Path(env['LAND_NATIVE_LOG']).open('a') as log: print(json.dumps(request),file=log)
+                method=request['method']; params=request['params']
+                if method=='workspace.move':
+                    rows=snapshot['workspaces']; item=next(x for x in rows if x['workspace_id']==params['workspace_id'])
+                    old=rows.index(item); slot=params['insert_index']; rows.remove(item)
+                    rows.insert(slot-1 if slot>old else slot,item)
+                    result={'type':'workspace_list','workspaces':rows}
+                elif method=='pane.focus':
+                    pane=next(x for x in snapshot['panes'] if x['pane_id']==params['pane_id'])
+                    snapshot.update(focused_workspace_id=pane['workspace_id'],focused_tab_id=pane['tab_id'],focused_pane_id=pane['pane_id'])
+                    result={'type':'ok'}
+                else: raise ValueError('unexpected fixture RPC: '+method)
+                state.write_text(json.dumps(native))
+                connection.sendall((json.dumps({'id':request['id'],'result':result})+'\n').encode())
+    thread=threading.Thread(target=serve,daemon=True); thread.start()
+    def close_api():
+        api.close(); thread.join(timeout=1)
+    atexit.register(close_api)
+    env['LAND_SOCKET']=sockpath
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
         r=subprocess.run(['bash',str(ROOT/'bin'/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))

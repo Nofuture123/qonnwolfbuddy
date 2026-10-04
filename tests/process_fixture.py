@@ -97,7 +97,8 @@ def main():
     base.mkdir(exist_ok=True)
     # Darwin AF_UNIX paths allow only 103 bytes; keep the fixture parent short.
     while True:
-        directory = str(base / secrets.token_hex(2))
+        # ponytail: 256 concurrent scopes; shorten the base before increasing name length.
+        directory = str(base / secrets.token_hex(1))
         try:
             os.mkdir(directory, 0o700)
             break
