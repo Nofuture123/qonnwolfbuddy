@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Own a test's process groups; drain writers before deleting its temporary files."""
 import os
+import json
 from pathlib import Path
 import secrets
 import shutil
@@ -168,16 +169,20 @@ def main():
         socket_dirs.touch()
         parent_record = os.environ.get('QWB_TEST_GROUPS')
         parent_owner = os.environ.get('QWB_TEST_SCOPE_OWNER')
+        parents = json.loads(os.environ.get('QWB_TEST_SCOPE_ANCESTORS', '[]'))
+        if parent_record and [parent_record, parent_owner] not in parents:
+            parents.append([parent_record, parent_owner])
         scope_owner = secrets.token_hex(16)
         (Path(directory) / 'scope-owner').write_text(scope_owner)
         env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
                    QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
-                   QWB_TEST_SUPERVISOR_PID=str(os.getpid()), QWB_TEST_SCOPE_OWNER=scope_owner)
+                   QWB_TEST_SUPERVISOR_PID=str(os.getpid()), QWB_TEST_SCOPE_OWNER=scope_owner,
+                   QWB_TEST_SCOPE_ANCESTORS=json.dumps(parents + [[str(records), scope_owner]]))
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
         # A killed nested supervisor may not reach its own finally. Its parent
         # keeps a generation-bound directory receipt and drains processes first.
-        if parent_record:
+        for parent_record, parent_owner in parents:
             marker = Path(parent_record).with_name('scope-owner')
             if not parent_owner or not marker.exists() or marker.read_text() != parent_owner:
                 raise RuntimeError('parent test scope has retired or changed owner')
@@ -203,14 +208,11 @@ def main():
             drain()
             child.wait()
         if socket_dirs is not None and socket_dirs.exists():
-            entries = socket_dirs.read_text().splitlines()
-            while entries:
-                path, _, owner = entries.pop().partition('\t')
+            for entry in socket_dirs.read_text().splitlines():
+                path, _, owner = entry.partition('\t')
                 marker = Path(path) / 'scope-owner'
-                if owner:
-                    if not marker.exists() or marker.read_text() != owner:
-                        continue
-                    entries.extend((Path(path) / 'socket-directories').read_text().splitlines())
+                if owner and (not marker.exists() or marker.read_text() != owner):
+                    continue
                 # Entries may retire their owned exports before their supervisor exits.
                 if Path(path).exists():
                     shutil.rmtree(path)
