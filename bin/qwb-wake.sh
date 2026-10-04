@@ -108,6 +108,8 @@ PANE="${PANE:-${QWB_CONTROLLER_PANE:-}}"
 WATCHF="$PROJECT_ROOT/qwbuddy/.watch"
 
 # pane get → stdout "cwd<TAB>agent<TAB>workspace"；rc：0 ok / 3 pane 不存在 / 2 其他查询失败
+# 保留：数组字段字符串化含进程内地址，未通过共享版本的逐字节对照。
+# 空列只用 cut -f 读取，不能改成 TAB IFS read。
 pane_info() {
   local out
   if ! out="$(herdr pane get "$1" 2>&1)"; then
@@ -124,39 +126,7 @@ pane_info() {
 # pane process-info 一次判定 → stdout：wake:<pid>@<值守目标pane> | idle | busy | gone | err
 # 值守进程认定：前台进程组里 argv0 是 shell/脚本本体 且 cmdline 含 qwb-wake.sh 且项目路径匹配；
 # --ensure/--check/--once/--dry-run 这类短调用不算持续值守实例。
-pane_probe() {
-  local out
-  if ! out="$(herdr pane process-info --pane "$1" 2>&1)"; then
-    printf '%s' "$out" | grep -q 'pane_not_found' && echo gone || echo err
-    return 0
-  fi
-  printf '%s' "$out" | perl -MJSON::PP=decode_json -MCwd=realpath -e '
-    my $root = $ARGV[0];
-    my $j = eval { decode_json(join "", <STDIN>) };
-    my $pi = ($j && $j->{result}{process_info}) or do { print "err"; exit 0 };
-    my $rr = -d $root ? realpath($root) : $root;
-    for my $p (@{ $pi->{foreground_processes} // [] }) {
-      next unless ($p->{cmdline} // "") =~ /qwb-wake\.sh(\s|$)/;
-      next unless ($p->{argv0} // "") =~ m{(^|/)(ba)?sh$|(^|/)zsh$|qwb-wake\.sh$};
-      next if ($p->{cmdline} // "") =~ /--(ensure|check|once|dry-run)(\s|$)/;
-      my $argv = $p->{argv} // [];
-      my ($proj, $tgt);
-      for (my $i = 0; $i < @$argv; $i++) {
-        if ($argv->[$i] eq "--project" && $i + 1 < @$argv) { $proj = $argv->[$i + 1]; next }
-        if ($argv->[$i] eq "--pane"    && $i + 1 < @$argv) { $tgt  = $argv->[$i + 1]; next }
-      }
-      my $cand = defined $proj ? $proj : ($p->{cwd} // "");
-      next if $cand eq "";
-      my $rc = -d $cand ? realpath($cand) : undef;
-      if (defined $rc && defined $rr && $rc eq $rr) {
-        print "wake:", ($p->{pid} // ""), "@", ($tgt // ""); exit 0
-      }
-    }
-    my $idle = defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
-               && $pi->{foreground_process_group_id} == $pi->{shell_pid};
-    print($idle ? "idle" : "busy");
-  ' "$PROJECT_ROOT"
-}
+pane_probe() { qwb_pane_probe "$1" "$PROJECT_ROOT"; }
 
 # 活值守的目标核验：$1=pane $2=pane_probe 的 wake:* 判定；值守目标 ≠ 本次要求 → 打印修复步骤并 return 1
 ensure_target_ok() {
@@ -453,6 +423,7 @@ _ensure_body() {
   local tout
   tout="$(herdr tab create --workspace "$tabws" --cwd "$PROJECT_ROOT" --label "qwb-值守" --no-focus 2>&1)" \
     || { echo "错误：herdr tab create 失败：${tout}" >&2; return 1; }
+  # 保留旧宽松取值：pane_id 为数组时输出含内存地址，无法证明逐字节等价。
   np="$(printf '%s' "$tout" | perl -MJSON::PP=decode_json -e '
     my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
     print($j->{result}{root_pane}{pane_id} // "");' || true)"

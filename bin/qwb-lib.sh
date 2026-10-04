@@ -517,6 +517,89 @@ qwb_is_project_worktree() {
   return 1
 }
 
+# pane get 的旧值守契约：cwd<TAB>agent<TAB>workspace；0=成功/3=不存在/2=查询失败。
+# 各列允许为空，只能用 cut -f 读取，不能用 TAB IFS read（会合并空列）。
+# 保留原宽松字段转换与原文错误判定；严格身份核验不能复用此契约。
+# 数组字段会输出含地址的字符串；wake 原调用点未证明字节等价，暂不迁移。
+qwb_pane_info() {
+  local out
+  if ! out="$(herdr pane get "$1" 2>&1)"; then
+    printf '%s' "$out" | grep -q 'pane_not_found' && return 3 || return 2
+  fi
+  printf '%s' "$out" | perl -MJSON::PP=decode_json -e '
+    my $j = eval { decode_json(join "", <STDIN>) } or exit 2;
+    my $p = $j->{result}{pane} or exit 2;
+    printf "%s\t%s\t%s",
+      ($p->{foreground_cwd} // $p->{cwd} // ""), ($p->{agent} // ""), ($p->{workspace_id} // "");
+  '
+}
+
+# 调用方已有 pane get 应答时只解析，不重复查询；workspace 接受非引用标量。
+qwb_pane_workspace() {
+  perl -MJSON::PP=decode_json -0777 -e '
+      my $j=eval{decode_json(<STDIN>)}; my $v=$j->{result}{pane}{workspace_id};
+      print $v if defined $v && !ref $v;'
+}
+
+# --pane 的旧空闲判定：只解析已有应答，0=空闲，非0=无法确认/占用。
+# 不遍历前台进程；与值守 probe 的进程匹配优先级保持区别。
+qwb_pane_idle() {
+  perl -MJSON::PP=decode_json -e '
+      my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
+      my $pi = $j->{result}{process_info} or exit 1;
+      exit((defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
+            && $pi->{foreground_process_group_id} == $pi->{shell_pid}) ? 0 : 1);'
+}
+
+# 一次查询并按旧值守规则解析；$2 是项目根，失败文案和后续动作归调用点。
+qwb_pane_probe() {
+  local out
+  if ! out="$(herdr pane process-info --pane "$1" 2>&1)"; then
+    printf '%s' "$out" | grep -q 'pane_not_found' && echo gone || echo err
+    return 0
+  fi
+  printf '%s' "$out" | perl -MJSON::PP=decode_json -MCwd=realpath -e '
+    my $root = $ARGV[0];
+    my $j = eval { decode_json(join "", <STDIN>) };
+    my $pi = ($j && $j->{result}{process_info}) or do { print "err"; exit 0 };
+    my $rr = -d $root ? realpath($root) : $root;
+    for my $p (@{ $pi->{foreground_processes} // [] }) {
+      next unless ($p->{cmdline} // "") =~ /qwb-wake\.sh(\s|$)/;
+      next unless ($p->{argv0} // "") =~ m{(^|/)(ba)?sh$|(^|/)zsh$|qwb-wake\.sh$};
+      next if ($p->{cmdline} // "") =~ /--(ensure|check|once|dry-run)(\s|$)/;
+      my $argv = $p->{argv} // [];
+      my ($proj, $tgt);
+      for (my $i = 0; $i < @$argv; $i++) {
+        if ($argv->[$i] eq "--project" && $i + 1 < @$argv) { $proj = $argv->[$i + 1]; next }
+        if ($argv->[$i] eq "--pane"    && $i + 1 < @$argv) { $tgt  = $argv->[$i + 1]; next }
+      }
+      my $cand = defined $proj ? $proj : ($p->{cwd} // "");
+      next if $cand eq "";
+      my $rc = -d $cand ? realpath($cand) : undef;
+      if (defined $rc && defined $rr && $rc eq $rr) {
+        print "wake:", ($p->{pid} // ""), "@", ($tgt // ""); exit 0
+      }
+    }
+    my $idle = defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
+               && $pi->{foreground_process_group_id} == $pi->{shell_pid};
+    print($idle ? "idle" : "busy");
+  ' "$2"
+}
+
+# 已有 tab create 应答取 pane_id/tab_id，不重复创建。
+# pane_id 须为 JSON 字符串；tab_id 仍接受数字等非空标量，失败处置归调用点。
+qwb_tab_field() {
+  perl -MJSON::PP=decode_json,encode_json -0777 -e '
+    my $field = $ARGV[0];
+    my $j = eval { decode_json(<STDIN>) };
+    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
+      && ref $j->{result}{root_pane} eq "HASH")
+      ? $j->{result}{root_pane}{$field} : undef;
+    print((defined $v && !ref $v && $v ne ""
+      && ($field eq "tab_id" || encode_json($v) =~ /^"/)) ? $v : "");
+  ' "$1"
+}
+
 # worker_lost <任务书> —— 工人丢失判定（关机/herdr 重启后 pane 没了，票还 running）
 #
 # 取该票最新一条 dispatch: 的 pane=，herdr pane get 判活：
@@ -525,6 +608,7 @@ qwb_is_project_worktree() {
 #   agent 仍在 → 未丢失，返回 1；无 dispatch 行（未派）→ 未丢失，返回 1
 #   其他查询失败 / 响应不合契约 → 无法判定：stderr 一行「无法确认工人状态」，返回 2（不当丢失，不猜）
 # 只应在有 herdr 且非 --dry-run 的路径调用（判定需要真实查询）。
+# 保留独立解析：只接 HASH pane，空标签仅是 unknown；不能套用值守的宽松三列契约。
 worker_lost() {
   local f="$1" disp pane out v
   disp="$(grep '^dispatch:' "$f" 2>/dev/null | tail -1 || true)"

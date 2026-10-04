@@ -322,6 +322,7 @@ if [[ -n "$PANE" ]]; then
   fi
   pinfo="$(herdr pane get "$PANE" 2>&1)" \
     || { echo "错误：--pane ${PANE} 无法确认（pane 不存在或查询失败）：${pinfo}" >&2; exit 1; }
+  # 保留 --pane 的宽松 cwd/agent 契约；引用字段字符串化，不等于共享 pane_info 的三列契约。
   pmeta="$(printf '%s' "$pinfo" | perl -MJSON::PP=decode_json -e '
       my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
       my $p = $j->{result}{pane} or exit 1;
@@ -333,11 +334,7 @@ if [[ -n "$PANE" ]]; then
     || { echo "错误：--pane ${PANE} 里跑着 agent（${pagent}），不是交互 shell——换个空闲 shell pane 或不带 --pane 新开 tab" >&2; exit 1; }
   pproc="$(herdr pane process-info --pane "$PANE" 2>&1)" \
     || { echo "错误：--pane ${PANE} 进程查询失败，无法确认前台空闲：${pproc}" >&2; exit 1; }
-  printf '%s' "$pproc" | perl -MJSON::PP=decode_json -e '
-      my $j = eval { decode_json(join "", <STDIN>) } or exit 1;
-      my $pi = $j->{result}{process_info} or exit 1;
-      exit((defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
-            && $pi->{foreground_process_group_id} == $pi->{shell_pid}) ? 0 : 1);' \
+  printf '%s' "$pproc" | qwb_pane_idle \
     || { echo "错误：--pane ${PANE} 前台被进程占用（非空闲 shell）——等它跑完或换个 pane" >&2; exit 1; }
   pcwd="$(printf '%s' "$pmeta" | cut -f1)"
   pcd="$(cd "$pcwd" 2>/dev/null && pwd -P || true)"
@@ -352,9 +349,7 @@ if [[ -n "$PANE" ]]; then
     pane_space="$(qwb_worktree_space "$PROJECT_ROOT" "$ecd")" || exit 1
     [[ -n "$pane_space" ]] \
       || { echo "错误：目标 worktree 尚未在 Herdr Spaces 登记；先不带 --pane 派发，或先 herdr worktree open 后在该 Space 准备空闲 pane" >&2; exit 1; }
-    actual_space="$(printf '%s' "$pinfo" | perl -MJSON::PP=decode_json -0777 -e '
-      my $j=eval{decode_json(<STDIN>)}; my $v=$j->{result}{pane}{workspace_id};
-      print $v if defined $v && !ref $v;' || true)"
+    actual_space="$(printf '%s' "$pinfo" | qwb_pane_workspace || true)"
     [[ "$actual_space" == "$pane_space" ]] \
       || { echo "错误：--pane ${PANE} 不属于目标 worktree Space ${pane_space}，拒绝投递" >&2; exit 1; }
   fi
@@ -393,15 +388,14 @@ validate_reuse() {
     if [[ -z "$expected_ws" && -n "${HERDR_PANE_ID:-}" ]]; then
       caller_info="$(herdr pane get "$HERDR_PANE_ID" 2>&1)" \
         || { echo "错误：无法查询调用者 workspace：$caller_info" >&2; return 1; }
-      expected_ws="$(printf '%s' "$caller_info" | perl -MJSON::PP=decode_json -0777 -e '
-        my $j=eval{decode_json(<STDIN>)}; my $w=$j->{result}{pane}{workspace_id};
-        print $w if defined $w && !ref $w;' || true)"
+      expected_ws="$(printf '%s' "$caller_info" | qwb_pane_workspace || true)"
     fi
   fi
   [[ -n "$expected_ws" ]] \
     || { echo "错误：无法确认复用目标 workspace，拒绝投递" >&2; return 1; }
   pane_out="$(herdr pane get "$ag_pane" 2>&1)" \
     || { echo "错误：复用 pane $ag_pane 查询失败：$pane_out" >&2; return 1; }
+  # 保留复用身份的 HASH + 四列非空标量校验，不收紧成 JSON 字符串或套用宽松值守契约。
   pane_meta="$(printf '%s' "$pane_out" | perl -MJSON::PP=decode_json -0777 -e '
     my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{pane};
     exit 1 unless ref $p eq "HASH";
@@ -624,6 +618,7 @@ if [[ "$wt_kind_rc" -eq 0 ]]; then
       fi
       exit 1
     }
+    # worktree open 还绑定 already_open/Space 所有权与回滚，保留独立契约。
     space_meta="$(printf '%s' "$space_out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
       my $j=eval{decode_json(<STDIN>)}; my $r=$j->{result};
       exit 1 unless ref $r eq "HASH" && ref $r->{workspace} eq "HASH" && exists $r->{already_open};
@@ -745,22 +740,10 @@ elif [[ -z "$PANE" ]]; then
     out="$(herdr tab create --cwd "$DIR" --label "$TASK_ID" --no-focus)"
   fi
   # pane_id 必须是 JSON 字符串（encode_json 回带引号）：HASH/ARRAY/数字/布尔/null 一律拒收（R2-M2）
-  PANE="$(printf '%s' "$out" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
-    my $j = eval { decode_json(<STDIN>) };
-    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH")
-      ? $j->{result}{root_pane}{pane_id} : undef;
-    print((defined $v && !ref $v && $v ne "" && encode_json($v) =~ /^"/) ? $v : "");
-  ')"
+  PANE="$(printf '%s' "$out" | qwb_tab_field pane_id)"
   [[ -n "$PANE" ]] || { echo "错误：herdr tab create 的 .result.root_pane.pane_id 缺失、为空或类型不是字符串：$out" >&2; exit 1; }
   # tab id 供启动失败时回滚关 tab（缺失只警告不拒绝——关不掉大不了留个空 tab）
-  TAB_ID="$(printf '%s' "$out" | perl -MJSON::PP=decode_json -0777 -e '
-    my $j = eval { decode_json(<STDIN>) };
-    my $v = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH"
-      && ref $j->{result}{root_pane} eq "HASH")
-      ? $j->{result}{root_pane}{tab_id} : undef;
-    print((defined $v && !ref $v && $v ne "") ? $v : "");
-  ')"
+  TAB_ID="$(printf '%s' "$out" | qwb_tab_field tab_id)"
 fi
 
 # op_id收据在投递前写好；失败后锁内重读原路径，不复用任何旧offset/FD。
