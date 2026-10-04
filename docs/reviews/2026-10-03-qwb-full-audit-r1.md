@@ -259,6 +259,7 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 - **F45（真机演练抓到）** 真 Herdr 0.9.3 对没有 agent 的 pane 不返回 `agent` 键，产品四处要求该键存在且为 null；假 Herdr 一律返回 null。pane 仍在时的 `--writer-proof-missing` 兑底在真机上永远被拒（实测），land 收尾的两处判定同样（读代码得出，未演练）。方向是拒绝不是误删。起点已有。已修（`audit-finish-real`，`9e86d98`）：键不存在与为 null 同样算没有 agent，其余核对未放松；修复后真机重演通过（pane 仍在的兑底放行），land 两处仍只有假 Herdr 证据。[演练记录](2026-10-04-real-herdr-finish-drill.md)
 - **F46（真机演练抓到）** 工人停在自己界面里时，默认 `finish --merged` 必然因「候选写入者仍持cwd/FD」被拒，而拒绝信息与主控说明都不写出路。第 7 轮真机验收里 Claude Code 主控被拒两次，自己读源码摸出「让 devin 退出、把工人 shell 挪出副本」才收尾。实测通用出路是关闭工人 pane。已修（同上）：拒绝时追加一行提示，列出占着副本的进程与可直接执行的 `herdr pane close`；两份主控说明补了收尾前先让工人退出的做法；真机重演通过。
 - **F47** `tests/process-entry-cleanup.py`（整份 smoke 被 TERM 后夹具应清空自己的目录）在高负载下会残留空的登记目录而失败：合入 F45/F46 后的 main 在另一工人同时跑整门时 rc=1（843 PASS / 1 FAIL），低负载单跑三次均通过；`47de4b6` 源码的基线在同样负载下也红在这一条。是测试夹具的清理竞态，不涉及运行时。交 `audit-gate-parallel` 收口。
+- **F48（Rocky 提问引出）** Claude 值守钩子在「有未结票但无任何变化」时每两个周期（真实为 4 小时）以「值守接班未就绪」叫醒主控一次并无限循环，包括只剩等人裁决的票这种没有任何可做之事的情形；9 月的版本到期是安静退出，这条是 10-01 的 `90aa764` 加的。已修（`audit-hook-quiet`，`a53942e`、`41fc0bd`）：未结项全是等裁决的未迁旧票时到期安静退出；有 `running` 旧票或任何未结的已迁票、或判定失败时保留原门铃。`QWB_REWAKE_MS` 的 30 分钟兜底重叫未动。只在假 Herdr 与临时项目里验证，没有在真会话里等过真实周期。
 
 `audit-herdr-parse` 留下的宽严差异（193 组输入中 12 组新旧不一致，均未合并）：11 组在 `bin/qwb-wake.sh` 的 `pane_info`——字段为空、为 `null` 或为数组时它输出空列或把数组引用原样串化，不报错；1 组在值守新建 tab 处——对 `root_pane.pane_id` 不做类型校验，而派发脚本严格校验。没有「该拒绝的没拒绝并导致错误动作」的情形。是否把值守一侧收紧，留待有真 Herdr 畸形应答证据时再定。
 
@@ -291,7 +292,7 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 代码量：`bin/` 合计 7312 → 7602 行（`qwb-lib.sh` 419 → 616、`qwb-worktree.sh` 652 → 764、`qwb-herdr.sh` 256 → 358、`qwb-ledger.sh` 1612 → 1660；`qwb-run.sh` 877 → 821）。这一轮的产出是正确性、可验证性与规则单点定义，不是代码变短。
 
-### 已装项目升级（2026-10-04，Rocky 指示，安装源 main @ f88eb7a）
+### 已装项目升级（2026-10-04，Rocky 指示，安装源 main @ f88eb7a，F48 修复后以 96d60d0 重装）
 
 `qonnwolf-sites`（原 9-27 版）、`qonnwolfmcp`、`video_analysis/class-video-analysis`（原 9-24 版）三个项目用 `bash bin/qwb-init.sh <项目>` 升级。先在本仓库临时目录里对三份安装文件的拷贝试装，确认新版能读旧式 `qwb_worker 名字 herdr 参数…` 声明后再动真项目。结果：三个项目的 15 个运行脚本与母本逐字节相同（安装器自身不装进项目）；`config.sh`、`brief-include.md`、`dispatch-rules.json` 未动；`workers.sh` 只给 claude 行加了 `--add-dir 项目根`；Pi 扩展更新，旧文件留为 `qwb-watch.ts.bak`；`qwb-status.sh` 三处 rc=0；`qwb-lint.sh` 在 sites 与 class-video-analysis 通过，在 qonnwolfmcp 有 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动），升级前的旧版 lint 同样报这一条。改动均未提交，留给各项目自己审。新增的 `pi-sol-high` 等具名工人与 `qwb_family` 声明不会自动出现在已有的 `workers.sh` 里。升级后没有在这三个项目里实际派过票。
 
