@@ -9,7 +9,7 @@ usage() {
 
 必选:
   --task <id|路径>      任务书 id（如 qwbuddy-mvp）或文件路径
-  --worker <名>         工人名（须在 config.sh 的 QWB_WORKERS 里整词精确匹配，如 codex/pi/claude）
+  --worker <名>         工人名（须在 config.sh 的 QWB_WORKERS 里整词精确匹配，如 pi/claude/pi-sol-high）
                         auto=JEV 自动派工（qwb-dispatch.sh 按 qwbuddy/dispatch-rules.json 选工人；
                         off/error/ambiguous 落默认工人不阻塞派发；规则文件坏则拒绝派发）
 
@@ -195,7 +195,7 @@ if [[ -z "$GATE_OP" ]]; then
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" start-check "$WORKER" >/dev/null || exit 1
 fi
 
-# 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(codex)' 这类都混不过）
+# 整词精确匹配：空格分隔逐词比对，不做子串/正则匹配（'workers'、'(pi)' 这类都混不过）
 wfound=0
 for w in $QWB_WORKERS; do
   [[ "$w" == "$WORKER" ]] && wfound=1 && break
