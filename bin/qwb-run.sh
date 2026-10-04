@@ -268,15 +268,10 @@ fi
 scen_refuse() { echo "错误：$1——请按 qwbuddy/TASK.md 补验收场景（至少一条失败路径）" >&2; exit 1; }
 SCEN_BLK="$(qwb_scenario_block "$TASK_FILE")"
 [[ -n "$SCEN_BLK" ]] || scen_refuse "任务书没有「验收场景」块"
-if ! { printf '%s\n' "$SCEN_BLK" | grep -q 'Given' \
-    && printf '%s\n' "$SCEN_BLK" | grep -q 'When' \
-    && printf '%s\n' "$SCEN_BLK" | grep -q 'Then'; }; then
-  nuser="$(printf '%s\n' "$SCEN_BLK" | grep -cE '^#{1,6}[[:space:]]+user_' || true)"
-  [[ "$nuser" -ge 2 ]] || scen_refuse "验收场景块里没有可识别场景（缺 Given/When/Then，且 user_ 场景标题不足 2 个）"
-fi
-printf '%s\n' "$SCEN_BLK" | grep -E '^#{1,6}|^[[:space:]]*Then' \
-  | grep -qiE '失败|拒绝|报错|异常|负例|非法|fail|error' \
-  || scen_refuse "验收场景里没有失败路径场景"
+case "$(printf '%s\n' "$SCEN_BLK" | qwb_scenario_check)" in
+  no-scenario) scen_refuse "验收场景块里没有可识别场景（缺 Given/When/Then，且 user_ 场景标题不足 2 个）" ;;
+  no-failure-path) scen_refuse "验收场景里没有失败路径场景" ;;
+esac
 # 场景冻结指纹：派发时的场景块 sha1，稍后写进 state: 附近（lint 重算比对，改动即 FAIL）
 SCEN_FP="$(printf '%s' "$SCEN_BLK" | shasum | cut -d' ' -f1)"
 
