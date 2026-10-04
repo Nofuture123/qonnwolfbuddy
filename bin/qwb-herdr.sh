@@ -159,6 +159,7 @@ def activity(pane,directory=None):
     if shell and group==shell and not info.get('agent') and any(x.get('pid')==shell and Path(x.get('argv0','')).name in ('sh','bash','zsh','fish') for x in rows):
         return dict(activity='idle',proof='foreground-shell',pane=pane)
     tool=info.get('agent'); native=[x for x in rows if Path(x.get('argv0','')).name==tool] if tool else []
+    if len(native)>1: native=[x for x in native if x.get('pid')==group]
     require(len(native)==1 and isinstance(native[0].get('pid'),int),'native tool identity unknown')
     n=native[0]; start=command(['ps','-p',str(n['pid']),'-o','lstart=']).strip(); require(start,'PID start unknown')
     if directory: require(Path(n.get('cwd','')).resolve()==Path(directory).resolve(),'tool cwd mismatch')

@@ -9,6 +9,94 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# Multiple tool processes bind only their matching foreground group leader.
+python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
+from contextlib import ExitStack
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
+exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
+with TemporaryDirectory(prefix='s-') as d, ExitStack() as processes:
+    os.environ['TMPDIR']=d
+    b=Path(d); repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
+    assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+    state.write_text(str(wt))
+    children=[]
+    for _ in range(3):
+        child=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                               cwd=wt,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        processes.callback(lambda owned=child: (owned.terminate() if owned.poll() is None else None, owned.wait(timeout=10), owned.stdin.close(), owned.stdout.close()))
+        assert child.stdout.readline().strip()=='ready'; children.append(child)
+    leader,other,foreign=children
+    stamp=call('/bin/ps','-p',str(leader.pid),'-o','lstart=',env=env).stdout.strip(); assert stamp
+    active=b/'native-active'; shape=b/'native-shape.json'; session=b/'pi.jsonl'
+    session.write_text(json.dumps(dict(type='session',cwd=str(wt)))+'\n'+json.dumps(dict(type='message',id='end',message=dict(role='assistant',content=[],stopReason='stop')))+'\n')
+    native_stub=STUB.replace('if args[:2] == ["status", "--json"]:', r'''active=Path(os.environ['QWB_TEST_NATIVE_ACTIVE'])
+shape=json.loads(Path(os.environ['QWB_TEST_NATIVE_SHAPE']).read_text())
+if args[:2]==['agent','start']:
+    active.write_text('started'); out({'type':'agent_started'})
+elif args[:2]==['agent','get'] and active.exists():
+    out({'agent':dict(name='qwb-case',agent=shape['tool'],agent_status='idle',pane_id='wTask:p1',workspace_id='wTask',cwd=wt)})
+elif args[:2]==['pane','get'] and args[2]=='wTask:p1' and active.exists():
+    out({'pane':dict(pane_id='wTask:p1',tab_id='wTask:t1',workspace_id='wTask',agent=shape['tool'],agent_status='idle',foreground_cwd=wt,
+                    agent_session=dict(source='herdr:pi',kind='path',value=os.environ['QWB_TEST_NATIVE_SESSION']))})
+elif args[:2]==['pane','process-info'] and args[3]=='wTask:p1' and active.exists():
+    out({'process_info':dict(pane_id='wTask:p1',shell_pid=42,foreground_process_group_id=shape['group'],foreground_processes=shape['rows'])})
+elif args[:2]==['agent','prompt']:
+    with log.open('a') as f: f.write(json.dumps(['prompt-ticket',Path(os.environ['QWB_TEST_NATIVE_TICKET']).read_text()])+'\n')
+    out({'type':'ok'})
+elif args[:2] == ["status", "--json"]:''')
+    (b/'stub/herdr').write_text(native_stub)
+    env=env|{'QWB_TEST_NATIVE_ACTIVE':str(active),'QWB_TEST_NATIVE_SHAPE':str(shape),'QWB_TEST_NATIVE_SESSION':str(session),'QWB_TEST_NATIVE_TICKET':str(ticket)}
+    baseline=b/'baseline-bin'; baseline.mkdir()
+    (baseline/'qwb-herdr.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','ded7d88:bin/qwb-herdr.sh']))
+    shutil.copy(ROOT/'bin/qwb-lib.sh',baseline/'qwb-lib.sh')
+    selected=baseline/'qwb-herdr.sh' if os.environ.get('QWB_NATIVE_HERDR_BASELINE') else ROOT/'bin/qwb-herdr.sh'
+    def row(pid,name): return dict(pid=pid,argv0=name,cwd=str(wt))
+    devin=dict(tool='devin',group=leader.pid,rows=[row(other.pid,'devin'),row(leader.pid,'devin')])
+    shapes=[('devin',devin),('pi',dict(tool='pi',group=leader.pid,rows=[row(leader.pid,'pi')])),
+            ('claude',dict(tool='claude',group=leader.pid,rows=[row(leader.pid,'claude'),row(other.pid,'caffeinate')])),
+            ('no-matching-leader',dict(devin,group=foreign.pid)),
+            ('no-tool-name',dict(tool='devin',group=leader.pid,rows=[row(leader.pid,'caffeinate')]))]
+    active.write_text('started')
+    for mode,data in shapes:
+        shape.write_text(json.dumps(data))
+        args=['activity','--project',str(repo),'--pane','wTask:p1','--dir',str(wt)]
+        got=call('bash',str(selected),*args,env=env); assert got.returncode==0,got.stderr
+        proof=json.loads(got.stdout)
+        old=call('bash',str(baseline/'qwb-herdr.sh'),*args,env=env)
+        print('NATIVE-SHAPE',mode,'baseline=',old.stdout.strip(),'current=',got.stdout.strip(),flush=True)
+        if mode in ('no-matching-leader','no-tool-name'):
+            assert proof['activity']=='unknown' and 'pid' not in proof and proof['conflict']=='native tool identity unknown',proof
+        else:
+            assert proof['pid']==leader.pid and proof['pid_start']==stamp,proof
+            if mode=='devin': assert 'pid' not in json.loads(old.stdout) and json.loads(old.stdout)['activity']=='unknown'
+            else: assert (got.returncode,got.stdout,got.stderr)==(old.returncode,old.stdout,old.stderr),'single-name behavior changed'
+        print('PASS native shape '+mode,flush=True)
+    # Fresh real qwb-run binds the leader before prompt; two live children keep finish closed.
+    shape.write_text(json.dumps(devin)); active.unlink(); state.unlink(); log.write_text('')
+    (repo/'qwbuddy/config.sh').write_text("QWB_WORKERS='devin'\nQWB_WORKSPACE=''\n")
+    (repo/'qwbuddy/workers.sh').write_text('qwb_worker devin herdr devin\n')
+    dispatch=call('bash',str(repo/'qwbuddy/bin/qwb-run.sh'),'--project',str(repo),'--task','case','--worker','devin',env=env)
+    assert dispatch.returncode==0,(dispatch.stdout,dispatch.stderr)
+    lines=ticket.read_text().splitlines(); receipt=next(x for x in reversed(lines) if x.startswith('dispatch:'))
+    op=next(x.split('=',1)[1] for x in receipt.split() if x.startswith('op_id='))
+    bound=next(x for x in lines if x.startswith('working: worker-activity op='+op+' pane=wTask:p1 evidence='))
+    proof=json.loads(bound.split(' evidence=',1)[1]); assert (proof['pid'],proof['pid_start'])==(leader.pid,stamp),proof
+    prompted=json.loads(log.read_text().splitlines()[-1]); assert prompted[0]=='prompt-ticket' and bound in prompted[1],prompted
+    active.unlink()
+    finish=['bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--merged','--project',str(repo)]
+    alive=call(*finish,env=env); assert alive.returncode!=0 and wt.is_dir() and state.exists() and '候选写入者仍持cwd/FD' in alive.stderr,alive.stderr
+    for child in children: child.communicate('exit\n',timeout=10); assert child.returncode==0
+    ended=call(*finish,env=env)
+    print('NATIVE-E2E dispatch_rc=',dispatch.returncode,'leader_pid=',leader.pid,'pid_start=',stamp,'alive_rc=',alive.returncode,'ended_rc=',ended.returncode,'stdout=',repr(ended.stdout),'stderr=',repr(ended.stderr),flush=True)
+    assert ended.returncode==0 and not wt.exists() and not state.exists(),(ended.stdout,ended.stderr)
+    assert call('git','-C',str(repo),'show-ref','--verify','--quiet','refs/heads/case',env=env).returncode!=0
+    print('PASS devin public dispatch records leader before prompt; actual exit permits merged finish',flush=True)
+PY
+if [[ "${1:-}" == activity-native ]]; then exit 0; fi
 # The focused mode also runs in full: real PID/start evidence through both public close paths.
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory
