@@ -389,6 +389,28 @@ def setup():
     event(f"主 workspace 已创建；controller pane={CONTROL_PANE}")
 
 
+def controller_model_visible(view, controller, model, effort):
+    """Check current or legacy TUI identity without running the live E2E flow."""
+    model_token = re.escape(model)
+    effort_token = re.escape(effort) + r"(?=$|[\s·•])"
+    if controller == "codex":
+        model_status_lines = [line for line in view.splitlines()
+                              if re.search(r"(?i)\bmodel:|\bcontext\b|\bweekly\b", line)]
+        status_lines = [line for line in model_status_lines if re.search(r"(?i)\bcontext\b|\bweekly\b", line)]
+        if any(re.search(r"(?i)\bfast\b", line) for line in model_status_lines):
+            raise RuntimeError("Codex TUI 模型/状态行出现 fast，拒绝运行真实 E2E")
+        legacy = re.search(rf"(?im)^.*model:\s*{model_token}\s+{effort_token}", view)
+        current = re.search(rf"(?im)^\s*{model_token}\s+{effort_token}\s*[·•][^\n]*\bcontext\b", view)
+        return bool((legacy or current) and status_lines)
+    if controller == "claude":
+        return bool(re.search(rf"(?i)\b{model_token}\b.*\bwith {re.escape(effort)} effort\b", view))
+    provider, separator, model_id = model.partition("/")
+    legacy = re.search(rf"(?im)(?<![\w./-]){model_token}\s*[·•]\s*{effort_token}", view)
+    current = separator and re.search(
+        rf"(?im)🔌\s*{re.escape(provider)}\s+🤖\s*{re.escape(model_id)}\s+🧠\s*{effort_token}", view)
+    return bool(legacy or current)
+
+
 def start_controller():
     if CONTROLLER == "codex":
         # Herdr 把 /tmp 解析为 /private/tmp；仅本次启动覆盖信任，不写全局配置。
@@ -417,18 +439,7 @@ def start_controller():
         view = pane_read(CONTROL_PANE, BASE / "controller-transcript.txt", 120)
         if CONTROLLER == "codex" and trust_prompt_is_current(view):
             raise RuntimeError("Codex 弹出 Trust this folder?；不接受信任、不写全局配置")
-        if CONTROLLER == "codex":
-            model_line = re.search(rf"(?im)^.*model:\s*{re.escape(MODEL)}\s+{re.escape(EFFORT)}\b[^\n]*", view)
-            model_status_lines = [line for line in view.splitlines()
-                                  if re.search(r"(?i)\bmodel:|\bcontext\b|\bweekly\b", line)]
-            status_lines = [line for line in model_status_lines if re.search(r"(?i)\bcontext\b|\bweekly\b", line)]
-            if any(re.search(r"(?i)\bfast\b", line) for line in model_status_lines):
-                raise RuntimeError("Codex TUI 模型/状态行出现 fast，拒绝运行真实 E2E")
-            model_ok = bool(model_line and status_lines)
-        elif CONTROLLER == "claude":
-            model_ok = bool(re.search(rf"(?i)\b{re.escape(MODEL)}\b.*\bwith {re.escape(EFFORT)} effort\b", view))
-        else:
-            model_ok = bool(re.search(rf"(?i){re.escape(MODEL)}\s*[·•]\s*{re.escape(EFFORT)}\b", view))
+        model_ok = controller_model_visible(view, CONTROLLER, MODEL, EFFORT)
         if model_ok:
             break
     else:
