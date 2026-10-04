@@ -85,8 +85,9 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
 # 任务id → 账本中有未结项 state 的任务书（无则返回 1）
 open_task_for() {
   local f st
-  for f in "$LEDGER"/*"$1"*.md; do
+  for f in "$LEDGER"/*.md; do
     [[ -e "$f" ]] || continue
+    [[ "$(basename "$f" .md | sed 's/^[0-9][0-9-]*-//')" == "$1" ]] || continue
     st="$(qwb_task_state "$f")"
     if ! qwb_ledger_utf8_ok "$f"; then printf '%s' "$f"; return 0; fi
     case "$st" in
