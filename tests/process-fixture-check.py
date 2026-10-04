@@ -2,6 +2,7 @@
 """Check exit-code preservation and cleanup of an owned, TERM-resistant writer."""
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,33 @@ exit 7
     observation = subprocess.run(['/bin/ps', '-p', pid, '-o', 'stat='], capture_output=True, text=True)
     assert not observation.stdout.strip() or observation.stdout.strip().startswith('Z'), observation.stdout
     print('PASS original failure/output preserved; TERM-resistant descendant ended before return')
+
+    # Real TERM at the record-publication boundary, before a child may be launched.
+    helper = directory / 'tests/process_fixture.py'
+    helper.parent.mkdir()
+    shutil.copy2(ROOT / 'tests/process_fixture.py', helper)
+    marker = directory / 'unexpected-child'
+    setup_signal = '''
+from pathlib import Path
+import os,signal,sys
+sys.path.insert(0,sys.argv[1])
+import process_fixture
+print('SETUP_PID='+str(os.getpid()),flush=True)
+original_touch=Path.touch
+def touch(path,*args,**kwargs):
+    result=original_touch(path,*args,**kwargs)
+    if path.name=='socket-directories':os.kill(os.getpid(),signal.SIGTERM)
+    return result
+Path.touch=touch
+marker=sys.argv[2]
+sys.argv=[process_fixture.__file__,'--command','/bin/bash','-c','printf reached > "$1"','fixture',marker]
+raise SystemExit(process_fixture.main())
+'''
+    interrupted = subprocess.run([sys.executable, '-B', '-c', setup_signal, str(helper.parent), str(marker)],
+                                 capture_output=True, text=True, timeout=20)
+    assert interrupted.returncode == 143, interrupted
+    assert not marker.exists() and not list((directory / '.qwb-tmp').iterdir())
+    print('PASS real TERM during scope records returns 143, launches no child, leaves no directory; '+interrupted.stdout.strip())
 
     pidfile.unlink()
     process = subprocess.Popen([sys.executable, str(ROOT / 'tests/process_fixture.py'), '--command',

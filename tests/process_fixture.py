@@ -135,36 +135,52 @@ def main():
         return 2
     base = root / '.qwb-tmp'
     base.mkdir(exist_ok=True)
-    # Keep process records and ordinary files in the existing ignored fixture root.
-    while True:
-        # ponytail: 256 concurrent scopes; shorten the base before increasing name length.
-        directory = str(base / secrets.token_hex(1))
-        try:
-            os.mkdir(directory, 0o700)
-            break
-        except FileExistsError:
-            continue
-    records = Path(directory) / 'groups'
-    records.touch()
-    socket_dirs = Path(directory) / 'socket-directories'
-    socket_dirs.touch()
-    env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
-               QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
-               QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
-    env['PYTHONDONTWRITEBYTECODE'] = '1'
-    env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
     child = None
+    directory = None
+    socket_dirs = None
     rc = 1
+    preparing = True
+    pending_signal = None
     def interrupted(signum, _frame):
-        raise SystemExit(128 + signum)
+        nonlocal pending_signal
+        if preparing:
+            pending_signal = signum
+        else:
+            raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
+        # Defer interruption until each new directory/PID has an owned cleanup handle.
+        while True:
+            if pending_signal is not None:
+                raise SystemExit(128 + pending_signal)
+            # ponytail: 256 concurrent scopes; shorten the base before increasing name length.
+            candidate = str(base / secrets.token_hex(1))
+            try:
+                os.mkdir(candidate, 0o700)
+                directory = candidate
+                break
+            except FileExistsError:
+                continue
+        records = Path(directory) / 'groups'
+        records.touch()
+        socket_dirs = Path(directory) / 'socket-directories'
+        socket_dirs.touch()
+        env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
+                   QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
+                   QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
+        env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
+        if pending_signal is not None:
+            raise SystemExit(128 + pending_signal)
         # This new session contains only this invocation's inherited descendants.
         argv = sys.argv[2:] if command else [env.get('QWB_TEST_SHELL', '/bin/bash'), script, *sys.argv[2:]]
         child = subprocess.Popen(argv, env=env, start_new_session=True)
         os.environ['QWB_TEST_GROUP'] = str(child.pid)
         os.environ['QWB_TEST_GROUPS'] = str(records)
+        preparing = False
+        if pending_signal is not None:
+            raise SystemExit(128 + pending_signal)
         rc = child.wait()
     except SystemExit as error:
         rc = error.code
@@ -174,9 +190,11 @@ def main():
         if child is not None:
             drain()
             child.wait()
-        for path in socket_dirs.read_text().splitlines():
-            shutil.rmtree(path)
-        shutil.rmtree(directory)
+        if socket_dirs is not None and socket_dirs.exists():
+            for path in socket_dirs.read_text().splitlines():
+                shutil.rmtree(path)
+        if directory is not None:
+            shutil.rmtree(directory)
     return rc if rc >= 0 else 128 - rc
 
 
