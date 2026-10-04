@@ -91,6 +91,8 @@ if [[ "$CMD" == test-request ]]; then
   TEST_IDENTITY="$(qwb_gate_identity "$ROOT" "${3:-}" '测试体系')" || exit 1
 fi
 exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$@" <<'PERL'
+# Keep native refusal diagnostics at the baseline 8d897cd Perl source positions.
+#line 1
 use strict;
 use warnings;
 use utf8;
@@ -133,6 +135,7 @@ sub read_file {
   fail($close_error) if defined($close_error) && !$closed;
   return $s;
 }
+#line 37
 # Lock order: controller directory -> posture. Task writers already hold controller
 # before their read-only posture probe; never invert that order in mode mutations.
 my $posture_controller_guard;
@@ -158,6 +161,7 @@ my $absent=($posture || $creating) && !-e $file && !-l $file;
 my $raw='';
 unless ($absent) {
   $raw=read_file($file,'读关闭失败');
+#line 63
   fail('票为空') unless defined($raw) && length($raw);
 }
 my $byte_legacy=0;
@@ -197,6 +201,7 @@ sub keys_only {
 sub id_ok { defined($_[0]) && !ref($_[0]) && $_[0] =~ /\A[A-Za-z0-9_.:-]{1,160}\z/ }
 sub string_ok { defined($_[0]) && !ref($_[0]) && $_[0] !~ /[\x00-\x1f]/ }
 sub identity_keys { qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort) }
+#line 101
 sub ci_source_fields { qw(repo source_run_id attempt source_head_sha candidate_attempt gate command_sha256 environment_sha256 log_sha256) }
 sub ci_key { my $s=shift; return 'ci:'.sha256_hex($json->encode([@{$s}{qw(repo source_run_id attempt source_head_sha)}])) }
 sub ci_source_ok {
@@ -347,6 +352,7 @@ sub scenario {
 sub scenarios_ok {
   my ($s,$heading)=@_; $heading //= qr/\A## 验收场景\n/;
   return $s =~ $heading && $s =~ /Given/ && $s =~ /When/ && $s =~ /Then/ && $s =~ /失败|拒绝|fail|error/i && index($s,'<!-- qwb-collab-')<0;
+#line 247
 }
 sub scen_fp { sha1_hex(encode($byte_legacy ? 'ISO-8859-1' : 'UTF-8',scenario($_[0]))) }
 sub list_ok {
@@ -400,6 +406,7 @@ sub validate {
   return unless $has_protocol || defined($data);
   my @optional_keys=grep { exists $data->{$_} } qw(handoffs gate land land_history planning planning_authority test_requests ci);
   keys_only($data,qw(schema rev seq spec_rev phase claim workers questions events ops migration),@optional_keys);
+#line 299
   fail('schema版本非法') unless defined($data->{schema}) && !ref($data->{schema}) && $data->{schema} eq '1';
   for (qw(rev seq spec_rev)) { fail("${_}非法") unless defined($data->{$_}) && !ref($data->{$_}) && $data->{$_} =~ /\A[0-9]+\z/ }
   fail('phase/state非法') unless $data->{phase} eq state_of($body) && $data->{phase} =~ /\A(running|blocked|needs-decision|done|verified)\z/;
@@ -530,6 +537,7 @@ if (-e "$dir/.controller.lock/owner") {
   ($owner)=$owner_raw =~ /^\S+\s+(\S+)\s*\z/; $owner //='';
 }
 my $owner_fp=sha256_hex($owner_raw);
+#line 428
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
 my $identity=strict_json($identity_raw);
@@ -554,6 +562,7 @@ sub owner_dead {
   my ($j,$rc)=native_reply('pane','get',$old);
   return $rc && ($j->{error}{code} // '') eq 'pane_not_found';
 }
+#line 447
 my $wake_cmd=$cmd eq 'wake' || $cmd eq 'wake-check';
 my $handoff_watch=$cmd eq 'handoff-pending' || $cmd eq 'handoff-transport';
 my $watcher=0;
@@ -630,6 +639,7 @@ sub field {
 sub child_in_flight {
   my $id=shift; my $status=$data->{ops}{$id}{status};
   return $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+#line 519
 }
 sub require_claim {
   my $id=shift; fail('op_id非法') unless id_ok($id);
@@ -687,6 +697,7 @@ sub spec_body {
   my $s=shift; $s=~s/^(?:state|scenarios-fp|working|done|blocked|needs-decision|dispatch|not-sent|wake|worktree|worktree-space):[^\n]*\n?//mg;
   return $s;
 }
+#line 572
 sub gate_context {
   my $observe=shift // 0;
   my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
@@ -741,11 +752,13 @@ sub last_spec_event {
   while ($s =~ /^(blocked:\s*spec-defect:.*|working:\s*spec-resolved:.*)$/mg) { $spev=$1 }
   return $spev;
 }
+#line 621
 sub land_ready {
   my $c=gate_context(); my $g=$data->{gate};
   fail('未验收或验收条件已变') unless $g->{verdict} eq 'accepted' && $c->{status} eq 'clean' && @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
   for my $id (keys %{$g->{dispatches}}) {
     fail('仍有在途审核/返修') if child_in_flight($id);
+#line 627
   }
   fail('成立缺陷/安全意见未结') if grep { $_->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ } values %{$g->{findings}};
   for my $q (values %{$data->{questions}}) { fail('相关问题未恢复') if $q->{resumed} eq '' }
@@ -841,6 +854,7 @@ sub graph_check {
 sub accepted_history { $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted') }
 sub ready_fingerprint {
   my ($p,$e)=@_; return sha256_hex($json->encode([$data->{spec_rev},$p->{needs},$e,$p->{authorization}]));
+#line 718
 }
 sub start_check {
   my $selected=shift; fail('用户专属问题未解除') if $data && grep { $_->{resumed} eq '' } values %{$data->{questions}};
@@ -1032,13 +1046,14 @@ if ($cmd eq 'land-authorize') {
   fail('已验收历史不改，新需求另开后续票') if accepted_history();
   my ($r)=json_file($args[0]); keys_only($r,qw(source_task source_event spec constraints scenarios needs)); needs_ok($r->{needs}); $r->{source}=durable_source(delete($r->{source_task}),delete($r->{source_event}));
   fail('修订request在途，先对账') if $p->{pending_revision};
-  fail('新场景缺少正常/拒绝行为') unless scenarios_ok($r->{scenarios});
+  fail('新场景缺少正常/拒绝行为') unless defined($r->{scenarios}) ? scenarios_ok($r->{scenarios}) : $r->{scenarios}=~/\A## 验收场景\n/;
   $p->{pending_revision}={%$r,spec_rev=>$data->{spec_rev}}; $p->{ready}={};
   $line="working: revision-requested source=$r->{source}{event} handoff-required"; append_body($line);
 } elsif ($cmd eq 'revision-handoff') {
   fail('交接需gate本人claim和待修订请求') unless $gate && @args==2 && string_ok($args[1]) && $args[1] ne '' && $data->{planning}{pending_revision}; require_claim($args[0]);
   for my $child (keys %{$data->{gate}{dispatches}}) {
     fail('gate子任务在途，不能交出验收标准') if child_in_flight($child);
+#line 917
   }
   $data->{planning}{revision_handoff}={spec_rev=>$data->{spec_rev},op_id=>$args[0],owner=>$actor,reason=>$args[1]};
   $data->{claim}=undef; $data->{ops}{$args[0]}{status}='released'; $line="working: revision-handoff op=$args[0] $args[1]"; append_body($line);
@@ -1220,6 +1235,7 @@ if ($cmd eq 'land-authorize') {
     fail('dirty或无独立审核') unless $c->{status} eq 'clean' && @{$g->{reviews}};
     for my $id (keys %{$g->{dispatches}}) {
       fail('派出的审核/返修仍在途，不能ready') if child_in_flight($id);
+#line 1099
     }
     my $r=$g->{reviews}[-1]{review};
     fail('缺当前两轴通过审核') unless $json->encode($r->{context}) eq $json->encode($c) && $r->{standards} eq 'pass' && $r->{spec} eq 'pass';
@@ -1271,6 +1287,7 @@ if ($cmd eq 'land-authorize') {
   fail('不能切到未授权副本') unless $candidate eq $g->{binding}{candidate};
   for my $id (grep { $g->{dispatches}{$_} eq 'rework' } keys %{$g->{dispatches}}) {
     fail('返修工人尚未交回，不能切candidate') if child_in_flight($id);
+#line 1151
   }
   $g->{binding}{attempt}=$attempt; $g->{binding}{base}=$base;
   $g->{binding}{head}=capture('git','-C',encode('UTF-8',$candidate),'rev-parse','HEAD');
@@ -1404,6 +1421,7 @@ if ($cmd eq 'land-authorize') {
         fail('同pane新代际无法证明旧claim owner死亡，保留待办') if $old eq $actor && $h->{owner_fp} ne $owner_fp;
         if ($old ne $actor) {
           fail('旧claim owner仍活或未知') unless owner_dead($old);
+#line 1285
         }
         $h->{accepted}=$actor; $h->{received}=$actor; $h->{owner_fp}=$owner_fp; $h->{activity_at}=$now;
         $h->{wait_until}=0; $h->{wait_reason}='';
@@ -1439,6 +1457,7 @@ if ($cmd eq 'land-authorize') {
   fail('已迁入协议，不能重迁') if $data;
   fail('仅主控能迁移') unless $controller;
   my $manifest=read_file(encode('UTF-8',$args[0] // ''));
+#line 1321
   my $m=strict_json($manifest); keys_only($m,qw(task_sha256 confirm));
   fail('迁移快照变动；重新对账') unless $m->{task_sha256} eq sha256_hex($raw);
   my @writers=qw(run wake worktree worker controller old-fds external-actions);
@@ -1524,7 +1543,7 @@ if ($cmd eq 'land-authorize') {
     fail('规格修订必须给expect') if $expect eq '';
     my ($block,$why)=@args; $reason=$why; $old=fp_of($body);
     my $current=scenario($body); fail('场景块不存在') if $current eq '';
-    fail('新场景块格式非法') unless scenarios_ok($block,qr/\A\#{1,6}[^#]*验收场景/);
+    fail('新场景块格式非法') unless defined($block) ? scenarios_ok($block,qr/\A\#{1,6}[^#]*验收场景/) : $block =~ /\A\#{1,6}[^#]*验收场景/;
     $body =~ s/\Q$current\E/$block/; $new=scen_fp($body);
   } else { ($old,$new,$reason)=@args }
   fail('修订前置不满足') unless $old && $old =~ /\A[0-9a-f]{40}\z/ && $new && $new =~ /\A[0-9a-f]{40}\z/ && string_ok($reason) && $reason ne '' && fp_of($body) eq $old && scen_fp($body) eq $new;
@@ -1559,6 +1578,7 @@ if ($cmd eq 'land-authorize') {
   } else {
     fail('旧owner身份非法') if $old eq '' || $old =~ /^pid:/;
     fail('旧owner仍活或死亡未知') unless owner_dead($old);
+#line 1442
   }
   # 转移原op所有权，不删claim/事件；补偿或release仍须随后显式进行。
   $data->{claim}{owner}=$actor; $data->{ops}{$op}{owner}=$actor;
