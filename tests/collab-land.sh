@@ -38,7 +38,18 @@ from pathlib import Path
 a=sys.argv[1:]; f=Path(os.environ['LAND_NATIVE_STATE']); s=json.loads(f.read_text()) if f.exists() else {}
 with open(os.environ['LAND_NATIVE_LOG'],'a') as log: print(json.dumps(a),file=log)
 p=os.environ['LAND_PROJECT']; pid=int(os.environ['LAND_PID'])
-def out(x):print(json.dumps({'result':x}))
+def out(x):
+ if 'pane' in x and x['pane']['pane_id']==os.environ.get('LAND_SHAPE_TARGET'):
+  shape=os.environ.get('LAND_AGENT_SHAPE','null')
+  if shape=='omitted':x['pane'].pop('agent',None)
+  else:x['pane']['agent']=json.loads(shape)
+  fault=os.environ.get('LAND_PANE_FAULT','')
+  if fault=='id':x['pane']['pane_id']='foreign-pane'
+  if fault=='object':x['pane']=[]
+  if fault=='json':print('{');return
+  if fault=='error':print(json.dumps({'error':{'code':'io_error'},'result':x}));return
+  if fault=='stderr':print('query warning',file=sys.stderr)
+ print(json.dumps({'result':x}))
 if a[:2]==['status','--json']:print(json.dumps({'server':{'socket':os.environ['LAND_SOCKET'],'session':os.environ.get('HERDR_SESSION')}}))
 elif a[:2]==['api','snapshot']:
  if 'snapshot' not in s:
@@ -62,10 +73,13 @@ elif a[:2]==['tab','create']:out({'root_pane':{'pane_id':'gate-pane','tab_id':'g
 elif a[:2]==['agent','get']:print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
 elif a[:2]==['agent','start']:
  v=a[a.index('--')+1:]; sid=v[v.index('--session-id')+1]; sd=v[v.index('--session-dir')+1];s={'session':sd+'/2099_'+sid+'.jsonl'};out({'type':'agent_started'})
-elif a[:2]==['pane','get'] and a[2]=='task-pane':
+elif a[:2]==['pane','get'] and a[2] in ('task-pane','worker-pane'):
  if os.environ.get('LAND_ENDPOINT')=='unknown':print(json.dumps({'error':{'code':'other_error'}}));sys.exit(1)
- out({'pane':{'pane_id':'task-pane','workspace_id':'task-space','tab_id':'task-tab','agent':None if os.environ.get('LAND_ENDPOINT')=='stopped' else 'pi','agent_status':'idle'}})
-elif a[:2]==['pane','process-info'] and a[-1]=='task-pane':out({'process_info':{'pane_id':'task-pane','shell_pid':42,'foreground_process_group_id':42,'foreground_processes':[{'pid':42,'argv0':'zsh','cwd':os.environ.get('LAND_SPACE_PATH',p)}]}})
+ out({'pane':{'pane_id':a[2],'workspace_id':'task-space','tab_id':'task-tab','agent':None if os.environ.get('LAND_ENDPOINT')=='stopped' else 'pi','agent_status':'idle'}})
+elif a[:2]==['pane','process-info'] and a[-1] in ('task-pane','worker-pane'):
+ fault=os.environ.get('LAND_PROCESS_FAULT','') if a[-1]==os.environ.get('LAND_SHAPE_TARGET') else ''
+ if fault=='query':print(json.dumps({'error':{'code':'io_error'}}));sys.exit(1)
+ out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':43 if fault=='foreground' else 42,'foreground_processes':[{'pid':42,'argv0':'zsh','cwd':os.environ.get('LAND_SPACE_PATH',p)}]}})
 elif a[:2]==['pane','get']:
  d={'pane_id':a[2],'workspace_id':'ws','terminal_id':'gate-terminal','foreground_cwd':p}
  if a[2]!='gate-pane' or 'session' in s:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get('session','ctl-session')})
@@ -80,6 +94,7 @@ f.write_text(json.dumps(s))
 ''')
     real_git=shutil.which('git'); real_mv=shutil.which('mv')
     (stub/'git').write_text('''#!/usr/bin/env bash
+if [[ -n "${LAND_BYTES_GIT_LOG:-}" ]]; then printf '%s\\0' "$@" >> "$LAND_BYTES_GIT_LOG"; printf '\\n' >> "$LAND_BYTES_GIT_LOG"; fi
 if [[ "$*" == *"merge --ff-only"* ]]; then printf '%s\\n' "${@: -1}" >> "$LAND_GIT_LOG"; fi
 if [[ ! -e "$LAND_FAIL_FLAG" ]] && { [[ "${LAND_FAIL:-}" == remove && "$*" == *"worktree remove"* ]] || [[ "${LAND_FAIL:-}" == delete && "$*" == *"update-ref -d"* ]]; }; then touch "$LAND_FAIL_FLAG"; exit 9; fi
 exec "$LAND_REAL_GIT" "$@"
@@ -164,6 +179,72 @@ exec "$LAND_REAL_MV" "$@"
             return {'pid':pid,'pid_start':start}
         finally:
             if child.poll() is None: child.terminate(); child.wait(timeout=20)
+    if os.environ['QWB_LAND_CASE'] in ('all','agent-shapes'):
+        t,c,op,m,head=accepted('agent-shapes')
+        ledger('dispatch',t,op,'worker-pane',f'dispatch: op_id={op} worker=sol pane=worker-pane dir={c}')
+        ledger('append',t,f'worktree-space: id=task-space root-tab=task-tab path={c}')
+        ledger('append',t,f'working: worker-activity op={op} pane=worker-pane evidence='+json.dumps(dead_generation()))
+        ref='auth-agent-shapes'
+        ledger('land-authorize',t,op,ref,'main','fixture explicit local land','tasks/agent-shapes.md','tasks/live.md')
+        ledger('land-prepare',t,op,ref); ledger('land-apply',t,op,ref)
+        snapshot=tmp/'shape-snapshot'; shutil.copytree(p,snapshot)
+        runtime=tmp/'shape-bin';shutil.copytree(ROOT/'bin',runtime)
+        # Same deterministic writer clock/event IDs for both scripts; compare actual bytes, not normalized receipts.
+        writer=runtime/'qwb-ledger.sh';text=writer.read_text()
+        assert text.count("$event=unpack('H*',$bytes);")==1
+        text=text.replace("$event=unpack('H*',$bytes);",'$event=sprintf("%032x",$data->{seq});')
+        text=text.replace("at=>strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)","at=>'2026-10-04T00:00:00Z'")
+        writer.write_text(text)
+        names=['qwb-worktree.sh','qwb-herdr.sh']
+        old={name:subprocess.check_output([real_git,'-C',str(ROOT),'show','d3e4b49:bin/'+name]) for name in names}
+        new={name:(ROOT/'bin'/name).read_bytes() for name in names}
+        native=Path(env['LAND_NATIVE_STATE']); saved_native=native.read_bytes()
+        gitlog=tmp/'shape-git.log'; nativelog=Path(env['LAND_NATIVE_LOG'])
+        def shape_run(version,target,shape='null',process='',fault='',ok=False):
+            shutil.rmtree(p);shutil.copytree(snapshot,p)
+            native.write_bytes(saved_native);gitlog.write_bytes(b'');nativelog.write_bytes(b'')
+            for name,data in version.items():(runtime/name).write_bytes(data)
+            extra=dict(LAND_ENDPOINT='stopped',LAND_SPACE_PATH=str(c),LAND_SHAPE_TARGET=target,
+                       LAND_AGENT_SHAPE=shape,LAND_PROCESS_FAULT=process,LAND_PANE_FAULT=fault,LAND_BYTES_GIT_LOG=str(gitlog))
+            result=subprocess.run(['/bin/bash',str(runtime/'qwb-worktree.sh'),'finish','agent-shapes','--merged',
+                                   '--project',str(p),'--op',op,'--auth-ref',ref],env=env|extra,capture_output=True,text=True)
+            assert (result.returncode==0)==ok,(target,shape,process,fault,result.stdout,result.stderr)
+            if not ok:
+                assert t.read_bytes()==(snapshot/'tasks/agent-shapes.md').read_bytes() and c.is_dir()
+                assert git('rev-parse','main')==head and git('rev-parse','refs/heads/agent-shapes')==head
+                assert native.read_bytes()==saved_native
+            records=[json.loads(line) for line in nativelog.read_text().splitlines()]
+            for row in records:
+                if isinstance(row,dict):row.pop('id',None) # RPC IDs are transport randomness only.
+            evidence=dict(rc=result.returncode,stdout=result.stdout,stderr=result.stderr,ticket=t.read_bytes().hex(),
+                          git_calls=gitlog.read_bytes().hex(),herdr_calls=records,refs=git('show-ref'),
+                          exists=c.exists(),status=git('status','--short'),native=json.loads(native.read_text()))
+            print('SHAPE EVIDENCE '+json.dumps(dict(target=target,shape=shape,process=process,fault=fault,
+                                                   rc=result.returncode,stdout=result.stdout,stderr=result.stderr),ensure_ascii=False),flush=True)
+            return evidence
+        # Distinct worker/root panes force both land guards to execute independently.
+        baseline=shape_run(old,'worker-pane',ok=True)
+        def equivalent(actual):
+            assert actual==baseline,{key:(baseline[key],actual[key]) for key in baseline if actual[key]!=baseline[key]}
+        for target in ('worker-pane','task-pane'):
+            equivalent(shape_run(new,target,ok=True))
+            equivalent(shape_run(new,target,'omitted',ok=True))
+            print('PASS land '+target+': d3e4b49 null/current null/omitted bytes identical',flush=True)
+            for shape in ('"pi"','"1pi"','""','42','0','[]','{}','true','false'):
+                got=shape_run(new,target,shape)
+                assert ('尚未退出' if shape in ('"pi"','"1pi"') else '未知') in got['stderr'],got
+                print('PASS land '+target+' rejects agent='+shape+' without side effects',flush=True)
+            for process in ('foreground','query'):
+                prior=shape_run(old,target,process=process)
+                assert shape_run(new,target,'omitted',process)==prior
+                print('PASS land '+target+' omitted agent still rejects '+process+' with unchanged bytes',flush=True)
+            for fault in ('json','error','stderr','id','object'):
+                got=shape_run(new,target,'omitted',fault=fault)
+                assert '未知' in got['stderr'],got
+                print('PASS land '+target+' rejects malformed pane '+fault+' without side effects',flush=True)
+        # Leave this private project in its accepted closed state for subsequent cases.
+        shape_run(new,'worker-pane','omitted',ok=True)
+        if os.environ['QWB_LAND_CASE']=='agent-shapes':sys.exit(0)
     if os.environ['QWB_LAND_CASE']=='writers':
         t,c,op,m,head=accepted('background-writer')
         ledger('dispatch',t,op,'task-pane',f'dispatch: op_id={op} worker=sol pane=task-pane dir={c}')

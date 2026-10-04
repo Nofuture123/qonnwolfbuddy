@@ -262,8 +262,8 @@ def presentation():
                         try: reply=json.loads(query.stdout); info=reply.get('result',{}).get('pane',{})
                         except (ValueError,AttributeError): info={}; reply={}
                         require(not query.stderr.strip() and not reply.get('error') and isinstance(info,dict) and
-                                info.get('pane_id')==pane and 'agent' in info,'缺PID兑底：pane '+pane+' 身份未知')
-                        require(info['agent'] is None,'缺PID兑底：pane '+pane+' 仍有agent，保留Space')
+                                info.get('pane_id')==pane and (info.get('agent') is None or isinstance(info.get('agent'),str) and bool(info['agent'])),'缺PID兑底：pane '+pane+' 身份未知')
+                        require(info.get('agent') is None,'缺PID兑底：pane '+pane+' 仍有agent，保留Space')
                         observed=activity(pane,directory)
                         require(observed.get('activity')=='idle' and observed.get('proof')=='foreground-shell' and
                                 observed.get('pane')==pane,'缺PID兑底：pane '+pane+' 前台不是空闲shell或查询未知')

@@ -10,6 +10,7 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 # Explicit missing-writer proof: exercise both independent public guards and partial receipts.
+if [[ "${1:-}" != finish-equivalence ]]; then
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory
 from contextlib import ExitStack
@@ -20,7 +21,19 @@ prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.Tempora
 exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
 UNKNOWN={'activity':'unknown','proof':'unverified','conflict':'native tool identity unknown'}
 FLAG='--writer-proof-missing=人工核对旧启动代已退出'
-proof_stub=STUB.replace('if args[:2] == ["status", "--json"]:', r'''target=os.environ.get('QWB_PROOF_PANE','wTask:p1')
+proof_stub=STUB.replace('def out(result): print(json.dumps({"result": result}))', r'''def out(result):
+    if 'pane' in result and behavior!='source' and 'QWB_AGENT_SHAPE' in os.environ:
+        shape=os.environ['QWB_AGENT_SHAPE']
+        if shape=='omitted': result['pane'].pop('agent',None)
+        else: result['pane']['agent']=json.loads(shape)
+    if 'pane' in result and behavior!='source':
+        fault=os.environ.get('QWB_PANE_FAULT','')
+        if fault=='id': result['pane']['pane_id']='foreign-pane'
+        if fault=='object': result['pane']=[]
+        if fault=='json': print('{'); return
+        if fault=='error': print(json.dumps({'error':{'code':'io_error'},'result':result})); return
+        if fault=='stderr': print('query warning',file=sys.stderr)
+    print(json.dumps({'result':result}))''').replace('if args[:2] == ["status", "--json"]:', r'''target=os.environ.get('QWB_PROOF_PANE','wTask:p1')
 behavior=os.environ.get('QWB_PROOF_BEHAVIOR','')
 if args[:2]==['pane','get'] and args[2]==target and behavior=='source':
     out({'pane':dict(pane_id=target,workspace_id='wTask',tab_id='wTask:t2' if target=='wTask:p2' else 'wTask:t1',agent='new-tool',agent_status='idle',foreground_cwd=wt)})
@@ -39,7 +52,9 @@ elif args[:2]==['tab','list'] and mode=='proof-root-missing': out({'tabs':[dict(
 elif args[:2]==['pane','list'] and mode=='proof-root-missing': out({'panes':[dict(pane_id='wTask:p2',agent_status='idle')]})
 elif args[:2] == ["status", "--json"]:''')
 for mode in ['merged','archive','absent','both-markers','agent','foreground','query','resource','known-live','later-live',
-             'json','duplicate-json','string-pid','conflict','pid-null','not-probe','orphan','remove-partial','branch-partial','both-partial','missing-close-mark','misuse']:
+             'json','duplicate-json','string-pid','conflict','pid-null','not-probe','orphan','remove-partial','branch-partial','both-partial','missing-close-mark','misuse',
+             'omitted','empty-agent','number-agent','array-agent','object-agent','bool-agent','digit-string-agent','process-query',
+             'pane-id','pane-object','pane-json','pane-error','pane-stderr']:
     with TemporaryDirectory(prefix='proof-') as d, ExitStack() as processes:
         os.environ['TMPDIR']=d; b=Path(d)
         repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
@@ -70,9 +85,18 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
             live_pane=pane if mode=='later-live' else 'wGone:p8'
             extra+=f'dispatch: op_id=later worker=pi pane={live_pane} dir={wt}\nworking: worker-activity op=later pane={live_pane} evidence='+json.dumps(dict(pid=live.pid,pid_start=start))+'\n'
         if mode=='resource': child_at(wt)
+        shapes={'omitted':'omitted','empty-agent':'""','number-agent':'42','array-agent':'[]',
+                'object-agent':'{}','bool-agent':'false','digit-string-agent':'"1pi"'}
+        if mode in shapes: env=env|{'QWB_AGENT_SHAPE':shapes[mode]}
+        if mode.startswith('pane-'):env=env|{'QWB_AGENT_SHAPE':'omitted','QWB_PANE_FAULT':mode[5:]}
+        if mode=='process-query':
+            (b/'stub/herdr').write_text(proof_stub.replace('elif args[:2] == ["pane", "process-info"]:',
+                                                        'elif args[:2] == ["pane", "process-info"]: err("io_error")\nelif False:'))
+            env=env|{'QWB_AGENT_SHAPE':'omitted'}
         if mode in ('agent','foreground'):
             live=child_at(b); env=env|{'QWB_PROOF_PID':str(live.pid)}
         if mode in ('agent','foreground','query','absent'): env=env|{'QWB_PROOF_BEHAVIOR':mode}
+        if mode=='foreground': env=env|{'QWB_AGENT_SHAPE':'omitted'}
         if mode in ('both-markers','both-partial'): env=env|{'QWB_TEST_MODE':'proof-root-missing'}
         text=f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'
         if mode!='orphan': text+=f'dispatch: op_id=unknown worker=pi pane={pane} dir={wt}\n'
@@ -84,7 +108,11 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
         finish=['finish','case','--merged','--project',str(repo)]
         current=call('bash',str(ROOT/'bin/qwb-worktree.sh'),*finish,env=env)
         old=call('bash',str(baseline/'qwb-worktree.sh'),*finish,env=env)
-        assert (current.returncode,current.stdout,current.stderr)==(old.returncode,old.stdout,old.stderr),(mode,current.stdout,current.stderr,old.stdout,old.stderr)
+        if mode=='resource':
+            lines=current.stderr.splitlines(); assert len(lines)==2 and lines[1].startswith('提示：'),current.stderr
+            assert lines[0]+'\n'==old.stderr and current.stdout==old.stdout and current.returncode==old.returncode
+        else:
+            assert (current.returncode,current.stdout,current.stderr)==(old.returncode,old.stdout,old.stderr),(mode,current.stdout,current.stderr,old.stdout,old.stderr)
         assert current.returncode!=0 and ticket.read_bytes()==before and wt.is_dir() and state.exists()
         if mode=='misuse':
             for args in [['list',FLAG],finish+['--writer-proof-missing'],finish+['--writer-proof-missing='],['land','case',FLAG]]:
@@ -105,7 +133,7 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
             assert (lower.returncode,lower.stdout,lower.stderr)==(old_lower.returncode,old_lower.stdout,old_lower.stderr)
             state.write_text(str(wt))
         else: assert lower.returncode!=0 and state.exists() and ticket.read_bytes()==before
-        positive=mode in ('merged','archive','absent','both-markers','remove-partial','branch-partial','both-partial','missing-close-mark')
+        positive=mode in ('merged','archive','absent','both-markers','remove-partial','branch-partial','both-partial','missing-close-mark','omitted')
         lower=call('bash',str(ROOT/'bin/qwb-herdr.sh'),*close,FLAG,env=env)
         print('WRITER-PROOF close',mode,'rc=',lower.returncode,'stdout=',repr(lower.stdout),'stderr=',repr(lower.stderr),flush=True)
         if positive:
@@ -113,6 +141,9 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
             state.write_text(str(wt))
         else:
             assert lower.returncode!=0 and state.exists() and ticket.read_bytes()==before,(mode,lower.stdout,lower.stderr)
+            if mode.startswith('pane-'): assert '身份未知' in lower.stderr,lower.stderr
+            if mode in shapes and mode!='omitted':
+                assert ('仍有agent' if mode=='digit-string-agent' else '身份未知') in lower.stderr,lower.stderr
         if mode=='missing-close-mark':
             mutant=b/'mutant-bin'; shutil.copytree(ROOT/'bin',mutant)
             source=(mutant/'qwb-worktree.sh').read_text()
@@ -145,6 +176,9 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
                 assert got.returncode!=0 and ticket.read_bytes()==before and wt.is_dir() and state.exists(),(mode,got.stdout,got.stderr)
                 assert call('git','-C',str(repo),'show-ref',env=env).stdout==refs
                 if mode in ('json','duplicate-json','string-pid','conflict','pid-null','not-probe','orphan'): assert got.stderr==current.stderr,(mode,got.stderr,current.stderr)
+                if mode.startswith('pane-'): assert '身份未知' in got.stderr,got.stderr
+                if mode in shapes and mode!='omitted':
+                    assert ('仍有agent' if mode=='digit-string-agent' else '身份未知') in got.stderr,got.stderr
                 if mode=='resource': assert '候选写入者仍持cwd/FD' in got.stderr,got.stderr
                 if mode in ('known-live','later-live'): assert '旧启动代仍活或死亡未知' in got.stderr,got.stderr
         if positive:
@@ -156,6 +190,7 @@ for mode in ['merged','archive','absent','both-markers','agent','foreground','qu
             if mode in ('both-markers','both-partial'): assert 'root-tab-missing=1 writer-proof-missing=1' in final,final
         print('PASS writer-proof '+mode+': '+('explicit proof closes and records' if positive else 'both guards refuse without side effects'),flush=True)
 PY
+fi
 # Default byte contract: identical private paths, Git snapshot, subprocess identities and external logs.
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory
@@ -166,10 +201,12 @@ ROOT=Path(sys.argv[1]).resolve()
 prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
 exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
 # Reuse the explicit suite's native boundary for the existing root-tab-missing condition.
+UNKNOWN={'activity':'unknown','proof':'unverified','conflict':'native tool identity unknown'}
+FLAG='--writer-proof-missing=人工核对旧启动代已退出'
 text=(ROOT/'tests/collab-herdr.sh').read_text()
 probe=text.split('proof_stub=STUB.replace(',1)[1].split("for mode in ['merged'",1)[0]
 exec('proof_stub=STUB.replace('+probe)
-for mode in ['normal','archive','alive','busy','query','close','root-tab','remove-partial','branch-partial']:
+for mode in ['normal','archive','alive','busy','query','close','root-tab','missing-proof','remove-partial','branch-partial','resource','no-pane-resource','many-resource']:
     with TemporaryDirectory(prefix='bytes-') as d, ExitStack() as processes:
         os.environ['TMPDIR']=d; b=Path(d)
         repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
@@ -184,8 +221,22 @@ for mode in ['normal','archive','alive','busy','query','close','root-tab','remov
         ticket.write_text(f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'+
                           f'dispatch: op_id=bound worker=pi pane={pane} dir={wt}\nworking: worker-activity op=bound pane={pane} evidence='+
                           json.dumps(dict(pid=child.pid,pid_start=start))+'\n')
+        resource_children=[]
+        if mode in ('resource','no-pane-resource','many-resource'):
+            for _ in range(6 if mode=='many-resource' else 1):
+                owned=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                                       cwd=wt,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+                processes.callback(lambda owned=owned: (owned.terminate() if owned.poll() is None else None, owned.wait(timeout=10), owned.stdin.close(), owned.stdout.close()))
+                assert owned.stdout.readline().strip()=='ready'; resource_children.append(owned)
+        if mode=='no-pane-resource': ticket.write_text('state: verified\n')
+        if mode=='many-resource':
+            ticket.write_text(ticket.read_text()+f'dispatch: op_id=second worker=pi pane=wTask:p2 dir={wt}\n')
+        if mode=='missing-proof':
+            ticket.write_text(ticket.read_text().split('working: worker-activity',1)[0]+
+                              'working: worker-activity op=bound pane='+pane+' evidence='+json.dumps(UNKNOWN)+'\n')
         state.write_text(str(wt)); log.write_text('')
-        if mode=='root-tab': (b/'stub/herdr').write_text(proof_stub); env=env|{'QWB_TEST_MODE':'proof-root-missing'}
+        if mode in ('root-tab','missing-proof'): (b/'stub/herdr').write_text(proof_stub)
+        if mode=='root-tab': env=env|{'QWB_TEST_MODE':'proof-root-missing'}
         if mode in ('busy','query','close'): env=env|{'QWB_TEST_MODE':{'busy':'busy','query':'query-fail','close':'close-fail'}[mode]}
         real_git=shutil.which('git'); gitlog=b/'git-calls'; failed=b/'git-failed'
         target='worktree remove' if mode=='remove-partial' else 'update-ref -d' if mode=='branch-partial' else ''
@@ -193,30 +244,51 @@ for mode in ['normal','archive','alive','busy','query','close','root-tab','remov
         (b/'stub/git').chmod(0o755)
         env=env|{'QWB_REAL_GIT':real_git,'QWB_BYTES_GIT_LOG':str(gitlog),'QWB_BYTES_TARGET':target,'QWB_BYTES_FAILED':str(failed)}
         runtime=b/'runtime-bin'; shutil.copytree(ROOT/'bin',runtime)
-        old={name:subprocess.check_output(['git','-C',str(ROOT),'show','6f3a8cc:bin/'+name]) for name in ['qwb-worktree.sh','qwb-herdr.sh']}
+        old={name:subprocess.check_output(['git','-C',str(ROOT),'show','d3e4b49:bin/'+name]) for name in ['qwb-worktree.sh','qwb-herdr.sh']}
         new={name:(ROOT/'bin'/name).read_bytes() for name in old}
         snapshot=b/'snapshot'; shutil.copytree(repo,snapshot)
         results=[]
-        for version in [old,new]:
-            if len(results): shutil.rmtree(repo); shutil.copytree(snapshot,repo)
+        versions=[(old,'null'),(new,'null')]
+        if mode in ('normal','missing-proof'): versions.append((new,'omitted'))
+        for version,shape in versions:
+            env=env|{'QWB_AGENT_SHAPE':shape}
+            if mode=='normal': (b/'stub/herdr').write_text(proof_stub)
+            if len(results) and not resource_children: shutil.rmtree(repo); shutil.copytree(snapshot,repo)
             for name,data in version.items(): (runtime/name).write_bytes(data)
             state.write_text(str(wt)); log.write_text(''); gitlog.write_text(''); failed.unlink(missing_ok=True)
             command=['bash',str(runtime/'qwb-worktree.sh'),'finish','case','--archive' if mode in ('archive','remove-partial','branch-partial') else '--merged','--project',str(repo)]
             if mode=='root-tab': command+=['--root-tab-missing']
-            first=call(*command,env=env); runs=[(first.returncode,first.stdout,first.stderr)]
+            if mode=='missing-proof': command+=[FLAG]
+            first=call(*command,env=env)
+            if resource_children and version is new:
+                lines=first.stderr.splitlines()
+                assert lines[0]=='拒绝：候选写入者仍持cwd/FD，保留成果' and len(lines)==2 and lines[1].startswith('提示：'),lines
+                reported=__import__('re').findall(r'(\d+)\(([^)]+)\)',lines[1])
+                assert len(reported)==min(5,len(resource_children)),reported
+                assert {int(pid) for pid,_ in reported}.issubset({c.pid for c in resource_children}),reported
+                assert all(name.startswith('Python') or name.startswith('python') for _,name in reported),reported
+                assert all(c.poll() is None for c in resource_children)
+                if mode=='no-pane-resource':
+                    assert 'herdr pane close' not in lines[1] and '让这些进程退出或离开副本目录后重试' in lines[1]
+                else:
+                    assert 'herdr pane close wTask:p1' in lines[1] and '确认工人已交付' in lines[1]
+                    if mode=='many-resource': assert '等 6 个' in lines[1] and 'herdr pane close wTask:p2' in lines[1]
+                print('PASS refusal hint '+mode+': real PID(command), exact first line, registered panes, no side effects',flush=True)
+            stderr=first.stderr.split('提示：',1)[0] if resource_children else first.stderr
+            runs=[(first.returncode,first.stdout,stderr)]
             if mode in ('remove-partial','branch-partial'):
                 assert first.returncode!=0 and 'worktree: partial' in ticket.read_text()
                 second=call(*command,env=env); assert second.returncode==0,(mode,second.stdout,second.stderr)
                 runs.append((second.returncode,second.stdout,second.stderr))
-            else: assert (first.returncode==0)==(mode in ('normal','archive','root-tab')),(mode,first.stdout,first.stderr)
+            else: assert (first.returncode==0)==(mode in ('normal','archive','root-tab','missing-proof')),(mode,first.stdout,first.stderr)
             result=dict(runs=runs,ticket=ticket.read_bytes().hex(),git_log=gitlog.read_text(),herdr_log=log.read_text(),
                         refs=call(real_git,'-C',str(repo),'show-ref',env=env).stdout,worktree_exists=wt.exists(),space_exists=state.exists(),
                         git_status=call(real_git,'-C',str(repo),'status','--short',env=env).stdout)
             results.append(result)
-        assert results[0]==results[1],(mode,results)
-        print('PASS writer-proof default byte equivalence '+mode+': stdout/stderr/rc/ticket/git/herdr/refs/layout identical',flush=True)
+        assert all(result==results[0] for result in results[1:]),(mode,results)
+        print('PASS finish d3e4b49 byte equivalence '+mode+': stdout/stderr/rc/ticket/git/herdr/refs/layout identical; only resource hint excluded',flush=True)
 PY
-if [[ "${1:-}" == writer-proof-missing || "${1:-}" == writer-proof-equivalence ]]; then exit 0; fi
+if [[ "${1:-}" == writer-proof-missing || "${1:-}" == writer-proof-equivalence || "${1:-}" == finish-equivalence ]]; then exit 0; fi
 
 # Multiple tool processes bind only their matching foreground group leader.
 python3 -B - "$ROOT" <<'PY'
