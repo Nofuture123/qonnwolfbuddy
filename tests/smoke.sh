@@ -489,6 +489,7 @@ smoke_start() {
 # Run independent regressions alongside the main smoke body; their output
 # remains private until §74. The narrow root-tab entry excludes this block.
 (
+smoke_start optional-routing bash "$ROOT/tests/optional-routing.sh"
 smoke_start runtime-readiness bash "$ROOT/tests/runtime-readiness.sh"
 smoke_start boundary-readiness bash "$ROOT/tests/boundary-readiness.sh"
 smoke_start lifecycle-readiness bash "$ROOT/tests/lifecycle-readiness.sh"
@@ -3354,13 +3355,8 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 sed -i '' '/^QWB_WORKSPACE=/d' "$ENSP/qwbuddy/config.sh"
 
 echo "== 49. JEV 自动派工（qwb-dispatch.sh：off/clear/ambiguous/坏规则/响应校验/key 纪律 + qwb-run auto 集成）=="
-# optional-routing owns its project and HOME; inline cases use $DT and $TMP.
-# Buffer the inline output so both independent runs still print in the old order.
-python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
-  export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
-  exec bash "$1"
-' smoke-routing "$ROOT/tests/optional-routing.sh" > "$TMP/optional-routing.log" 2>&1 &
-optional_pid=$!
+# optional-routing is already running in the independent early queue.
+# Keep inline output buffered to retain the original reporting order.
 {
 # 假 curl 手法沿 firstmate tests/fm-dispatch-resolve.test.sh：记录 argv/请求体/fd3 头/子进程环境，
 # 按 FAKE_CURL_* 应答。零网络、零真 key。
@@ -3604,7 +3600,9 @@ auto_run; a_rc=$?; AUTO_KEY=''
   || { bad "ghost 未拒（rc=${a_rc}）"; cat "$DT/run.err"; }
 rm -rf "$DT"
 } > "$TMP/jev-inline.log" 2>&1
-wait "$optional_pid"; optional_rc=$?
+wait "$SMOKE_BATCH_PID"
+optional_rc=1
+[[ ! -f "$TMP/optional-routing.rc" ]] || read -r optional_rc < "$TMP/optional-routing.rc"
 cat "$TMP/optional-routing.log"
 [[ "$optional_rc" -eq 0 ]] && ok "可选路由公开 CLI 结构化契约" || bad "可选路由公开 CLI 结构化契约"
 cat "$TMP/jev-inline.log"
@@ -4812,8 +4810,6 @@ out="$(stat69)"
   && ok "status：pi-ext pid 死 → 值守：未运行" \
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
-
-wait "$SMOKE_BATCH_PID"
 
 echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(<"$TMP/runtime-readiness.log")"; runtime_rc=1
