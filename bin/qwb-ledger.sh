@@ -196,6 +196,7 @@ sub keys_only {
 }
 sub id_ok { defined($_[0]) && !ref($_[0]) && $_[0] =~ /\A[A-Za-z0-9_.:-]{1,160}\z/ }
 sub string_ok { defined($_[0]) && !ref($_[0]) && $_[0] !~ /[\x00-\x1f]/ }
+sub identity_keys { qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort) }
 sub ci_source_fields { qw(repo source_run_id attempt source_head_sha candidate_attempt gate command_sha256 environment_sha256 log_sha256) }
 sub ci_key { my $s=shift; return 'ci:'.sha256_hex($json->encode([@{$s}{qw(repo source_run_id attempt source_head_sha)}])) }
 sub ci_source_ok {
@@ -429,7 +430,7 @@ sub validate {
     keys_only($data->{gate},qw(identity binding receipts reviews findings verdict rounds dispatches));
     my $g=$data->{gate};
     fail('gate集合非法') unless ref($g->{receipts}) eq 'ARRAY' && ref($g->{reviews}) eq 'ARRAY' && ref($g->{findings}) eq 'HASH' && ref($g->{dispatches}) eq 'HASH' && ref($g->{rounds}) eq 'ARRAY';
-    keys_only($g->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+    keys_only($g->{identity},identity_keys());
     fail('gate身份非法') unless id_ok($g->{identity}{actor}) && string_ok($g->{identity}{pane}) && $g->{identity}{pane} ne '' && $g->{identity}{incarnation}=~/\A[1-9][0-9]*\z/ && $g->{identity}{owner_fp}=~/\A[0-9a-f]{64}\z/;
     my $b=$g->{binding}; keys_only($b,qw(candidate base attempt policy environment required workers spec_rev scenarios_fp spec_sha256 head tree workers_sha256 worker_profiles), exists($b->{test_policy_sha256}) ? 'test_policy_sha256' : ());
     fail('gate绑定非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && $b->{candidate}=~m{\A/} && $b->{environment}=~m{\A/} && $b->{spec_rev}=~/\A[0-9]+\z/ && $b->{scenarios_fp}=~/\A[0-9a-f]{40}\z/ && $b->{spec_sha256}=~/\A[0-9a-f]{64}\z/ && ref($b->{required}) eq 'HASH' && exists($b->{required}{full});
@@ -454,7 +455,7 @@ sub validate {
     for my $id (keys %{$data->{test_requests}}) {
       my $r=$data->{test_requests}{$id};
       keys_only($r,qw(event_id identity reason scenario context reply reply_sha256));
-      keys_only($r->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+      keys_only($r->{identity},identity_keys());
       fail('test请求非法') unless id_ok($id) && $seen{$r->{event_id}} && $r->{reason}=~/\A(new-behavior|policy-gap|complex-failure|rediagnose)\z/ && string_ok($r->{scenario}) && ref($r->{context}) eq 'HASH' && ref($r->{reply}) eq 'HASH' && defined($r->{reply_sha256}) && $r->{reply_sha256}=~/\A(?:[0-9a-f]{64})?\z/;
       fail('test身份非法') unless id_ok($r->{identity}{actor}) && string_ok($r->{identity}{pane}) && $r->{identity}{pane} ne '' && $r->{identity}{incarnation}=~/\A[1-9][0-9]*\z/ && $r->{identity}{owner_fp}=~/\A[0-9a-f]{64}\z/;
       keys_only($r->{reply},qw(task request_id context validation tests)) if $r->{reply_sha256} ne '';
@@ -465,7 +466,7 @@ sub validate {
     fail('CI集合非法') unless ref($data->{ci}{requests}) eq 'HASH' && ref($data->{ci}{reports}) eq 'HASH';
     for my $key (keys %{$data->{ci}{requests}}) {
       my $q=$data->{ci}{requests}{$key}; keys_only($q,qw(identity source context));
-      keys_only($q->{identity},qw(actor pane incarnation owner_fp controller session_id actual_model actual_effort));
+      keys_only($q->{identity},identity_keys());
       ci_source_ok($q->{source}); fail('CI关联/上下文非法') unless $key eq ci_key($q->{source}) && ref($q->{context}) eq 'HASH';
     }
     for my $key (keys %{$data->{ci}{reports}}) {
