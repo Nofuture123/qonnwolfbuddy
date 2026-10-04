@@ -39,7 +39,8 @@ try:
               '正例使用当前源码根，导出副本验证断言前早报', flush=True)
     for interpreter, script, arguments in [('/bin/bash', 'tests/smoke.sh', ['root-tab-missing']),
                                            (sys.executable, 'tests/worktree-space.py', []),
-                                           ('/bin/bash', 'tests/collab-herdr.sh', [])]:
+                                           ('/bin/bash', 'tests/collab-herdr.sh', []),
+                                           ('/bin/bash', 'tests/collab-land.sh', [])]:
         env = os.environ.copy()
         env.pop('QWB_TEST_SOCKET_DIRS', None)
         runner = subprocess.run if interpreter == sys.executable else run

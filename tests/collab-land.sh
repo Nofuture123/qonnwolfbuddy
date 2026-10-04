@@ -11,7 +11,7 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'
-from process_fixture import TemporaryDirectory
+from process_fixture import TemporaryDirectory, socket_path
 import atexit, fcntl, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_LAND_ROOT'])
@@ -91,8 +91,8 @@ exec "$LAND_REAL_MV" "$@"
     for f in stub.iterdir():f.chmod(0o755)
     env=os.environ|{'LC_ALL':'C','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','LAND_PROJECT':str(p),'LAND_PID':str(os.getpid()),'LAND_NATIVE_STATE':str(tmp/'native.json'),'LAND_NATIVE_LOG':str(tmp/'native.log'),'LAND_REAL_GIT':real_git,'LAND_REAL_MV':real_mv,'LAND_REAL_LSOF':real_lsof,'LAND_GIT_LOG':str(tmp/'git.log'),'LAND_FAIL_FLAG':str(tmp/'fail.flag')}
     # Same newline-delimited RPC fixture as collab-herdr.sh; never use the live socket.
-    # Keep the socket in the short supervisor scope (Darwin AF_UNIX limit: 103 bytes).
-    sockpath=str(Path(os.environ['QWB_TEST_SCOPE_DIR'])/'land.sock')
+    # Allocate and register the socket through the shared 103-byte path guard.
+    sockpath=socket_path()
     api=socket.socket(socket.AF_UNIX); api.bind(sockpath); api.listen(); api.settimeout(.2)
     def serve():
         while True:
