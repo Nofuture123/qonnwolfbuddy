@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 真入口+临时Git；仅Herdr/ps/lsof系统边界替身，不调用现场端点。
 set -euo pipefail
+# shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
 qwb_test_scope "$@"
 export TMPDIR="${QWB_TEST_SCOPE_DIR}"
@@ -8,7 +9,8 @@ mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
-export QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+export QWB_GATE_TEST_ROOT
 python3 -u -B - <<'PY'
 from process_fixture import TemporaryDirectory
 import hashlib, json, os, shutil, subprocess, tempfile, time
@@ -32,10 +34,10 @@ with TemporaryDirectory(prefix='qwb-gate-') as tmp:
     for candidate in [ca,cb,cc,cl,cd,cr]: git('worktree','add','-q','--detach',str(candidate))
     state=tmp/'native.json'
     (stub/'lsof').write_text('#!/bin/sh\nexit 1\n')
-    (stub/'ps').write_text('''#!/usr/bin/env python3
-import subprocess,sys
-if sys.argv[-1]=='ppid=': sys.exit(subprocess.run(['/bin/ps',*sys.argv[1:]]).returncode)
-print('Thu Oct 1 00:00:00 2099')
+    (stub/'ps').write_text('''#!/bin/sh
+for last do :; done
+[ "${last:-}" != 'ppid=' ] || exec /bin/ps "$@"
+printf '%s\\n' 'Thu Oct 1 00:00:00 2099'
 ''')
     (stub/'herdr').write_text('''#!/usr/bin/env python3
 import json,os,sys
