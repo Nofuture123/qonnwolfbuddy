@@ -52,7 +52,22 @@ for s in "$ROOT"/bin/qwb-*.sh; do chk bash -n "$s"; done
 
 echo "== 2. shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then
-  for s in "$ROOT"/bin/qwb-*.sh; do chk shellcheck "$s"; done
+  shellcheck --format=json "$ROOT"/bin/qwb-*.sh > "$TMPDIR/shellcheck.json" 2>/dev/null; sc_rc=$?
+  python3 - "$TMPDIR/shellcheck.json" "$sc_rc" "$ROOT"/bin/qwb-*.sh > "$TMPDIR/shellcheck.results" <<'PY'
+import json, sys
+try:
+    issues = json.load(open(sys.argv[1]))
+    failed = {issue['file'] for issue in issues}
+except (OSError, ValueError, KeyError, TypeError):
+    failed = set(sys.argv[3:])
+if int(sys.argv[2]) > 1:
+    failed = set(sys.argv[3:])
+for path in sys.argv[3:]:
+    print(int(path in failed), path)
+PY
+  while read -r sc_bad sc_file; do
+    if [[ "$sc_bad" -eq 0 ]]; then ok "shellcheck $sc_file"; else bad "shellcheck $sc_file"; fi
+  done < "$TMPDIR/shellcheck.results"
 else
   echo "SKIP  本机无 shellcheck，跳过"
 fi
@@ -1405,6 +1420,7 @@ grep -q '自证' "$TMP/qwbuddy/roles/执行者.md" && grep -q '契约校验' "$T
 
 echo "== 25. C：qwb-lint.sh 自身 lint =="
 lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
+ROOT_LINT_OUT="$lintout"; ROOT_LINT_RC=$rc
 [[ "$rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lintout" \
   && ok "母本仓 lint 全过（LINT PASS）" || { bad "母本仓 lint FAIL（rc=${rc}）:"; printf '%s\n' "$lintout"; }
 npass="$(printf '%s' "$lintout" | grep -c '^PASS' || true)"  # 0 匹配时 grep -c 退出码 1，照同文件写法吞掉
@@ -3471,7 +3487,8 @@ else
 fi
 grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$TMP/qwbuddy/workers.sh" \
   && ok "qwb-init 装出的 workers.sh 带默认权限参数" || bad "安装的 workers.sh 缺默认参数"
-lintout="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; rc=$?
+# The repository has not changed since §25; preserve its output and status.
+lintout="$ROOT_LINT_OUT"; rc=$ROOT_LINT_RC
 { [[ "$rc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lintout" \
    && grep -q '键全部被.*引用' <<<"$lintout"; } \
   && ok "lint 过且「config 无死键」PASS" \
@@ -4311,7 +4328,7 @@ for hf in claude-hook agents-hook; do
     && ok "$hf.md 第 2 条含 qwb-status.sh" \
     || bad "$hf.md 第 2 条未改：$h2"
 done
-lint_out="$(bash "$ROOT/bin/qwb-lint.sh" --project "$ROOT" 2>&1)"; lrc=$?
+lint_out="$ROOT_LINT_OUT"; lrc=$ROOT_LINT_RC
 { [[ "$lrc" -eq 0 ]] && grep -q 'LINT PASS' <<<"$lint_out"; } \
   && ok "qwb-lint.sh 第 1 项仍 PASS（本仓 LINT PASS）" \
   || { bad "本仓 lint 不应受影响（rc=${lrc}）"; printf '%s\n' "$lint_out" | tail -8; }
