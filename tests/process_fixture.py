@@ -42,6 +42,13 @@ def drain(groups=None):
         pid = parents.get(pid, 0)
     deadline = time.monotonic() + 5
     hard = time.monotonic() + 1
+    protected = set()
+    for entry in Path(os.environ['QWB_TEST_GROUPS']).with_name('socket-directories').read_text().splitlines():
+        path, _, owner = entry.partition('\t')
+        marker = Path(path) / 'scope-owner'
+        supervisor = Path(path) / 'supervisor-pid'
+        if owner and marker.exists() and marker.read_text() == owner and supervisor.exists():
+            protected.add(int(supervisor.read_text()))
     while True:
         live = [row for row in rows() if int(row[2]) in groups
                 and int(row[0]) not in keep and not row[3].startswith('Z')]
@@ -51,6 +58,8 @@ def drain(groups=None):
             raise RuntimeError('owned test processes did not exit: ' + repr(live))
         sig = signal.SIGKILL if time.monotonic() >= hard else signal.SIGTERM
         for row in live:
+            if sig == signal.SIGKILL and int(row[0]) in protected:
+                continue # Registered supervisors drain their own detached child groups.
             try:
                 os.kill(int(row[0]), sig)
             except ProcessLookupError:
@@ -174,6 +183,7 @@ def main():
             parents.append([parent_record, parent_owner])
         scope_owner = secrets.token_hex(16)
         (Path(directory) / 'scope-owner').write_text(scope_owner)
+        (Path(directory) / 'supervisor-pid').write_text(str(os.getpid()))
         env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
                    QWB_TEST_GROUPS=str(records), QWB_TEST_SOCKET_DIRS=str(socket_dirs),
                    QWB_TEST_SUPERVISOR_PID=str(os.getpid()), QWB_TEST_SCOPE_OWNER=scope_owner,

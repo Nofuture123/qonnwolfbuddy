@@ -133,6 +133,32 @@ with open(os.environ['QWB_TEST_SOCKET_DIRS'],'a') as record:record.write(sys.arg
     shutil.rmtree(reused)
     print('PASS stale scope receipt preserves a replacement owner')
 
+    delayed = directory / 'delayed.json'
+    parent = '''
+import json,os,subprocess,sys,time
+from pathlib import Path
+manager="""import os,sys,time;sys.path.insert(0,sys.argv[1]);import process_fixture as fixture
+real_drain=fixture.drain
+def drain(*args,**kwargs):
+    time.sleep(1.3);return real_drain(*args,**kwargs)
+fixture.drain=drain
+sys.argv=[fixture.__file__,'--command',sys.executable,'-c',\"import json,os,time;from pathlib import Path;Path(os.environ['DELAYED_RECORD']).write_text(json.dumps(dict(pid=os.getpid(),scope=os.environ['QWB_TEST_SCOPE_DIR'])));time.sleep(60)\"]
+raise SystemExit(fixture.main())"""
+child=subprocess.Popen([sys.executable,'-c',manager,sys.argv[1]])
+deadline=time.monotonic()+20
+while not Path(os.environ['DELAYED_RECORD']).exists():
+    assert child.poll() is None and time.monotonic()<deadline
+    time.sleep(.01)
+'''
+    result = run([sys.executable, '-c', parent, str(ROOT / 'tests')],
+                 env=dict(os.environ, DELAYED_RECORD=str(delayed)), capture_output=True, text=True)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    data = json.loads(delayed.read_text())
+    status = subprocess.run(['/bin/ps', '-p', str(data['pid']), '-o', 'stat='],
+                            capture_output=True, text=True).stdout.strip()
+    assert (not status or status.startswith('Z')) and not Path(data['scope']).exists(), (data, status)
+    print('PASS ancestor waits for registered supervisor cleanup beyond its hard-kill interval')
+
     jobs = directory / 'jobs'; jobs.mkdir()
     counter = jobs / 'counter.json'
     body = '''
