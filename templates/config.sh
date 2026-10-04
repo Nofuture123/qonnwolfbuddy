@@ -1,5 +1,5 @@
 # QW buddy 配置——bash 可直接 source；这就是唯一来源，直接改这里
-QWB_WORKERS="codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high omp-gemini"   # 工人表；每个名字须在 workers.sh 有且仅有一条声明
+QWB_WORKERS="codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high pi-sol-high omp-gemini"   # 工人表；每个名字须在 workers.sh 有且仅有一条声明
 # 启动方式与逐项 argv 见同目录 workers.sh。旧 QWB_WORKER_LAUNCH / QWB_WORKER_ARGS
 # 必须用母本仓 qwb-init.sh --migrate-worker-config <项目根> 显式迁移。
 QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）

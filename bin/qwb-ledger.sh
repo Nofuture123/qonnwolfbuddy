@@ -1184,10 +1184,10 @@ if ($cmd eq 'land-authorize') {
     my @efforts=grep { ($_->{type} // '') eq 'thinking_level_change' } @records;
     fail('原生session/model证据不匹配（当前仅Pi JSONL）') unless $header && $header->{type} eq 'session' && $header->{id} eq $id->{session} && @models && $models[-1]{modelId} eq $id->{model} && $models[-1]{provider} eq $profile->{provider} && @efforts && $efforts[-1]{thinkingLevel} eq $profile->{effort};
     fail('会话目录不是候选/本项目') unless ($header->{cwd} // '') eq $c->{candidate} || ($header->{cwd} // '') eq $c->{project};
-    # 仅本切片已知固定原生provider/model；不从昵称、CLI或model前缀猜family。
-    my %known_family=('openai-codex/gpt-6.1-sol'=>'gpt','openai-codex/gpt-6-astra'=>'gpt','anthropic/claude-opus-4-6'=>'claude');
-    my $family=$known_family{"$models[-1]{provider}/$models[-1]{modelId}"} // 'unknown';
-    fail('原生模型family未可靠确认') unless $family ne 'unknown' && $id->{family} eq $family;
+    # 读取已由workers_sha256冻结的项目声明；不从昵称、CLI或model前缀猜family。
+    my $key="$models[-1]{provider}/$models[-1]{modelId}";
+    my $family=capture('bash','-c','. "$1"; qwb_model_family "$2" "$3"','family',"$bindir/qwb-lib.sh",$root,$key); chomp $family;
+    fail("原生模型family未可靠确认；请在 qwbuddy/workers.sh 里补唯一一行：qwb_family '$key' 家族（gpt/claude/gemini/glm/qwen/swe）；删除重复声明并修正非法家族") unless $family ne 'unknown' && $id->{family} eq $family;
     $id->{evidence_sha256}=sha256_hex(join('',map { $json->encode($_) } @records));
   }
   fail('同原生会话审核冲突；保留现有身份门') if $r->{implementer}{session} eq $r->{reviewer}{session} || $r->{reviewer}{session} eq $data->{gate}{identity}{session_id};

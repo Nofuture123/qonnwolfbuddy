@@ -22,7 +22,7 @@ with TemporaryDirectory(prefix='qwb-gate-') as tmp:
     (p/'qwbuddy/.controller.lock').mkdir(); (p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
     integration=tmp/'integration.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
     (p/'qwbuddy/config.sh').write_text(f"QWB_WORKERS='sol reviewer astra unknown-reviewer'\nQWB_WORKSPACE='ws'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='{integration}'\nQWB_GATE_FAST='true'\nQWB_GATE_FULL='true'\n")
-    (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_worker astra herdr pi -- --provider openai-codex --model gpt-6-astra --thinking low\nqwb_worker unknown-reviewer herdr pi -- --provider anthropic --model claude-unconfirmed --thinking low\n')
+    (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_worker astra herdr pi -- --provider openai-codex --model gpt-6-astra --thinking low\nqwb_worker unknown-reviewer herdr pi -- --provider anthropic --model claude-unconfirmed --thinking low\nqwb_family openai-codex/gpt-6.1-sol gpt\nqwb_family openai-codex/gpt-6-astra gpt\nqwb_family anthropic/claude-opus-4-6 claude\n')
     (p/'safety.sh').write_text('#!/bin/sh\n# fixture defect: unresolved request wrongly accepted\nexit 0\n')
     (p/'tasks').mkdir(); (p/'.gitignore').write_text('qwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\ntasks/\n')
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
@@ -403,6 +403,44 @@ f.write_text(json.dumps(s))
     reviewfile.write_text(json.dumps(unverified));rejected=call('qwb-ledger.sh','gate-review','--task',ut,'--','accept-U',reviewfile,actor='gate-pane',ok=False)
     assert '原生模型family未可靠确认' in rejected.stderr,rejected.stderr
     print('PASS 原生model前缀类似Claude也不猜family；未知固定provider/model拒绝')
+    assert 'qwbuddy/workers.sh' in rejected.stderr and "qwb_family 'anthropic/claude-unconfirmed'" in rejected.stderr
+    assert "工人型号/effort配置已变" not in rejected.stderr
+    # 每种声明在授权前冻结；拒绝不改票，新增型号只改项目配置。
+    family_workers=p/'qwbuddy/workers.sh';saved_workers=family_workers.read_bytes()
+    for label,extra,accept in [
+        ('Missing','',False),
+        ('Duplicate','qwb_family anthropic/claude-unconfirmed claude\nqwb_family anthropic/claude-unconfirmed claude\n',False),
+        ('Invalid','qwb_family anthropic/claude-unconfirmed imaginary\n',False),
+        ('Configured','qwb_family anthropic/claude-unconfirmed claude\n',True),
+    ]:
+        changed=saved_workers.decode().replace('--provider openai-codex --model gpt-6.1-sol','--provider magpie --model codex/gpt-6.1-sol')
+        family_workers.write_text(changed+'qwb_family magpie/codex/gpt-6.1-sol gpt\n'+extra)
+        ft=p/('tasks/Family-'+label+'.md');ft.write_text('# 项目家族声明\nstate: running\n'+frozen+'\n')
+        m.write_text(json.dumps({'task_sha256':hashlib.sha256(ft.read_bytes()).hexdigest(),'confirm':{k:'fixture stopped; no actions' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}}))
+        call('qwb-ledger.sh','migrate','--task',ft,'--',m)
+        request.write_text(json.dumps(dict(brequest,candidate=str(cc),workers={'review':'unknown-reviewer','rework':'sol'})))
+        call('qwb-ledger.sh','gate-assign','--task',ft,'--','gate',request)
+        call('qwb-ledger.sh','claim','--task',ft,'--','family-'+label,actor='gate-pane')
+        context=json.loads(call('qwb-ledger.sh','gate-context','--task',ft,'--','family-'+label,actor='gate-pane').stdout)
+        assert context['worker_profiles']['rework']==dict(provider='magpie',model='codex/gpt-6.1-sol',effort='high')
+        evidence=tmp/('family-'+label+'.jsonl')
+        evidence.write_text(json.dumps({'type':'session','id':'family-'+label,'cwd':str(p)})+'\n'+json.dumps({'type':'model_change','provider':'magpie','modelId':'codex/gpt-6.1-sol'})+'\n'+json.dumps({'type':'thinking_level_change','thinkingLevel':'high'})+'\n')
+        proposal=dict(unverified,context=context,implementer=dict(model='codex/gpt-6.1-sol',family='gpt',session='family-'+label,evidence=str(evidence)))
+        reviewfile.write_text(json.dumps(proposal));before=ft.read_bytes()
+        result=call('qwb-ledger.sh','gate-review','--task',ft,'--','family-'+label,reviewfile,actor='gate-pane',ok=accept)
+        if not accept:
+            assert ft.read_bytes()==before and '原生模型family未可靠确认' in result.stderr and "qwb_family 'anthropic/claude-unconfirmed'" in result.stderr,result.stderr
+        else:
+            stored=json.loads(call('qwb-ledger.sh','read','--task',ft).stdout)
+            assert stored['gate']['binding']['workers_sha256']==hashlib.sha256(family_workers.read_bytes()).hexdigest()
+            assert stored['gate']['reviews'][-1]['review']['implementer']['family']=='gpt'
+            # 只改家族声明也会失效授权；不把配置变更当旧授权合法。
+            family_workers.write_text(family_workers.read_text().replace('qwb_family magpie/codex/gpt-6.1-sol gpt','qwb_family magpie/codex/gpt-6.1-sol claude'))
+            frozen_ticket=ft.read_bytes()
+            refused=call('qwb-ledger.sh','gate-review','--task',ft,'--','family-'+label,reviewfile,actor='gate-pane',ok=False)
+            assert '工人型号/effort配置已变' in refused.stderr and ft.read_bytes()==frozen_ticket,refused.stderr
+        family_workers.write_bytes(saved_workers)
+    print('PASS 项目新型号含斜杠与Claude跨家族审核通过；缺失/重复/非法家族提示补行且零写入，单改家族使workers_sha256授权失效')
     call('qwb-ledger.sh','revise-scenarios','--task',bt,'--expect',str(bd['rev']),'--',frozen,'新产品',actor='gate-pane',ok=False)
     call('qwb-run.sh','--task',bt,'--worker','sol','--worktree',cb,actor='gate-pane',ok=False)
     call('qwb-run.sh','--task',bt,'--worker','sol','--worktree',cb,'--gate-op','accept-B','--gate-kind','review','--revise-scenarios=新产品',actor='gate-pane',ok=False)

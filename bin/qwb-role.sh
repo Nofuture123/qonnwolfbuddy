@@ -33,6 +33,18 @@ fi
 PROFILE='[]'
 if [[ "${1:-}" == start || "${1:-}" == relaunch ]]; then
   qwb_load_workers "$PROJECT_ROOT" || exit 1
+  # start的固定档位先验证；坏声明不得查询Herdr或创建角色记录。
+  if [[ "${1:-}" == start ]]; then
+    selected=""
+    for ((i=0; i<${#args[@]}; i++)); do
+      [[ "${args[i]}" != --worker ]] || selected="${args[i+1]:-}"
+    done
+    for i in "${!QWB_CONFIG_NAMES[@]}"; do
+      [[ "${QWB_CONFIG_NAMES[i]}" == "$selected" ]] || continue
+      offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
+      qwb_pi_profile role "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}" >/dev/null || exit 1
+    done
+  fi
   PROFILE="$({
     for i in "${!QWB_CONFIG_NAMES[@]}"; do
       offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
@@ -167,23 +179,10 @@ def snapshot_dir(directory):
             'status':run(['git','-C',directory,'status','--porcelain=v1','--untracked-files=all']).stdout}
 
 def model_profile(profile):
-    require(profile['mode'] == 'herdr' and profile['harness'] == 'pi', '仅Pi Herdr控制路径已核验；其他adapter明确拒绝，不改原派发配置')
-    argv = profile['argv']
-    # Accept explicit pins only; positional prompts, CLI/session overrides and unknown flags refuse.
-    values = {}; i = 0
-    while i < len(argv):
-        token = argv[i]
-        if token in ('--approve','--no-approve','--offline'): i += 1; continue
-        require(token in ('--provider','--model','--thinking') and i+1 < len(argv) and token not in values, '角色worker须仅包含明确provider/model/thinking与批准参数，拒绝未知/重复/提示词参数')
-        values[token] = argv[i+1]; i += 2
-    model = values.get('--model',''); provider = values.get('--provider','')
-    if '/' in model:
-        prefix, model = model.split('/',1)
-        require(not provider or prefix == provider, 'model/provider冲突'); provider = prefix
-    require(provider and re.fullmatch(r'[a-zA-Z0-9_.-]+', provider) and re.fullmatch(r'[a-zA-Z0-9_.-]+', model), '模型不是精确provider/id')
-    effort = values.get('--thinking','')
-    require(effort in ('off','minimal','low','medium','high','xhigh','max'), '必须显式固定effort')
-    return provider, model, effort
+    p = run(['bash','-c','. "$1"; shift; qwb_pi_profile role "$@"','qwb-role',str(bindir/'qwb-lib.sh'),
+             profile['mode'],profile['harness'],*profile['argv']])
+    d = json.loads(p.stdout)
+    return d['provider'], d['model'], d['effort']
 
 def adapter():
     require(os.environ.get('QWB_ROLE_PI_CONTROL') == 'verified', 'Pi控制尚未在本项目批准启用（QWB_ROLE_PI_CONTROL=verified）；不安装/自动启用')

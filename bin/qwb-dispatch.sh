@@ -204,7 +204,7 @@ worker_registry() (
   [ ! -f "$PROJECT_ROOT/qwbuddy/config.sh" ] || . "$PROJECT_ROOT/qwbuddy/config.sh" >/dev/null || exit 1
   # shellcheck disable=SC2329 # 由下面 source 的 workers.sh 调用
   qwb_worker() {
-    local name=${1:-} mode=${2:-} harness model='' w known=0
+    local name=${1:-} mode=${2:-} harness model='' provider='' w known=0
     [ "$#" -ge 2 ] || return 1
     shift 2
     for w in $QWB_WORKERS; do [ "$w" != "$name" ] || known=1; done
@@ -223,14 +223,23 @@ worker_registry() (
     esac
     while [ "$#" -gt 0 ]; do
       case "$1" in
+        --provider) [ "$#" -ge 2 ] || return 1; provider=$2; shift ;;
+        --provider=*) provider=${1#*=} ;;
         -m|--model) [ "$#" -ge 2 ] || return 1; model=$2; shift ;;
         --model=*) model=${1#*=} ;;
       esac
       shift
     done
+    # 额度lane取显式渠道；模型ID自身可含斜杠，不能误把codex当magpie渠道。
+    if [[ "$harness" == pi || "$harness" == pi-signed ]] && [[ -n "$provider" ]]; then
+      model="$provider/$model"
+    fi
     rows=$(jq -cn --argjson rows "$rows" --arg name "$name" --arg harness "$harness" --arg model "$model" \
       '$rows + [{name:$name,harness:$harness,model:$model}]') || return 1
   }
+  # 家族声明不是路由工人；只在独立审核时判定。
+  # shellcheck disable=SC2329 # 由下面 source 的 workers.sh 调用
+  qwb_family() { :; }
   # shellcheck source=/dev/null
   [ ! -f "$PROJECT_ROOT/qwbuddy/workers.sh" ] || . "$PROJECT_ROOT/qwbuddy/workers.sh" >/dev/null || exit 1
   printf '%s' "$rows"

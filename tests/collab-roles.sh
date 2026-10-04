@@ -46,6 +46,9 @@ elif a[:2]==['tab','create']:
  s['cwd']=a[a.index('--cwd')+1];out({'root_pane':{'pane_id':'w1:pRole','tab_id':'w1:tRole','terminal_id':'term-role','workspace_id':'w1'}})
 elif a[:2]==['agent','start']:
  s.update(live=True,starts=s['starts']+1,name=a[2],argv=a[a.index('--')+1:])
+ s['model']=s['argv'][s['argv'].index('--model')+1];s['effort']=s['argv'][s['argv'].index('--thinking')+1]
+ if '--provider' in s['argv']:s['provider']=s['argv'][s['argv'].index('--provider')+1]
+ else:s['provider'],s['model']=s['model'].split('/',1)
  if '--session' in s['argv']:
   s['session']=s['argv'][s['argv'].index('--session')+1];s['sid']=json.loads(Path(s['session']).read_text().splitlines()[0])['id']
  else:
@@ -73,7 +76,7 @@ elif a[:2]==['pane','process-info']:
  pid=(999 if mode=='spoof-controller' else os.getppid()) if ctl else 100000000+s['starts'] if live else 42
  out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':pid if live else 42,'foreground_processes':[{'pid':pid,'argv0':'pi' if live else 'zsh','argv':argv,'cwd':os.environ['ROLE_PROJECT']}]}})
 elif a[:2]==['pane','read']:
- print('────────────────────\\n'+('draft obligation' if mode=='draft' else '')+'\\n────────────────────\\n$0.000 (sub) 0.0%/272k (auto)  (openai-codex) '+('wrong-model' if mode=='wrong-model' else 'gpt-6.1-sol')+' • high');sys.exit(0)
+ print('────────────────────\\n'+('draft obligation' if mode=='draft' else '')+'\\n────────────────────\\n$0.000 (sub) 0.0%/272k (auto)  ('+s.get('provider','openai-codex')+') '+('wrong-model' if mode=='wrong-model' else s.get('model','gpt-6.1-sol'))+' • '+s.get('effort','high'));sys.exit(0)
 elif a[:2]==['pane','send-keys']:
  if mode=='action-failed':err()
  # Actual Herdr actions succeed with no JSON payload.
@@ -108,6 +111,27 @@ print('Thu Oct  1 00:00:00 2099')
     call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',str(p),ok=False)
     workers.write_text(original_workers)
     assert not state.exists(), 'invalid registry must refuse before any Herdr side effect'
+    # 有意收紧：当前start与gate都须在任何Herdr/角色/账本动作前拒绝缺渠道。
+    implicit=original_workers.replace('--provider openai-codex ', '').replace('--model gpt-6.1-sol', '--model openai-codex/gpt-6.1-sol')
+    workers.write_text(implicit)
+    before=(log.read_bytes() if log.exists() else b'', list((p/'tasks').iterdir()))
+    rejected=call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',str(p),ok=False)
+    assert '--provider' in rejected.stderr and '--provider 渠道 --model 模型ID' in rejected.stderr, rejected.stderr
+    gate=subprocess.run(['/bin/bash','-c','. "$1"; qwb_gate_profile "$2" sol','test',str(root/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+    assert gate.returncode!=0 and '--provider' in gate.stderr and '--provider 渠道 --model 模型ID' in gate.stderr,gate.stderr
+    assert not state.exists() and not (p/'qwbuddy/.roles').exists()
+    assert before==(log.read_bytes() if log.exists() else b'', list((p/'tasks').iterdir()))
+    print('PASS 缺provider的角色与门禁明确提示改法，零Herdr调用、零角色或账本写入')
+    # 固定起点的真实角色入口对相同隐式argv仍接受，证明收紧源于本票。
+    legacy=Path(tmp)/'legacy-project';shutil.copytree(p,legacy)
+    baseline=Path(tmp)/'baseline-bin';shutil.copytree(root/'bin',baseline)
+    for name in ('qwb-role.sh','qwb-lib.sh','qwb-herdr.sh'):
+        (baseline/name).write_bytes(subprocess.check_output(['git','-C',str(root),'show','bea487d:bin/'+name]))
+    old=subprocess.run(['bash',str(baseline/'qwb-role.sh'),'start','--project',str(legacy),'--actor','legacy','--role','门禁','--worker','sol','--dir',str(legacy)],
+                       env=env|{'ROLE_PROJECT':str(legacy),'ROLE_FAKE_STATE':str(Path(tmp)/'legacy-state.json'),'ROLE_FAKE_LOG':str(Path(tmp)/'legacy-log.jsonl')},capture_output=True,text=True)
+    assert old.returncode==0 and json.loads(old.stdout)['actual_model']=='openai-codex/gpt-6.1-sol', (old.stdout,old.stderr)
+    print('PASS 起点bea487d的真实角色start接受相同无provider声明（有意收紧对照）')
+    workers.write_text(original_workers)
     # F1: delivered first launch has no registered PID; a foreground shell can hide a live/background Pi.
     rejected=call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':'launch-failed'})
     assert rejected.returncode!=0 and json.loads(state.read_text())['live']
@@ -257,4 +281,21 @@ print('Thu Oct  1 00:00:00 2099')
     call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',str(p),ok=False)
     assert session.exists() and tracked.read_bytes()==before[0] and untracked.read_bytes()==before[1]
     print('PASS retirement: explicit only, endpoint/WIP/session retained; old actor id cannot reactivate')
+
+    # 模板真实角色入口与门禁入口核对同一档位；固定模型ID的斜杠保留。
+    workers.write_text((root/'templates/workers.sh').read_text())
+    config=p/'qwbuddy/config.sh'
+    config.write_text(config.read_text()+"\nQWB_WORKERS='pi-sol-high pi-glm-high'\n")
+    # 只取需要的两名工人，家族声明全部保留；其他工人不在此夹具QWB_WORKERS内。
+    workers.write_text('\n'.join(line for line in workers.read_text().splitlines() if not line.startswith('qwb_worker ') or line.split()[1] in ('pi-sol-high','pi-glm-high'))+'\n')
+    for worker,provider,model in [('pi-sol-high','magpie','codex/gpt-6.1-sol'),('pi-glm-high','zai-coding-cn','glm-5.3')]:
+        got=call('qwb-role.sh','start','--actor',worker,'--role','门禁','--worker',worker,'--dir',str(p))
+        assert (got['provider'],got['model'],got['effort'],got['actual_model'])==(provider,model,'high',provider+'/'+model),got
+        gate=subprocess.run(['/bin/bash','-c','. "$1"; qwb_gate_profile "$2" "$3"','test',str(root/'bin/qwb-lib.sh'),str(p),worker],env=env,capture_output=True,text=True)
+        assert gate.returncode==0 and json.loads(gate.stdout)==dict(provider=provider,model=model,effort='high'),gate.stderr
+        call('qwb-control.sh','exit','--actor',worker,'--expect-gen','1')
+        call('qwb-role.sh','retire','--actor',worker,'--expect-gen','1')
+        print('PASS 模板'+worker+'真实角色start与gate_profile均匹配provider/model/effort')
 PY
+
+bash "$ROOT/tests/pi-profile.sh"

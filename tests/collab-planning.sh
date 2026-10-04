@@ -27,7 +27,7 @@ with manager as temp:
     (p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
     integration=temp/'integration.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
     (p/'qwbuddy/config.sh').write_text(f"QWB_WORKERS='sol reviewer'\nQWB_WORKSPACE='ws'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='{integration}'\nQWB_GATE_FAST='true'\nQWB_GATE_FULL='true'\n")
-    (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\n')
+    (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_family openai-codex/gpt-6.1-sol gpt\nqwb_family openai-codex/gpt-6-astra gpt\nqwb_family anthropic/claude-opus-4-6 claude\n')
     (p/'.gitignore').write_text('tasks/\nqwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\n')
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')

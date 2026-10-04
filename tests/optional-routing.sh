@@ -369,7 +369,8 @@ cmp -s "$T/installed-workers" "$T/project/qwbuddy/workers.sh"
 echo 'PASS named template installation is idempotent'
 for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
             'claude-fable-high claude claude-fable-5 high' \
-            'pi-glm-high pi zai-coding-cn/glm-5.3 high' \
+            'pi-glm-high pi glm-5.3 high' \
+            'pi-sol-high pi codex/gpt-6.1-sol high' \
             'devin devin swe-2-high swe-2-high' \
             'omp-gemini omp google-antigravity/gemini-3.1-pro high'; do
   read -r agent harness model effort <<< "$spec"

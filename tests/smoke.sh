@@ -91,7 +91,7 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high omp-gemini" && -z "${QWB_WORKER_LAUNCH:-}" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high pi-sol-high omp-gemini" && -z "${QWB_WORKER_LAUNCH:-}" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
   ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
@@ -878,7 +878,7 @@ AD="$TMP/adddir"; mkdir -p "$AD"; git -C "$AD" init -q
 bash "$ROOT/bin/qwb-init.sh" "$AD" > "$TMP/ad-init.out" 2>&1 || bad "17c init 失败"
 AD_P="$(cd "$AD" && pwd -P)"
 ad_argv() { # $1=workers.sh $2=工人名 → 该工人声明的启动方式与逐项 argv（每项一行）
-  ( AD_W="$2"; qwb_worker() { local n="$1"; shift; [[ "$n" == "$AD_W" ]] || return 0; printf '%s\n' "$@"; }
+  ( AD_W="$2"; qwb_family() { :; }; qwb_worker() { local n="$1"; shift; [[ "$n" == "$AD_W" ]] || return 0; printf '%s\n' "$@"; }
     # shellcheck source=/dev/null
     . "$1" )
 }
@@ -890,10 +890,10 @@ ad_expect=$'herdr\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions'
   && ok "S1 新装 workers.sh：旧式和具名 Claude 行各注入一次 --add-dir" \
   || { bad "S1 新装 claude 行不对："; grep claude "$AD/qwbuddy/workers.sh"; cat "$TMP/ad-init.out"; }
 ad_same=1
-for w in codex pi devin omp codex-sol-high pi-glm-high omp-gemini; do
+for w in codex pi devin omp codex-sol-high pi-glm-high pi-sol-high omp-gemini; do
   grep -qxF "$(grep "^qwb_worker $w " "$ROOT/templates/workers.sh")" "$AD/qwbuddy/workers.sh" || ad_same=0
 done
-{ [[ "$ad_same" -eq 1 ]] && [[ "$(grep -c '^qwb_worker ' "$AD/qwbuddy/workers.sh")" == "9" ]] \
+{ [[ "$ad_same" -eq 1 ]] && [[ "$(grep -c '^qwb_worker ' "$AD/qwbuddy/workers.sh")" == "10" ]] \
    && [[ "$(grep -vE '^qwb_worker (claude|claude-fable-high) ' "$AD/qwbuddy/workers.sh")" == "$(grep -vE '^qwb_worker (claude|claude-fable-high) ' "$ROOT/templates/workers.sh")" ]]; } \
   && ok "S1 其余工人行与模板字节一致（只有 claude 行不同）" \
   || bad "S1 非 claude 行被改动"
@@ -3415,7 +3415,7 @@ out="$(mp_run --task mpfine --worker codex --here 2>&1)"; rc=$?
 # 51g 模板默认值：可被 source 与 bash -n 接受、被 lint 认作活键，且真派发时按工人生效
 mp_task mptmpl
 # 本组是旧工人表兼容夹具；具名三元组由 optional-routing/§86 单独验证。
-grep -vE '^qwb_worker (codex-sol-high|claude-fable-high|pi-glm-high|omp-gemini) ' "$ROOT/templates/workers.sh" > "$MPX/qwbuddy/workers.sh"
+grep -vE '^qwb_worker (codex-sol-high|claude-fable-high|pi-glm-high|pi-sol-high|omp-gemini) ' "$ROOT/templates/workers.sh" > "$MPX/qwbuddy/workers.sh"
 printf '%s\n' 'qwb_worker cmd herdr' >> "$MPX/qwbuddy/workers.sh"
 bash -n "$ROOT/templates/config.sh" && bash -n "$ROOT/templates/workers.sh" \
   && ok "bash -n config.sh / workers.sh 退出 0" || bad "工人配置模板语法错误"

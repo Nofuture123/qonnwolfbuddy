@@ -86,6 +86,9 @@ qwb_load_workers() {
   qwb_worker() {
     qwb_parse_worker "$@" || { QWB_CONFIG_ERROR=1; return 1; }
   }
+  # 家族只在独立审核时核对；坏/重复声明不能阻断普通派发。
+  # shellcheck disable=SC2329 # workers.sh通过source调用声明入口。
+  qwb_family() { :; }
   # 不依赖errexit：调用方的 ||/if 会抑制函数内set -e，任何声明错误必须粘住。
   # shellcheck source=/dev/null
   . "$WORKERS_CONF" || return 1
@@ -160,6 +163,54 @@ PY
 
 qwb_planner_identity() { qwb_gate_identity "$1" "${2:-}" 规划; }
 
+# Pi固定档位的唯一解析入口；role另保留原参数白名单，gate保留fast/priority拒绝。
+qwb_pi_profile() {
+  python3 -B - "$@" <<'PY'
+import json,re,sys
+purpose,mode,harness,*args=sys.argv[1:]
+try:
+    assert mode=='herdr' and harness=='pi', ('仅Pi Herdr控制路径已核验；其他adapter明确拒绝，不改原派发配置' if purpose=='role' else '门禁当前仅接已配置可见Pi工人')
+    d={}
+    for flag,key in [('--provider','provider'),('--model','model'),('--thinking','effort')]:
+        assert sum(x.split('=',1)[0]==flag for x in args)==1 and flag in args, (flag+'须显式出现一次且非空；请写 --provider 渠道 --model 模型ID --thinking high（模型ID可含斜杠）')
+        index=args.index(flag)+1
+        assert index<len(args) and args[index] and not args[index].startswith('-'), flag+'须显式出现一次且非空；请写 --provider 渠道 --model 模型ID --thinking high'
+        d[key]=args[index]
+    assert re.fullmatch(r'[a-zA-Z0-9_.-]+',d['provider']) and re.fullmatch(r'[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*',d['model']), '模型不是精确provider/id'
+    assert d['effort'] in ('off','minimal','low','medium','high','xhigh','max'), '必须显式固定effort'
+    if purpose=='role':
+        i=0
+        while i<len(args):
+            if args[i] in ('--approve','--no-approve','--offline'): i+=1; continue
+            assert args[i] in ('--provider','--model','--thinking'), '角色worker须仅包含明确provider/model/thinking与批准参数，拒绝未知/重复/提示词参数'
+            i+=2
+    else:
+        assert not any(x.split('=',1)[0] in ('--fast','--priority','--service-tier') for x in args), '不得开启fast/priority'
+    print(json.dumps(d))
+except AssertionError as e:
+    print('工人身份拒绝: '+str(e),file=sys.stderr); sys.exit(1)
+PY
+}
+
+# workers.sh是已获授权的项目配置；整体键匹配，不按斜杠拆模型ID。
+qwb_model_family() (
+  local root="$1" selected="$2" count=0 family=unknown
+  # shellcheck disable=SC2329 # workers.sh通过source调用声明入口。
+  qwb_worker() { :; }
+  # shellcheck disable=SC2329 # workers.sh通过source调用声明入口。
+  qwb_family() {
+    [[ "${1:-}" == "$selected" ]] || return 0
+    count=$((count+1)); family=unknown
+    [[ $# -eq 2 ]] || return 0
+    case "$2" in gpt|claude|gemini|glm|qwen|swe) family=$2 ;; esac
+    return 0
+  }
+  # shellcheck source=/dev/null
+  . "$root/qwbuddy/workers.sh" >/dev/null || exit 1
+  [[ "$count" -eq 1 ]] || family=unknown
+  printf '%s\n' "$family"
+)
+
 # 只读取已配置具名Pi工人，不替主控选择型号/effort；赋予门禁前冻结准确配置。
 qwb_gate_profile() (
   local root="$1" selected="$2" i offset count
@@ -169,20 +220,7 @@ qwb_gate_profile() (
   for i in "${!QWB_CONFIG_NAMES[@]}"; do
     [[ "${QWB_CONFIG_NAMES[i]}" == "$selected" ]] || continue
     offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
-    python3 -B - "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}" <<'PY'
-import json,sys
-mode,harness,*args=sys.argv[1:]
-try:
-    assert mode=='herdr' and harness=='pi', '门禁当前仅接已配置可见Pi工人'
-    d={}
-    for flag,key in [('--model','model'),('--provider','provider'),('--thinking','effort')]:
-        assert args.count(flag)==1, '型号/effort必须准确固定'
-        d[key]=args[args.index(flag)+1]; assert d[key] and not d[key].startswith('-')
-    assert not any(x.split('=',1)[0] in ('--fast','--priority','--service-tier') for x in args), '不得开启fast/priority'
-    print(json.dumps(d))
-except (AssertionError,IndexError) as e:
-    print('工人身份拒绝: '+str(e),file=sys.stderr); sys.exit(1)
-PY
+    qwb_pi_profile gate "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}"
     exit $?
   done
   echo '错误：主控授权工人未配置' >&2; exit 1

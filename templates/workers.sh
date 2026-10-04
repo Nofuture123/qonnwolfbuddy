@@ -15,5 +15,19 @@ qwb_worker omp herdr --auto-approve
 # 具名路由候选固定 harness × 模型 × effort；上面旧名字保留供显式派发兼容。
 qwb_worker codex-sol-high herdr codex -- --dangerously-bypass-approvals-and-sandbox --model gpt-6-sol -c model_reasoning_effort=high
 qwb_worker claude-fable-high herdr claude -- --dangerously-skip-permissions --model claude-fable-5 --effort high
-qwb_worker pi-glm-high herdr pi -- --approve --model zai-coding-cn/glm-5.3 --thinking high
+qwb_worker pi-glm-high herdr pi -- --approve --provider zai-coding-cn --model glm-5.3 --thinking high
+qwb_worker pi-sol-high herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high
 qwb_worker omp-gemini herdr omp -- --auto-approve --model google-antigravity/gemini-3.1-pro --thinking high
+
+# 独立审核的家族声明：第一项为完整渠道/模型ID（模型ID可含斜杠），不得按名字猜。
+# 允许gpt/claude/gemini/glm/qwen/swe；缺失、重复或非法声明仅在判家族时按unknown拒绝。
+qwb_family devin/swe-2-high swe
+qwb_family openai-codex/gpt-6-sol gpt
+qwb_family anthropic/claude-fable-5 claude
+qwb_family zai-coding-cn/glm-5.3 glm
+qwb_family magpie/codex/gpt-6.1-sol gpt
+qwb_family google-antigravity/gemini-3.1-pro gemini
+# 原账本固定表的三项，保留已知型号的声明。
+qwb_family openai-codex/gpt-6.1-sol gpt
+qwb_family openai-codex/gpt-6-astra gpt
+qwb_family anthropic/claude-opus-4-6 claude
