@@ -23,7 +23,7 @@ Q-Wolf Buddy 是仓库内的 AI 编程协作流程：Markdown 主账本记录需
 bash bin/qwb-init.sh /path/to/project
 ```
 
-安装器将模板和运行脚本复制到 `<project>/qwbuddy/`，添加角色与任务文件，并在条件满足时安装 Pi 扩展和 Claude Code hook。已有 `qwbuddy/config.sh` 和 `qwbuddy/workers.sh` 会保留；留意输出中是否有部分安装失败。每个工人在 `workers.sh` 中只有一条 `qwb_worker 名称 herdr 参数…` 或 `qwb_worker 名称 pane-run 可执行文件 参数…` 声明，Bash 参数逐项保留空格、空串和字面特殊字符。仍使用 `QWB_WORKER_LAUNCH` / `QWB_WORKER_ARGS` 的旧项目，须从本仓显式运行 `bash bin/qwb-init.sh --migrate-worker-config <项目根>`；迁移先备份 `config.sh`，无法保留旧 shell 语义的命令会被拒绝。已有 `config.sh` 无旧启动键但缺 `workers.sh` 时，普通 init 不执行用户配置，也不猜默认工人表；须按提示手动声明工人后才可派发。
+安装器将模板和运行脚本复制到 `<project>/qwbuddy/`，添加角色与任务文件，并在条件满足时安装 Pi 扩展和 Claude Code hook。已有 `qwbuddy/config.sh` 和 `qwbuddy/workers.sh` 会保留；留意输出中是否有部分安装失败。每个工人在 `workers.sh` 中只有一条 `qwb_worker 名称 herdr 宿主 -- 参数…` 或 `qwb_worker 名称 pane-run 可执行文件 参数…` 声明；旧式 `qwb_worker 名称 herdr 参数…` 仍以工人名作为宿主。Pi 固定档位须显式声明 `--provider`、`--model`、`--thinking`；模板已含 `pi-sol-high`，参数为 `--provider magpie --model codex/gpt-6.1-sol --thinking high`。独立审核的模型家族来自 `workers.sh` 的 `qwb_family 渠道/模型 家族` 声明，按完整 ID 匹配，模型 ID 可含斜杠。 Bash 参数逐项保留空格、空串和字面特殊字符。仍使用 `QWB_WORKER_LAUNCH` / `QWB_WORKER_ARGS` 的旧项目，须从本仓显式运行 `bash bin/qwb-init.sh --migrate-worker-config <项目根>`；迁移先备份 `config.sh`，无法保留旧 shell 语义的命令会被拒绝。已有 `config.sh` 无旧启动键但缺 `workers.sh` 时，普通 init 不执行用户配置，也不猜默认工人表；须按提示手动声明工人后才可派发。
 
 在目标项目的 `qwbuddy/config.sh` 声明项目检查。例如项目本来使用 pnpm：
 
@@ -32,7 +32,7 @@ QWB_GATE_FAST='pnpm lint'
 QWB_GATE_FULL='pnpm lint && pnpm test'
 ```
 
-在项目根目录启动主控，让它读完整份 `qwbuddy/QWBUDDY.md`。先确认宿主属于 Claude Code、Codex、Pi；未知宿主报告并停止，不取得主控锁。已确认的主控再取锁、点名未结项，按宿主选一种值守入口。按 `qwbuddy/TASK.md` 建立 `tasks/YYYY-MM-DD-topic.md`，写正常与失败路径验收场景，再由主控派工：
+在项目根目录启动主控，让它读完整份 `qwbuddy/QWBUDDY.md`。先确认宿主属于 Claude Code、Codex、Pi；未知宿主报告并停止，不取得主控锁。已确认的主控再取锁、点名未结项，按宿主选一种值守入口。按 `qwbuddy/TASK.md` 建立 `tasks/YYYY-MM-DD-topic.md`，写正常与失败路径验收场景。模板本身不包含启动授权；未迁旧票首次派发前，须主控在头部显式填写 `implementation-authorized:` 授权依据和正整数 `dispatch-budget:`，再由主控派工：
 
 ```bash
 bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
@@ -40,9 +40,11 @@ bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker codex
 
 主控须自己执行相关质量门并记账，不能以工人自述代替验收。锁、审核和 worktree 收尾规则见[主控说明](templates/QWBUDDY.md)。
 
+**测试须知：** 本仓离线测试在桩失效时对真 Herdr 失效关闭；临时文件只建在仓库内 `.qwb-tmp/`；仓库根路径不得超过 89 字节，否则使用 socket 的测试在启动时拒绝；新增测试文件须显式接入测试入口。
+
 ## 每个主控只选一种值守入口
 
-Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在 `agent_settled`（Pi 不再自动继续）时启动；进展以 `[qwb-wake]` follow-up 接续。exit 2 投递后也要等到 `agent_settled` 才重启值守。Codex 把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为真正前台 tool call 循环：退出 2 处理进展、124 再等待、0 只表示本轮值守结束；须核对输出、主控锁归属和账本，确认无未结项后才收工，孤儿提示或归属不明则按主控说明的锁恢复步骤处理。循环中断后须重新开局。未知宿主不支持，取锁或接入值守前须先确认宿主。
+Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在 `agent_settled`（Pi 不再自动继续）时启动；进展以 `[qwb-wake]` follow-up 接续。旧票 exit 2 投递后也要等到 `agent_settled` 才重启值守；已迁票的 `[qwb-handoff]` 摘要在投递 API 接受后立即续接唯一代码监督。Codex 把 `bash qwbuddy/bin/qwb-wake.sh --block --max-ms 180000` 作为真正前台 tool call 循环：退出 2 处理进展、124 再等待、0 只表示本轮值守结束；须核对输出、主控锁归属和账本，确认无未结项后才收工，孤儿提示或归属不明则按主控说明的锁恢复步骤处理。循环中断后须重新开局。未知宿主不支持，取锁或接入值守前须先确认宿主。
 
 用 `bash qwbuddy/bin/qwb-status.sh` 排查账本和值守。健康结果为「未知」时检查失败的查询、安装和主控锁，不启动另一种值守。单凭 status 不能证明 Codex 前台调用仍在等待，也不能用 Claude hook 回合间的结果断言 hook 未安装。主控退出后须重新启动。运行时保留可见 tab 命令供手工排障，不作为主控开局入口。
 
@@ -50,8 +52,8 @@ Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Sto
 
 ## 证据与路线图
 
-在源码提交 `1c500b38c014be9e55aa33fede2735ebaaf17d16` 上，主控记录的 macOS 观测是：`fast` 1.38 秒、`full` 88.35 秒、smoke 567 PASS、review-identity PASS、lint PASS。该环境的 Node 为 v26.8.1、ShellCheck 0.11.0、Python 为 3.14.6、Herdr 为 0.9.1。这些是该源码与机器的记录，不是速度保证、最低版本或本次文档提交的测试证明。本票执行者只跑 fast 与 lint。
+在本台 macOS 机器（Darwin 27.0.0）上，本票从 `ded7d88` 派生的隔离副本实测：`fast` 4.62 秒、smoke 267.73 秒，804 PASS / 0 FAIL，共 95 个节标题（含字母子节，编号末节为 88）。[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)记录了同机全门观测：第 1 波提交 `0b9faef` 为 572.27 秒，第 2 波提交 `703b44a` 为 625.04 秒、840 PASS / 0 FAIL。全门依次运行 smoke、review-identity、lint、`tests/collab-all.sh`（12 项）；本票执行者跑 fast 与 smoke，未跑全门。这些是所引源码与机器的记录，不是速度保证、最低版本或后续提交的测试证明。
 
-[E2E 运行记录](docs/E2E-RUNBOOK.md)对应旧 `e917008` 基线，且首次派发有人工介入；它不能证明当前源码已有无人值守的真机闭环。生产使用仍在收敛审核。当前源码的无人介入真机验证、首次信任提示处理、长时间值守与重启恢复验证、生产场景试用仍待完成。
+[E2E 运行记录](docs/E2E-RUNBOOK.md)对应旧 `e917008` 基线，且首次派发有人工介入；它不能证明当前源码已有无人值守的真机闭环。当前源码的真机验收结果见[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)。`tests/e2e-real.sh` 选择 `--controller pi` 时，主控默认模型为 `magpie/codex/gpt-6.1-sol`，推理档为 `high`。
 
-仓库结构：`bin/` 是安装器和运行脚本（上述基线共 11 个 shell 文件）；`templates/` 是主控说明、任务与角色模板、配置和 Pi 扩展；`tests/` 是 smoke 与契约检查；`docs/` 是设计、审核和历史 E2E 记录；`tasks/` 是主账本。
+仓库结构：`bin/` 是安装器和运行脚本（当前源码共 16 个 shell 文件）；`templates/` 是主控说明、任务与角色模板、配置和 Pi 扩展；`tests/` 是 smoke 与契约检查；`docs/` 是设计、审核和历史 E2E 记录；`tasks/` 是主账本。
