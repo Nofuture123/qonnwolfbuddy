@@ -198,10 +198,12 @@ def activity(pane,directory=None):
     return dict(activity='busy' if info.get('agent_status') in ('working','blocked') else 'unknown',proof='native-pid; CLI idle not verified',pid=n['pid'],pid_start=start)
 
 def ended(pid,start):
-    require(isinstance(pid,int) and pid>0 and isinstance(start,str) and start,'old launch PID/start unknown')
-    v=subprocess.run(['ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True,timeout=2)
-    require((v.returncode==1 and not v.stdout.strip() and not v.stderr.strip()) or
-            (v.returncode==0 and v.stdout.strip() and v.stdout.strip()!=start),'old native PID still alive or death unknown')
+    require(type(pid) is int and pid>0 and isinstance(start,str) and start,'old launch PID/start unknown')
+    try: v=subprocess.run(['/bin/ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True,timeout=2)
+    except subprocess.TimeoutExpired: raise ValueError('old native PID still alive or death unknown')
+    require(not v.stderr.strip() and ((v.returncode==1 and not v.stdout.strip()) or
+            (v.returncode==0 and v.stdout.strip() and v.stdout.strip()!=start)),
+            'old native PID still alive or death unknown')
 
 def snapshot():
     s=herdr('api','snapshot').get('snapshot'); require(isinstance(s,dict),'snapshot missing')

@@ -9,6 +9,121 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# The focused mode also runs in full: real PID/start evidence through both public close paths.
+python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+source=(ROOT/'tests/worktree-space.py').read_text()
+prefix=source.split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
+exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
+BASE='ded7d889ff3fef9c7b9fe142612177c4bedff011'
+# Faults wrap only this test interpreter's subprocess.run, never the system ps file.
+fault_runner=r'''
+import os, subprocess, sys
+from pathlib import Path
+from unittest.mock import patch
+script, fault, marker, *args=sys.argv[1:]
+text=Path(script).read_text()
+if script.endswith('qwb-herdr.sh'):
+    code=text.split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+    os.environ['QWB_HERDR_BINDIR']=str(Path(script).parent)
+else:
+    code=text.split('\nwriters_stopped() {',1)[1].split("<<'PY'\n",1)[1].split('\nPY',1)[0]
+sys.argv=[script,*args]; real_run=subprocess.run
+calls=[]
+def run(argv,**kw):
+    if argv[0] not in ('ps','/bin/ps'): return real_run(argv,**kw)
+    assert argv[0]=='/bin/ps' and kw['timeout']==2,argv
+    calls.append(argv); Path(marker).write_text(repr(calls))
+    if fault=='timeout': raise subprocess.TimeoutExpired(argv,2)
+    rc,out,err={
+        'stderr-dead':(1,'','probe failed'),
+        'stderr-reused':(0,'different start','probe failed'),
+        'status-3':(3,'',''),
+        'empty-live':(0,'',''),
+        'output-dead':(1,'unexpected output',''),
+    }[fault]
+    return subprocess.CompletedProcess(argv,rc,out,err)
+with patch('subprocess.run',side_effect=run): exec(compile(code,script,'exec'),{'__name__':'__main__'})
+'''
+for mode in ['dead','live','reused','invalid','missing','fake-ps','boolean']:
+    with TemporaryDirectory(prefix='s-') as d:
+        os.environ['TMPDIR']=d
+        b=Path(d); repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
+        assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+        child=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                               cwd=b,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        try:
+            assert child.stdout.readline().strip()=='ready'
+            stamp=call('/bin/ps','-p',str(child.pid),'-o','lstart=',env=env)
+            assert stamp.returncode==0 and stamp.stdout.strip() and not stamp.stderr
+            evidence=dict(pid=child.pid,pid_start=stamp.stdout.strip())
+            if mode=='dead': child.communicate('exit\n',timeout=10); assert child.returncode==0
+            if mode=='reused': evidence['pid_start']='recorded older incarnation'
+            if mode=='invalid': evidence['pid']=-1
+            if mode=='missing': evidence.pop('pid_start')
+            if mode=='boolean': evidence['pid']=True
+            if mode=='fake-ps':
+                fake=b/'stub/ps'; fake.write_text('#!/bin/sh\nexit 1\n'); fake.chmod(0o755)
+            text=f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'
+            text+=f'dispatch: now op_id=launch worker=pi pane=wTask:p1 dir={wt}\n'
+            text+='working: worker-activity op=launch pane=wTask:p1 evidence='+json.dumps(evidence)+'\n'
+            ticket.write_text(text); before=ticket.read_bytes()
+            refs=call('git','-C',str(repo),'show-ref',env=env).stdout
+            baseline=b/'baseline-bin'; baseline.mkdir()
+            (baseline/'qwb-herdr.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show',BASE+':bin/qwb-herdr.sh']))
+            shutil.copy(ROOT/'bin/qwb-lib.sh',baseline/'qwb-lib.sh')
+            selected=ROOT/'bin/qwb-herdr.sh'
+            if os.environ.get('QWB_DEATH_HERDR_REV'):
+                selected=baseline/'qwb-herdr.sh'
+            args=['close','--project',str(repo),'--task',str(ticket),'--space','wTask']
+            def close(script):
+                state.write_text(str(wt)); log.write_text('')
+                return call('bash',str(script),*args,env=env)
+            old=close(baseline/'qwb-herdr.sh') if mode in ('dead','fake-ps') else None
+            got=close(selected); expected=mode in ('dead','reused')
+            print('DEATH-PROOF',mode,'herdr_rc=',got.returncode,'stdout=',repr(got.stdout),'stderr=',repr(got.stderr),flush=True)
+            if mode=='dead':
+                assert (got.returncode,got.stdout,got.stderr)==(old.returncode,old.stdout,old.stderr),'normal close changed bytes'
+            if mode=='fake-ps':
+                assert old.returncode==0
+                print('BASELINE fake-ps herdr_rc=',old.returncode,'stdout=',repr(old.stdout),'stderr=',repr(old.stderr),flush=True)
+            assert ticket.read_bytes()==before and wt.is_dir() and call('git','-C',str(repo),'show-ref',env=env).stdout==refs
+            preserved=state.exists() and not any(json.loads(x)==['workspace','close','wTask'] or isinstance(json.loads(x),dict) for x in log.read_text().splitlines())
+            # Faults reach the same full close body; no system executable is substituted.
+            if mode=='live':
+                marker=b/'fault-calls'
+                for fault in ['stderr-dead','stderr-reused','status-3','timeout','empty-live','output-dead']:
+                    state.write_text(str(wt)); log.write_text(''); marker.unlink(missing_ok=True)
+                    bad=call(sys.executable,'-B','-c',fault_runner,str(ROOT/'bin/qwb-herdr.sh'),fault,str(marker),*args,env=env)
+                    assert marker.exists() and bad.returncode==1 and not bad.stdout,(fault,bad.stdout,bad.stderr)
+                    assert bad.stderr=='Herdr refusal/unknown: old native PID still alive or death unknown\n',bad.stderr
+                    assert state.exists() and ticket.read_bytes()==before and wt.is_dir()
+                    assert not any(json.loads(x)==['workspace','close','wTask'] or isinstance(json.loads(x),dict) for x in log.read_text().splitlines())
+                    marker.unlink()
+                    other=call(sys.executable,'-B','-c',fault_runner,str(ROOT/'bin/qwb-worktree.sh'),fault,str(marker),str(ticket),str(wt),'',env=env)
+                    assert marker.exists() and other.returncode==1,(fault,other.stdout,other.stderr)
+                    print('PASS death-proof fault '+fault+': both reject; herdr stderr='+repr(bad.stderr),flush=True)
+            state.write_text(str(wt)); log.write_text('')
+            finished=call('bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--merged','--project',str(repo),env=env)
+            print('DEATH-PROOF',mode,'worktree_rc=',finished.returncode,'stdout=',repr(finished.stdout),'stderr=',repr(finished.stderr),flush=True)
+            assert (got.returncode==0)==(finished.returncode==0)==expected,(mode,got.stdout,got.stderr,finished.stdout,finished.stderr)
+            if expected:
+                assert not wt.exists() and not state.exists()
+            else:
+                assert preserved and wt.is_dir() and state.exists() and ticket.read_bytes()==before
+                if mode in ('live','fake-ps'): assert got.stderr=='Herdr refusal/unknown: old native PID still alive or death unknown\n',got.stderr
+                assert call('git','-C',str(repo),'show-ref',env=env).stdout==refs
+                assert not any(json.loads(x)==['workspace','close','wTask'] for x in log.read_text().splitlines())
+            if child.poll() is None: assert call('/bin/ps','-p',str(child.pid),'-o','lstart=',env=env).stdout.strip()==stamp.stdout.strip()
+            print('PASS death-proof '+mode+': herdr/worktree agree '+('allow' if expected else 'refuse'),flush=True)
+        finally:
+            if child.poll() is None: child.terminate(); child.wait(timeout=10)
+            child.stdin.close(); child.stdout.close()
+PY
+if [[ "${1:-}" == death-proof ]]; then exit 0; fi
 if [[ "${1:-}" != not-sent ]]; then
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory, socket_path
@@ -66,10 +181,11 @@ else: print(json.dumps({'result':{'type':'ok'}}))
 PY
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory, socket_path
+from contextlib import ExitStack
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with TemporaryDirectory(prefix='s-') as tmp:
+with TemporaryDirectory(prefix='s-') as tmp, ExitStack() as processes:
     os.environ["TMPDIR"] = tmp
     b=Path(tmp); root=b/'repo'; root.mkdir(); (root/'tasks').mkdir()
     def run(*args,env=None):
@@ -132,7 +248,9 @@ else: sys.exit(9)
                 else: result={'type':'ok'}
                 state.write_text(json.dumps(s)); c.sendall((json.dumps({'id':req['id'],'result':result})+'\n').encode())
     thread=threading.Thread(target=serve,daemon=True); thread.start()
-    env={**os.environ,'PATH':str(stub)+':'+os.environ['PATH'],'STATE':str(state),'SOCKET':sockpath,'CALLS':str(calls),'NATIVE_PID':str(os.getpid()),'WT':str(wt)}
+    native=subprocess.Popen([__import__('sys').executable,'-c','import sys; sys.stdin.read()'],stdin=subprocess.PIPE)
+    processes.callback(lambda: (native.terminate() if native.poll() is None else None, native.wait(timeout=10), native.stdin.close()))
+    env={**os.environ,'PATH':str(stub)+':'+os.environ['PATH'],'STATE':str(state),'SOCKET':sockpath,'CALLS':str(calls),'NATIVE_PID':str(native.pid),'WT':str(wt)}
     helper=['bash',str(ROOT/'bin/qwb-herdr.sh')]
     base=helper+['move','--project',str(root),'--task',str(task),'--space','wTask','--index','1']
     moved=run(*base,env=env); assert moved.returncode==0,moved.stderr
@@ -320,6 +438,7 @@ PY
 fi
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory
+from contextlib import ExitStack
 import json, os, subprocess, sys, tempfile
 from pathlib import Path
 ROOT=Path(sys.argv[1]).resolve()
@@ -329,16 +448,19 @@ prefix=source.split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
 prefix=prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()')
 exec(prefix)
 for mode in ['live','missing','dead','extra-pane','no-attempt']:
-    with TemporaryDirectory(prefix='s-') as d:
+    with TemporaryDirectory(prefix='s-') as d, ExitStack() as processes:
         os.environ["TMPDIR"] = d
         repo,ticket,state,log,env=project(Path(d)); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
-        state.write_text(str(wt)); log.write_text(''); pid=os.getpid()
-        start=call('ps','-p',str(pid),'-o','lstart=',env=env).stdout.strip()
+        state.write_text(str(wt)); log.write_text('')
+        live_child=subprocess.Popen([sys.executable,'-c','import sys; sys.stdin.read()'],stdin=subprocess.PIPE)
+        processes.callback(lambda: (live_child.terminate() if live_child.poll() is None else None, live_child.wait(timeout=10), live_child.stdin.close()))
+        pid=live_child.pid
+        start=call('/bin/ps','-p',str(pid),'-o','lstart=',env=env).stdout.strip()
         evidence=dict(pid=pid,pid_start=start)
         if mode in ('dead','extra-pane'):
             child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
-            evidence=dict(pid=child.pid,pid_start=call('ps','-p',str(child.pid),'-o','lstart=',env=env).stdout.strip())
+            evidence=dict(pid=child.pid,pid_start=call('/bin/ps','-p',str(child.pid),'-o','lstart=',env=env).stdout.strip())
             child.terminate(); child.wait()
         if mode=='missing': evidence=dict(activity='unknown')
         pane='wTask:p2' if mode=='extra-pane' else 'wTask:p1'
