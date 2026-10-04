@@ -291,6 +291,10 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 代码量：`bin/` 合计 7312 → 7602 行（`qwb-lib.sh` 419 → 616、`qwb-worktree.sh` 652 → 764、`qwb-herdr.sh` 256 → 358、`qwb-ledger.sh` 1612 → 1660；`qwb-run.sh` 877 → 821）。这一轮的产出是正确性、可验证性与规则单点定义，不是代码变短。
 
+### 已装项目升级（2026-10-04，Rocky 指示，安装源 main @ f88eb7a）
+
+`qonnwolf-sites`（原 9-27 版）、`qonnwolfmcp`、`video_analysis/class-video-analysis`（原 9-24 版）三个项目用 `bash bin/qwb-init.sh <项目>` 升级。先在本仓库临时目录里对三份安装文件的拷贝试装，确认新版能读旧式 `qwb_worker 名字 herdr 参数…` 声明后再动真项目。结果：三个项目的 15 个运行脚本与母本逐字节相同（安装器自身不装进项目）；`config.sh`、`brief-include.md`、`dispatch-rules.json` 未动；`workers.sh` 只给 claude 行加了 `--add-dir 项目根`；Pi 扩展更新，旧文件留为 `qwb-watch.ts.bak`；`qwb-status.sh` 三处 rc=0；`qwb-lint.sh` 在 sites 与 class-video-analysis 通过，在 qonnwolfmcp 有 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动），升级前的旧版 lint 同样报这一条。改动均未提交，留给各项目自己审。新增的 `pi-sol-high` 等具名工人与 `qwb_family` 声明不会自动出现在已有的 `workers.sh` 里。升级后没有在这三个项目里实际派过票。
+
 ### 未做与遗留
 
 - **F7、F8** 已迁票读缓存：没有项目在用已迁票，属提前优化，未做。
