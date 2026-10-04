@@ -133,7 +133,7 @@ if [[ "$GATE_CASE" == term ]]; then
   . "$PWD/tests/process-fixture.sh"
   qwb_test_scope "$@"
 fi
-printf '%s\\n' '{index}:stdout' 
+printf '%s\\n' '{index}:stdout'
 printf '%s\\n' '{index}:stderr' >&2
 touch "$GATE_OBSERVER/{index}.ready"
 while [[ ! -f "$GATE_OBSERVER/0.ready" || ! -f "$GATE_OBSERVER/1.ready" || ! -f "$GATE_OBSERVER/2.ready" || ! -f "$GATE_OBSERVER/3.ready" || "$GATE_CASE" == term ]]; do sleep .02; done
