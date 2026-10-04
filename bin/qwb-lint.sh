@@ -83,22 +83,21 @@ fi
 echo "== 2. 账本 state 合法 =="
 bad_states=""
 bad_utf8=""
-for f in "$PROJECT_ROOT"/tasks/*.md; do
-  [[ -e "$f" ]] || continue
-  if ! qwb_ledger_utf8_ok "$f"; then
-    bad_utf8="${bad_utf8} $(basename "$f")"
+taskfiles=( "$PROJECT_ROOT"/tasks/*.md )
+while IFS=$'\t' read -r f bytes_ok _ has_state st; do
+  if [[ "$bytes_ok" -eq 0 ]]; then
+    bad_utf8="${bad_utf8} ${f##*/}"
   fi
-  grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
-  st="$(qwb_task_state "$f")"
+  [[ "$has_state" -eq 1 ]] || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
   if [[ -z "$st" ]]; then
-    bad_states="${bad_states} $(basename "$f")=<空值>"   # 有 state: 字段但值为空 → FAIL
+    bad_states="${bad_states} ${f##*/}=<空值>"   # 有 state: 字段但值为空 → FAIL
     continue
   fi
   case "$st" in
     running|blocked|needs-decision|done|verified) ;;
-    *) bad_states="${bad_states} $(basename "$f")=${st}" ;;
+    *) bad_states="${bad_states} ${f##*/}=${st}" ;;
   esac
-done
+done < <(qwb_ledger_scan --all "${taskfiles[@]+"${taskfiles[@]}"}")
 if [[ -n "$bad_utf8" ]]; then
   fail "账本含非法 UTF-8 字节:${bad_utf8}；须主控查看原始文件，不能把解析失败当已结项"
 else
@@ -240,9 +239,8 @@ rid_val() { # $1=身份行原文 $2=键名 → 取「键=非空白值」（行�
   printf '%s' "$1" | sed -n "s/.*[[:space:]]${2}=\([^[:space:]]*\).*/\1/p" | head -1
 }
 rid_bad=""; rid_n=0
-for f in "$PROJECT_ROOT"/tasks/*.md; do
+while IFS= read -r f; do
   grep -q '^state:' "$f" || continue
-  grep -qE '^review-required:[[:space:]]*yes[[:space:]]*$' "$f" || continue
   rid_n=$((rid_n+1)); n="$(basename "$f")"; b=""
   # 跳过围栏/模板示例：占位符 <...> 开头的身份行不算真实记录
   il="$(grep -E '^review-impl:' "$f" | grep -v '<' | head -1)"
@@ -273,7 +271,7 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
     esac
   done
   [[ -n "$b" ]] && rid_bad="${rid_bad} ${n}(${b# })"
-done
+done < <(if [[ ${#taskfiles[@]} -gt 0 ]]; then grep -lE '^review-required:[[:space:]]*yes[[:space:]]*$' "${taskfiles[@]}"; fi)
 if [[ "$rid_n" -eq 0 ]]; then
   pass "无 review-required 票（普通票不启用审核身份检查）"
 elif [[ -z "$rid_bad" ]]; then
@@ -283,19 +281,17 @@ else
 fi
 
 echo "== 9. 已迁票协作区协议合法 =="
-for f in "$PROJECT_ROOT"/tasks/*.md; do
-  if grep -q '<!-- qwb-collab-' "$f"; then
-    qwb_ledger "$PROJECT_ROOT" "$f" read >/dev/null \
-      || fail "协作区非法：$(basename "$f")（停止写入并对账，不清claim回旧协议）"
-  fi
-done
+while IFS= read -r f; do
+  qwb_ledger "$PROJECT_ROOT" "$f" read >/dev/null \
+    || fail "协作区非法：$(basename "$f")（停止写入并对账，不清claim回旧协议）"
+done < <(if [[ ${#taskfiles[@]} -gt 0 ]]; then grep -l '<!-- qwb-collab-' "${taskfiles[@]}"; fi)
 
 echo "== 10. 任务书正文无占位状态行（只警告，不 FAIL）=="
 # 列首 working/done/blocked/needs-decision: 行里带 <…> 占位符 = 模板示例被当成真实状态行抄进了票：
 # 会被值守指纹与疑点门当真。缩进行不算列首（模板示例必须缩进，见 TASK.md §4）。
 # 只警告不 FAIL：本仓历史票已有这种行，不补历史票。
 placeholder_warn=""
-for f in "$PROJECT_ROOT"/tasks/*.md; do
+while IFS= read -r f; do
   grep -q '^state:' "$f" || continue
   while IFS= read -r line; do
     placeholder_warn="${placeholder_warn} ${f##*/}（占位状态行: ${line}）"
@@ -307,7 +303,7 @@ for f in "$PROJECT_ROOT"/tasks/*.md; do
     $text = substr($text, 0, 80) . "\x{2026}" if length($text) > 80;
     print encode("UTF-8", $text), "\n";
   ' || true)
-done
+done < <(if [[ ${#taskfiles[@]} -gt 0 ]]; then grep -lE '^(working|done|blocked|needs-decision):.*<[^>]*>' "${taskfiles[@]}"; fi)
 if [[ -z "$placeholder_warn" ]]; then
   pass "任务书正文无列首占位状态行"
 else

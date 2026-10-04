@@ -161,8 +161,10 @@ qwb_ledger_utf8_ok() {
 # 一次 perl 扫描；按参数顺序输出「路径<TAB>utf8ok<TAB>collab<TAB>state」。
 # state 已删全部空白且可能为空；放最后一列，避免 TAB IFS 合并空字段导致错位。
 # 无列首 state: 行不输出；缺失路径跳过，读取错误保持旧 grep 的诊断。
+# --all 显式输出无 state 的文档，并在 state 前加 has_state 列供 lint 检查 UTF-8。
 qwb_ledger_scan() {
   perl -MEncode=decode,FB_CROAK -e '
+    my $all = @ARGV && $ARGV[0] eq "--all" ? shift @ARGV : "";
     my $marker = "<!-- qwb-collab-";
     for my $file (@ARGV) {
       if ($file =~ /[\t\n]/) {
@@ -185,15 +187,16 @@ qwb_ledger_scan() {
       }
       close $fh;
       $data = "" unless defined $data;
-      next unless $data =~ /^state:([^\n]*)/m;
-      my $state = $1;
+      my $has_state = $data =~ /^state:([^\n]*)/m ? 1 : 0;
+      my $state = $has_state ? $1 : "";
+      next unless $has_state || $all;
       $state =~ s/[[:space:]]//g;
       # FB_CROAK 会消耗源标量；所有原始字节匹配须先于 decode。
       my $collab = index($data, $marker) >= 0 ? 1 : 0;
       my $ok = eval { decode("UTF-8", $data, FB_CROAK); 1 } ? 1 : 0;
-      print "$file\t$ok\t$collab\t$state\n";
+      print "$file\t$ok\t$collab\t", ($all ? "$has_state\t" : ""), "$state\n";
     }
-  ' "$@"
+  ' -- "$@"
 }
 
 # 对外摘要只输出合法 UTF-8；先替换坏字节，再按 Unicode 字符截断。
