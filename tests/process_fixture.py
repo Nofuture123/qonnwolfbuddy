@@ -106,20 +106,35 @@ def socket_path():
     base = root / '.qwb-tmp'
     check_socket_path(base / '00' / 's')
     record = Path(os.environ['QWB_TEST_SOCKET_DIRS'])
-    while True:
-        directory = base / secrets.token_hex(1)
-        try:
-            directory.mkdir(mode=0o700)
-            break
-        except FileExistsError:
-            continue
+    parents = json.loads(os.environ.get('QWB_TEST_SCOPE_ANCESTORS', '[]'))
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    directory = None
     try:
-        with record.open('a') as output:
-            output.write(str(directory) + '\n')
+        while True:
+            directory = base / secrets.token_hex(1)
+            try:
+                directory.mkdir(mode=0o700)
+                break
+            except FileExistsError:
+                continue
+        owner = secrets.token_hex(16)
+        (directory / 'scope-owner').write_text(owner)
+        records = {str(record)}
+        for groups, parent_owner in parents:
+            marker = Path(groups).with_name('scope-owner')
+            if not marker.exists() or marker.read_text() != parent_owner:
+                raise RuntimeError('socket parent scope has retired or changed owner')
+            records.add(str(Path(groups).with_name('socket-directories')))
+        for target in records:
+            with open(target, 'a') as output:
+                output.write(str(directory) + '\t' + owner + '\n')
+        return str(directory / 's')
     except BaseException:
-        directory.rmdir()
+        if directory is not None and directory.exists():
+            shutil.rmtree(directory)
         raise
-    return str(directory / 's')
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 def main():
