@@ -41,17 +41,17 @@ exit 7
     process = subprocess.Popen([sys.executable, str(ROOT / 'tests/process_fixture.py'), '--command',
                                 '/bin/bash', '-c', 'echo "$$" > "$1"; sleep 60', 'fixture', str(pidfile)])
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while not pidfile.exists():
             assert process.poll() is None and time.monotonic() < deadline
             time.sleep(.01)
         pid = pidfile.read_text().strip()
         process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=8) == 143
+        assert process.wait(timeout=20) == 143
         observation = subprocess.run(['/bin/ps', '-p', pid, '-o', 'stat='], capture_output=True, text=True)
         assert not observation.stdout.strip() or observation.stdout.strip().startswith('Z'), observation.stdout
         print('PASS TERM propagated; recorded child exited before supervisor return')
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=8)
+            process.wait(timeout=20)

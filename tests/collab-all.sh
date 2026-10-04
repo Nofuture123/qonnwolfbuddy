@@ -7,7 +7,7 @@
 # 末行汇总，任一失败退出码 1。一个失败不影响其他测试的运行与汇报。
 #
 # 清单内测试使用各自的 mktemp/tempfile 项目与 AF_UNIX 路径，环境变量仅影响该进程。
-# 没有发现共享固定文件或端口；并发安全仍须以任务书要求的三连跑验收。
+# 入口清理回归在自己的源码导出目录内发 TERM、检查残留，不观察其他并发测试的目录。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,26 +15,94 @@ cd "$ROOT" || exit 1
 # PATH 替身失效时也不能连现场 Herdr；只为本跑批建仓内日志，不改子测试 TMPDIR。
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 TMPBASE="$ROOT/.qwb-tmp"
-mkdir -p "$TMPBASE" || exit 1
 
-# 默认清单：显式写死，不用 glob——新增测试文件必须有人有意接入才进全门。
-# collab-land.sh 已补齐关闭 Space 的快照/RPC 假件，覆盖本地 land 与收尾恢复。
+# 默认 15 项：每项显式指定解释器和脚本，不用 glob；新增文件须有入口或具名豁免。
+# collab-land.sh 覆盖本地 land 与收尾恢复，三个 Python 回归覆盖进程夹具、TERM 清理与 socket 路径。
 DEFAULT_TESTS=(
-  tests/collab-ci-diagnostics.sh
-  tests/collab-gate.sh
-  tests/collab-handoff.sh
-  tests/collab-herdr.sh
-  tests/collab-land.sh
-  tests/collab-ledger.sh
-  tests/collab-planning.sh
-  tests/collab-posture.sh
-  tests/collab-roles.sh
-  tests/collab-test-policy.sh
-  tests/lint-scenario-stream.sh
-  tests/path-canonicalization.sh
+  'bash tests/collab-ci-diagnostics.sh'
+  'bash tests/collab-gate.sh'
+  'bash tests/collab-handoff.sh'
+  'bash tests/collab-herdr.sh'
+  'bash tests/collab-land.sh'
+  'bash tests/collab-ledger.sh'
+  'bash tests/collab-planning.sh'
+  'bash tests/collab-posture.sh'
+  'bash tests/collab-roles.sh'
+  'bash tests/collab-test-policy.sh'
+  'bash tests/lint-scenario-stream.sh'
+  'bash tests/path-canonicalization.sh'
+  'python3 tests/process-fixture-check.py'
+  'python3 tests/process-entry-cleanup.py'
+  'python3 tests/socket-path-regression.py'
 )
 
-if [[ $# -gt 0 ]]; then TESTS=("$@"); else TESTS=("${DEFAULT_TESTS[@]}"); fi
+# 只读入口自检：在建立跑批日志或启动任何测试之前执行，指定脚本也不能绕过。
+python3 -B - "${DEFAULT_TESTS[@]}" <<'PY' || exit $?
+from collections import Counter
+from pathlib import Path
+import re
+import sys
+
+files = {p.as_posix(): p.read_text() for p in sorted(Path('tests').rglob('*'))
+         if p.is_file() and p.suffix in {'.sh', '.py', '.mjs'}}
+# 仅两个付费手工入口豁免；夹具已有文件名引用，不需要按目录或模式放行。
+exempt = {
+    'tests/e2e-real.sh': '连接真实 Herdr、启动付费模型的手工验收入口',
+    'tests/e2e-real.py': '付费手工验收实现，仅由手工入口调用',
+}
+covered = {entry.split(' ', 1)[1]: '默认清单' for entry in sys.argv[1:]}
+covered['tests/smoke.sh'] = 'smoke 入口'
+covered.update({name: '豁免：' + reason for name, reason in exempt.items() if name in files})
+pending = [name for name in covered if name not in exempt]
+names = Counter(Path(name).name for name in files)
+patterns = {name: re.compile(r'(?<![\w.-])' + re.escape(
+                name if names[Path(name).name] > 1 else Path(name).name) + r'(?![\w.-])')
+            for name in files}
+
+
+def admit(content, reason):
+    for name, pattern in patterns.items():
+        if name not in covered and pattern.search(content):
+            covered[name] = reason
+            pending.append(name)
+
+
+config = '\n'.join(line for line in Path('qwb.config.sh').read_text().splitlines()
+                   if re.match(r'^QWB_GATE_(FAST|FULL)=', line))
+admit(config, 'qwb.config.sh 门命令引用')
+# 只从已有入口向下追踪；互相引用但无人调用的文件仍会失败。
+for source in pending:
+    if source not in files:
+        print('错误：测试入口文件不存在：' + source, file=sys.stderr)
+        sys.exit(1)
+    # 跑批入口的清单已通过 argv 提供，不把自检或豁免声明当作测试调用。
+    if source != 'tests/collab-all.sh':
+        admit(files[source], '被 ' + source + ' 引用')
+orphans = sorted(files.keys() - covered.keys())
+if orphans:
+    print('错误：以下测试文件没有入口：', file=sys.stderr)
+    for name in orphans:
+        print('  ' + name, file=sys.stderr)
+    print('请加入 collab-all.sh 默认清单、由 smoke.sh/qwb.config.sh 门命令或已有入口测试按文件名引用，'
+          '或加入显式豁免名单并逐项说明理由。', file=sys.stderr)
+    sys.exit(1)
+print(f'测试入口自检 PASS（{len(files)} 个文件）')
+PY
+
+if [[ $# -gt 0 ]]; then
+  TESTS=()
+  for script in "$@"; do
+    case "$script" in
+      *.py) TESTS+=("python3 $script") ;;
+      *.mjs) TESTS+=("node $script") ;;
+      *) TESTS+=("bash $script") ;;
+    esac
+  done
+else
+  TESTS=("${DEFAULT_TESTS[@]}")
+fi
+
+mkdir -p "$TMPBASE" || exit 1
 
 TMPD="$(mktemp -d "$TMPBASE/collab-all.XXXXXXXX")" || exit 1
 PIDS=()
@@ -65,7 +133,8 @@ total=${#TESTS[@]}
 i=0
 while [[ $i -lt $total ]]; do
   ( s=$(date +%s)
-    bash "${TESTS[$i]}" >"$TMPD/$i.log" 2>&1
+    read -r interpreter script <<< "${TESTS[$i]}"
+    "$interpreter" "$script" >"$TMPD/$i.log" 2>&1
     rc=$?
     printf '%s %s\n' "$rc" "$(( $(date +%s) - s ))" >"$TMPD/$i.st" ) &
   PIDS+=($!)
@@ -83,9 +152,9 @@ for ((i=0; i<total; i++)); do
   rc=1; secs=0
   if [[ -f "$TMPD/$i.st" ]]; then read -r rc secs <"$TMPD/$i.st"; fi
   if [[ "$rc" -eq 0 ]]; then
-    printf 'PASS  %s（%ss）\n' "${TESTS[$i]}" "$secs"
+    printf 'PASS  %s（%ss）\n' "${TESTS[$i]#* }" "$secs"
   else
-    printf 'FAIL  %s（rc=%s，%ss）\n' "${TESTS[$i]}" "$rc" "$secs"
+    printf 'FAIL  %s（rc=%s，%ss）\n' "${TESTS[$i]#* }" "$rc" "$secs"
     fails=$((fails + 1))
     tail -n 40 "$TMPD/$i.log"
   fi

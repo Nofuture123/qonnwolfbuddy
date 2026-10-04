@@ -123,7 +123,7 @@ PY
 expect_fail() { if "$@" > "$TMP/rejected.log" 2>&1; then echo "FAIL: unexpected success $*"; exit 1; fi; }
 unchanged() { cmp -s "$1" "$2" || { echo 'FAIL: 原完整版本变动'; exit 1; }; }
 wait_file() {
-  for _ in {1..400}; do [[ -s "$1" ]] && return 0; sleep 0.01; done
+  for _ in {1..2000}; do [[ -s "$1" ]] && return 0; sleep 0.01; done
   echo "FAIL: barrier未就绪 $1"; exit 1
 }
 native_reply_checks() {

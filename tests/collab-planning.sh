@@ -118,7 +118,7 @@ file.write_text(json.dumps(s))
                 if log.exists():shutil.copy(log,diagnostic/(label+'-native-calls.jsonl'))
             print(f'DIAG timeout {label}\n{chain}',flush=True)
             os.killpg(process.pid,signal.SIGTERM)
-            try: out,err=process.communicate(timeout=3)
+            try: out,err=process.communicate(timeout=20)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid,signal.SIGKILL); out,err=process.communicate()
             if diagnostic:

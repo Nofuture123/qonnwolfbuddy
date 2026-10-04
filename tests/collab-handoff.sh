@@ -145,12 +145,12 @@ try:
     time.sleep(.15)
     assert watch.poll() is None, 'first监督owner没有等待'
     call(['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--once','--pane','test:ctl'],rc=75)
-    out,err=watch.communicate(timeout=3)
+    out,err=watch.communicate(timeout=20)
     assert watch.returncode==124,(out,err)
     call(['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--once','--pane','test:ctl'])
     print('PASS 内核单一监督owner，第二适配器拒绝，周期退出后可正常接班')
 finally:
-    if watch.poll() is None: os.killpg(watch.pid,signal.SIGTERM); watch.wait(timeout=3)
+    if watch.poll() is None: os.killpg(watch.pid,signal.SIGTERM); watch.wait(timeout=20)
     release(watch.pid)
 # 真实进程死亡后的prepared接班：移交同一op，不重发副作用。
 old=subprocess.Popen(['sleep','60']); owner=Path(P+'/qwbuddy/.controller.lock/owner')

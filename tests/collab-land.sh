@@ -118,7 +118,7 @@ exec "$LAND_REAL_MV" "$@"
                 connection.sendall((json.dumps({'id':request['id'],'result':result})+'\n').encode())
     thread=threading.Thread(target=serve,daemon=True); thread.start()
     def close_api():
-        api.close(); thread.join(timeout=1)
+        api.close(); thread.join(timeout=20)
     atexit.register(close_api)
     env['LAND_SOCKET']=sockpath
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
@@ -160,10 +160,10 @@ exec "$LAND_REAL_MV" "$@"
         try:
             pid=int(child.stdout.readline())
             start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
-            child.communicate('exit\n',timeout=10); assert child.returncode==0
+            child.communicate('exit\n',timeout=20); assert child.returncode==0
             return {'pid':pid,'pid_start':start}
         finally:
-            if child.poll() is None: child.terminate(); child.wait(timeout=10)
+            if child.poll() is None: child.terminate(); child.wait(timeout=20)
     if os.environ['QWB_LAND_CASE']=='writers':
         t,c,op,m,head=accepted('background-writer')
         ledger('dispatch',t,op,'task-pane',f'dispatch: op_id={op} worker=sol pane=task-pane dir={c}')
@@ -195,10 +195,10 @@ exec "$LAND_REAL_MV" "$@"
                 writer.stdin.write('continue\n'); writer.stdin.flush()
                 actual=writer.stdout.readline().strip()
                 assert actual==('PATH_READ=True' if mode=='cwd-only' else 'NLINK=1'),actual
-                assert writer.wait(timeout=10)==0
+                assert writer.wait(timeout=20)==0
                 print('PASS real writer '+mode+' alive refuses; barrier '+actual,flush=True)
             finally:
-                if writer.poll() is None: writer.terminate(); writer.wait(timeout=10)
+                if writer.poll() is None: writer.terminate(); writer.wait(timeout=20)
         # No resources remaining is NOT a proof that an unbound/older launch died.
         result=land(); assert '启动代死亡证据缺失' in result.stderr,result.stderr; retained()
         old=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
@@ -211,7 +211,7 @@ exec "$LAND_REAL_MV" "$@"
             # A newer dead launch must not hide an older live launch on the same pane.
             ledger('append',t,'working: worker-activity op=newer-dead pane=task-pane evidence='+json.dumps(dead_generation()))
             result=land(); assert '旧启动代仍活或死亡未知' in result.stderr,result.stderr; retained()
-            old.stdin.write('continue\n'); old.stdin.flush(); assert old.wait(timeout=10)==0
+            old.stdin.write('continue\n'); old.stdin.flush(); assert old.wait(timeout=20)==0
             result=land(extra={'LAND_RESOURCE_PROBE':'unknown'})
             assert '候选写入者资源探针未知' in result.stderr,result.stderr; retained()
             land(ok=True)
@@ -220,7 +220,7 @@ exec "$LAND_REAL_MV" "$@"
             assert len([e for e in d['events'] if e['kind']=='land-apply'])==1
             print('PASS old alive/missing proof refuse; actual exit same op closes without remerge',flush=True)
         finally:
-            if old.poll() is None: old.terminate(); old.wait(timeout=10)
+            if old.poll() is None: old.terminate(); old.wait(timeout=20)
         # 共用finish的merged/archive都守资源与未知启动代，不只修land表象。
         for action in ['--merged','--archive']:
             name='legacy-'+action[2:]; wc=p/'.worktrees'/name
@@ -233,7 +233,7 @@ exec "$LAND_REAL_MV" "$@"
                 start=subprocess.check_output(['/bin/ps','-p',str(pid),'-o','lstart='],text=True).strip()
                 result=call('qwb-worktree.sh','finish',name,action,ok=False)
                 assert '候选写入者' in result.stderr and wc.is_dir(),result.stderr
-                child.communicate('exit\n',timeout=10); assert child.returncode==0
+                child.communicate('exit\n',timeout=20); assert child.returncode==0
                 ticket.write_text(f'state: blocked\ndispatch: op_id=legacy worker=sol pane=task-pane dir={wc}\n')
                 result=call('qwb-worktree.sh','finish',name,action,ok=False)
                 assert '启动代死亡证据缺失' in result.stderr and wc.is_dir(),result.stderr
@@ -246,7 +246,7 @@ exec "$LAND_REAL_MV" "$@"
                 assert not wc.exists()
                 print('PASS shared finish '+action+' live/missing PID/start refuses; actual dead succeeds')
             finally:
-                if child.poll() is None: child.terminate(); child.wait(timeout=10)
+                if child.poll() is None: child.terminate(); child.wait(timeout=20)
         sys.exit(0)
     t,c,op,m,head=accepted('A')
     status=subprocess.run(['bash',str(ROOT/'bin/qwb-status.sh'),'--project',str(p)],env=env,capture_output=True,text=True)

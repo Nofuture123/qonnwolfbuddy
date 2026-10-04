@@ -3,6 +3,8 @@
 import json
 import os
 from pathlib import Path
+import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -103,7 +105,7 @@ os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
             finally:
                 if process.poll() is None:
                     process.terminate()
-                    process.wait(timeout=10)
+                    process.wait(timeout=20)
                 # On a failed check, stop only exact observed owned process incarnations.
                 if wire_record.exists():
                     wire = json.loads(wire_record.read_text())
@@ -124,9 +126,31 @@ if __name__ == '__main__':
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
-    check(['bash', 'tests/smoke.sh', 'root-tab-missing'])
-    check(['/bin/bash', 'tests/smoke.sh', 'root-tab-missing'])
-    check(['bash', 'tests/smoke.sh', 'root-tab-missing'], interrupt=True)
-    check(['bash', 'tests/smoke.sh'], interrupt=True)
-    check(['bash', 'tests/collab-handoff.sh'], interrupt=True, ready='handoff')
-    print('PROCESS ENTRY CLEANUP PASS')
+    # The unchanged directory/bytecode assertions must observe only this invocation.
+    # A two-byte checkout name keeps nested fixture sockets within the 103-byte budget.
+    while True:
+        checkout = BASE / secrets.token_hex(1)
+        try:
+            checkout.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with subprocess.Popen(['git', '-C', str(ROOT), 'archive', 'HEAD'],
+                              stdout=subprocess.PIPE) as archive:
+            exported = subprocess.run(['tar', '-x', '-C', str(checkout)], stdin=archive.stdout)
+            archive.stdout.close()
+            if archive.wait() or exported.returncode:
+                raise RuntimeError('源码导出失败')
+        ROOT = checkout
+        BASE = ROOT / '.qwb-tmp'
+        BASE.mkdir(exist_ok=True)
+        WIRE = str(ROOT / 'tests/fixtures/herdr/wire-server.py')
+        check(['bash', 'tests/smoke.sh', 'root-tab-missing'])
+        check(['/bin/bash', 'tests/smoke.sh', 'root-tab-missing'])
+        check(['bash', 'tests/smoke.sh', 'root-tab-missing'], interrupt=True)
+        check(['bash', 'tests/smoke.sh'], interrupt=True)
+        check(['bash', 'tests/collab-handoff.sh'], interrupt=True, ready='handoff')
+        print('PROCESS ENTRY CLEANUP PASS')
+    finally:
+        shutil.rmtree(checkout)

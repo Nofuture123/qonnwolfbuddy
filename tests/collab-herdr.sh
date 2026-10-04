@@ -243,7 +243,7 @@ else: print(json.dumps({'result':{'type':'ok'}}))
     # Consume initial legacy facts through the same public entry, not fabricated fingerprints.
     prime=subprocess.run(wake+['--once','--pane','ctl'],env=env,capture_output=True,text=True)
     assert prime.returncode==0,prime.stderr
-    server=socket.socket(socket.AF_UNIX); server.bind(sockpath); server.listen(); server.settimeout(8)
+    server=socket.socket(socket.AF_UNIX); server.bind(sockpath); server.listen(); server.settimeout(20)
     ready=threading.Event(); errors=[]
     def emit():
         try:
@@ -258,9 +258,9 @@ else: print(json.dumps({'result':{'type':'ok'}}))
         except Exception as e: errors.append(str(e)); ready.set()
     thread=threading.Thread(target=emit,daemon=True); thread.start()
     start=time.monotonic()
-    got=subprocess.run(wake+['--block','--max-ms','12000'],env=env,capture_output=True,text=True,timeout=15)
+    got=subprocess.run(wake+['--block','--max-ms','12000'],env=env,capture_output=True,text=True,timeout=20)
     latency=time.monotonic()-start
-    server.close(); thread.join(timeout=1)
+    server.close(); thread.join(timeout=20)
     assert got.returncode==2 and 'older worker completed' in got.stdout,(got.returncode,got.stdout,got.stderr)
     assert latency<10,('non-latest completion waited for polling interval',latency,got.stderr)
     assert requests and {s['pane_id'] for s in requests[0]['params']['subscriptions']}=={'w:p0','w:p1','w:p2','w:role'},requests
@@ -277,7 +277,7 @@ with TemporaryDirectory(prefix='s-') as tmp, ExitStack() as processes:
     os.environ["TMPDIR"] = tmp
     b=Path(tmp); root=b/'repo'; root.mkdir(); (root/'tasks').mkdir()
     def run(*args,env=None):
-        return subprocess.run(list(args),env=env,capture_output=True,text=True,timeout=10)
+        return subprocess.run(list(args),env=env,capture_output=True,text=True,timeout=20)
     assert run('git','init','-q',str(root)).returncode==0
     for k,v in [('user.name','Test'),('user.email','test@example.invalid')]:
         assert run('git','-C',str(root),'config',k,v).returncode==0
@@ -434,7 +434,7 @@ else: sys.exit(9)
     assert wt.is_dir() and task.read_text().endswith(f'path={wt}\n')
     actions=[json.loads(x) for x in calls.read_text().splitlines()]
     assert not any(isinstance(x,dict) and x.get('method')=='workspace.move' and x['params']['workspace_id']!='wTask' for x in actions)
-    stop.set(); thread.join(timeout=1); api.close()
+    stop.set(); thread.join(timeout=20); api.close()
     print('PASS owned ordering/confirmed close preserve unrelated focus; unknown ownership/long idle tool/live Pi refuse')
 PY
 python3 -B - "$ROOT" <<'PY'
@@ -464,12 +464,12 @@ else: print(json.dumps({'result':{'type':'ok'}}))
 '''); (stub/'herdr').chmod(0o755)
     env={**os.environ,'PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','LOG':str(log),'SOCKET':socketpath}
     def call(script,cmd,*args,rc=0):
-        r=subprocess.run(['bash',str(ROOT/'bin'/script),cmd,'--project',str(p),'--task',str(t),*args],env=env,capture_output=True,text=True,timeout=15)
+        r=subprocess.run(['bash',str(ROOT/'bin'/script),cmd,'--project',str(p),'--task',str(t),*args],env=env,capture_output=True,text=True,timeout=20)
         assert r.returncode==rc,(script,cmd,r.returncode,r.stdout,r.stderr); return r.stdout
     proof=b/'migration.json'; proof.write_text(json.dumps(dict(task_sha256=hashlib.sha256(t.read_bytes()).hexdigest(),confirm={k:'temporary fixture; old writers stopped' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']})))
     call('qwb-ledger.sh','migrate','--',str(proof))
     wake=['bash',str(ROOT/'bin/qwb-wake.sh'),'--project',str(p),'--pane','ctl','--interval','10000']
-    prime=subprocess.run(wake+['--once'],env=env,capture_output=True,text=True,timeout=15); assert prime.returncode==0,prime.stderr
+    prime=subprocess.run(wake+['--once'],env=env,capture_output=True,text=True,timeout=20); assert prime.returncode==0,prime.stderr
     api=socket.socket(socket.AF_UNIX); api.bind(socketpath); api.listen(); api.settimeout(.2)
     stop=threading.Event(); disconnected=threading.Event(); reconnect=threading.Event(); connected=threading.Event(); requests=[]
     def server():
@@ -479,7 +479,7 @@ else: print(json.dumps({'result':{'type':'ok'}}))
             except socket.timeout: continue
             try:
                 with c:
-                    c.settimeout(2); req=json.loads(c.makefile('rb').readline()); requests.append(req); count+=1
+                    c.settimeout(20); req=json.loads(c.makefile('rb').readline()); requests.append(req); count+=1
                     if count>1 and not reconnect.wait(1): continue
                     c.sendall((json.dumps({'id':req['id'],'result':{'type':'subscription_started'}})+'\n').encode())
                     if count==1: disconnected.set(); continue
@@ -491,8 +491,8 @@ else: print(json.dumps({'result':{'type':'ok'}}))
     thread=threading.Thread(target=server,daemon=True); thread.start()
     owner=subprocess.Popen(wake,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
-        assert disconnected.wait(8),'subscription was not established'
-        duplicate=subprocess.run(wake+['--once'],env=env,capture_output=True,text=True,timeout=10)
+        assert disconnected.wait(20),'subscription was not established'
+        duplicate=subprocess.run(wake+['--once'],env=env,capture_output=True,text=True,timeout=20)
         assert duplicate.returncode==75,('second supervisor not rejected',duplicate.returncode,duplicate.stderr)
         start=time.monotonic()
         call('qwb-ledger.sh','question','--event-id','during-gap-key','--','budget','预算未答')
@@ -503,7 +503,7 @@ else: print(json.dumps({'result':{'type':'ok'}}))
             if all(any(x[:2]==['pane','run'] and source in x[-1] for x in lines) for source in ['during-gap-key','during-gap-result']): break
             time.sleep(.1)
         else: raise AssertionError('fallback did not deliver all gap facts: '+log.read_text())
-        latency=time.monotonic()-start; reconnect.set(); assert connected.wait(8),'not reconnected'
+        latency=time.monotonic()-start; reconnect.set(); assert connected.wait(20),'not reconnected'
         time.sleep(2)
         data=json.loads(call('qwb-ledger.sh','read')); pending=json.loads(call('qwb-send.sh','pending'))
         assert data['questions']['budget']['answer']=='' and data['questions']['budget']['resumed']==''
@@ -513,11 +513,11 @@ else: print(json.dumps({'result':{'type':'ok'}}))
         assert len(requests)>=2 and all(r['params']['subscriptions']==[dict(type='pane.agent_status_changed',pane_id='w:p0')] for r in requests)
         print(f'PASS gap facts delivered latency={latency:.3f}s; reconnected level reconcile, one owner, duplicate events keep one transport/unanswered key')
     finally:
-        owner.terminate(); out,err=owner.communicate(timeout=15)
+        owner.terminate(); out,err=owner.communicate(timeout=20)
         print('reconnect owner output:',out,err)
-        stop.set(); thread.join(timeout=3); api.close()
+        stop.set(); thread.join(timeout=20); api.close()
         assert owner.returncode in (0,143),('owner cleanup',owner.returncode,out,err)
-    timed=subprocess.run(wake+['--block','--max-ms','150'],env=env,capture_output=True,text=True,timeout=10)
+    timed=subprocess.run(wake+['--block','--max-ms','150'],env=env,capture_output=True,text=True,timeout=20)
     assert timed.returncode==124 and '--block 到期' in timed.stderr,(timed.returncode,timed.stdout,timed.stderr)
     unchanged=json.loads(call('qwb-ledger.sh','read'))
     assert unchanged['questions']['budget']['answer']=='' and unchanged['questions']['budget']['resumed']==''

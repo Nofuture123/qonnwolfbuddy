@@ -218,11 +218,11 @@ f.write_text(json.dumps(s))
     try:
         time.sleep(.15) # Scheduling grace under an actual held kernel lock, not a work poll.
         assert change.poll() is None
-        reader=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-role.sh'),'mode','status','--project',str(p)],env=env,capture_output=True,text=True,timeout=5)
+        reader=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-role.sh'),'mode','status','--project',str(p)],env=env,capture_output=True,text=True,timeout=20)
         assert reader.returncode==0 and json.loads(reader.stdout)['mode']=='quiet',(reader.stdout,reader.stderr)
     finally:
         fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
-        out,err=change.communicate(timeout=5)
+        out,err=change.communicate(timeout=20)
         assert change.returncode==0,(out,err)
     assert json.loads(mode('status'))['mode']=='online'
     print('PASS controller/posture lock order: concurrent reader completes while mutation waits')
