@@ -5,8 +5,10 @@
 #   user_换CLI不等于独立审核          → 不同 CLI 同 family → 拒绝并点名家族
 #   user_身份未知不伪装通过           → unknown/缺字段/缺证据 → 报缺证据不通过
 #   user_无审核要求的普通票不额外烧token → 无 review-required 标记 → 不启用检查
+# shellcheck disable=SC2015 # ok/bad 仅 echo 与计数，均返回成功。
 set -uo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+export TMPDIR
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
@@ -20,6 +22,8 @@ bad() { echo "FAIL  $1"; FAILS=$((FAILS+1)); }
 TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
 export TMPDIR="$TMP"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # 健康项目骨架：真安装（与 smoke 同法），让 lint 其余各节全绿，专测「审核身份」一节
 P="$TMP/proj"; mkdir -p "$P"

@@ -122,6 +122,59 @@ os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
                             pass
 
 
+def check_full_gate():
+    # The exported checkout is private: replace only the four stage boundaries.
+    stages = ['tests/smoke.sh', 'tests/review-identity.sh',
+              'bin/qwb-lint.sh', 'tests/collab-all.sh']
+    for index, stage in enumerate(stages):
+        (ROOT / stage).write_text(f'''#!/usr/bin/env bash
+set -eu
+if [[ "$GATE_CASE" == term ]]; then
+  . "$PWD/tests/process-fixture.sh"
+  qwb_test_scope "$@"
+fi
+printf '%s\\n' '{index}:stdout' 
+printf '%s\\n' '{index}:stderr' >&2
+touch "$GATE_OBSERVER/{index}.ready"
+while [[ ! -f "$GATE_OBSERVER/0.ready" || ! -f "$GATE_OBSERVER/1.ready" || ! -f "$GATE_OBSERVER/2.ready" || ! -f "$GATE_OBSERVER/3.ready" || "$GATE_CASE" == term ]]; do sleep .02; done
+printf '%s\\n' '{index}:end'
+[[ "$GATE_CASE" != '{index}' ]] || exit 7
+''')
+    (ROOT / 'qwb.config.sh').write_text("QWB_GATE_FULL='bash tests/full-gate.sh'\n")
+    expected = ''.join(f'{index}:stdout\n{index}:stderr\n{index}:end\n' for index in range(4))
+    for interpreter in ['bash', '/bin/bash']:
+        for case in ['success', '0', '3', 'term']:
+            with tempfile.TemporaryDirectory(prefix='gate-observe-', dir=BASE) as temporary:
+                observer = Path(temporary)
+                env = dict(os.environ, GATE_CASE=case, GATE_OBSERVER=temporary)
+                before = set(BASE.iterdir())
+                command = [interpreter, 'tests/full-gate.sh'] if case == 'term' else [interpreter, 'bin/qwb-test.sh', 'full']
+                process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, text=True)
+                try:
+                    if case == 'term':
+                        deadline = time.monotonic() + 20
+                        while not all((observer / f'{index}.ready').exists() for index in range(4)):
+                            assert process.poll() is None, 'gate exited before all stages started'
+                            assert time.monotonic() < deadline, 'stages did not run concurrently'
+                            time.sleep(.02)
+                        process.terminate()
+                    text, _ = process.communicate(timeout=20)
+                    rc = process.returncode
+                    assert rc == (143 if case == 'term' else 0 if case == 'success' else 1), (command, case, rc, text)
+                    if case != 'term':
+                        assert text == expected + ('' if case == 'success' else '门失败（full）：bash tests/full-gate.sh 退出码=1\n'), (case, text)
+                    assert set(BASE.iterdir()) == before, (case, 'temporary directory survived')
+                    assert not any(str(ROOT) in row[4] and row[0] != str(os.getpid())
+                                   for row in snapshot()), (case, 'fixture process survived')
+                    print(json.dumps(dict(full_gate=interpreter, case=case, rc=rc,
+                                          ordered_output=True, new_directories=[]), ensure_ascii=False), flush=True)
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.communicate(timeout=20)
+
+
 if __name__ == '__main__':
     def interrupted(signum, _frame):
         signal.signal(signum, signal.SIG_IGN)
@@ -153,6 +206,7 @@ if __name__ == '__main__':
         check(['bash', 'tests/smoke.sh', 'root-tab-missing'], interrupt=True)
         check(['bash', 'tests/smoke.sh'], interrupt=True)
         check(['bash', 'tests/collab-handoff.sh'], interrupt=True, ready='handoff')
+        check_full_gate()
         print('PROCESS ENTRY CLEANUP PASS')
     finally:
         shutil.rmtree(checkout)
