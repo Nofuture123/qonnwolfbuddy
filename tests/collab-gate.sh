@@ -39,34 +39,56 @@ for last do :; done
 [ "${last:-}" != 'ppid=' ] || exec /bin/ps "$@"
 printf '%s\\n' 'Thu Oct 1 00:00:00 2099'
 ''')
-    (stub/'herdr').write_text('''#!/usr/bin/env python3
-import json,os,sys
-from pathlib import Path
-a=sys.argv[1:]; f=Path(os.environ['GATE_NATIVE_STATE']); s=json.loads(f.read_text()) if f.exists() else {}
-with open(os.environ['GATE_NATIVE_LOG'],'a') as logfile:print(json.dumps(a),file=logfile)
-p=os.environ['GATE_PROJECT']; pid=int(os.environ['GATE_NATIVE_PID'])
-def out(x):print(json.dumps({'result':x}))
-if a[:2]==['workspace','list']:out({'workspaces':[{'workspace_id':'ws','worktree':{'repo_root':p,'is_linked_worktree':False}}]+[{'workspace_id':'ws'+str(i),'worktree':{'repo_root':p,'is_linked_worktree':True,'checkout_path':d}} for i,d in enumerate(json.loads(os.environ['GATE_CANDIDATES']))]})
-elif a[:2]==['tab','create']:
- label=a[a.index('--label')+1];role=label=='门禁';s['tabs']=s.get('tabs',0)+1;slug=label+'-'+str(s['tabs']);out({'root_pane':{'pane_id':'gate-pane' if role else 'worker-'+slug,'tab_id':'gate-tab' if role else 'tab-'+slug,'terminal_id':'gate-terminal'}})
-elif a[:2]==['agent','get']:print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
-elif a[:2]==['agent','prompt']:out({'type':'prompt_sent'})
-elif a[:2]==['agent','start']:
- v=a[a.index('--')+1:]
- if '--session-id' in v:
-  sid=v[v.index('--session-id')+1];sd=v[v.index('--session-dir')+1];s={'session':sd+'/2099_'+sid+'.jsonl','sid':sid}
- out({'type':'agent_started'})
-elif a[:2]==['pane','get']:
- gate=a[2]=='gate-pane'; d={'pane_id':a[2],'workspace_id':'ws','terminal_id':'gate-terminal' if gate else 'ctl-terminal','foreground_cwd':p}
- if not gate or 'session' in s:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s['session'] if gate else 'ctl-session'})
- out({'pane':d})
-elif a[:2]==['pane','process-info']:
- live=a[-1]!='gate-pane' or 'session' in s;i=pid if live else 42
- out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':i,'foreground_processes':[{'pid':i,'argv0':'pi' if live else 'zsh','argv':['pi'],'cwd':p}]}})
-elif a[:2]==['pane','read']:print('(openai-codex) gpt-6.1-sol • high');sys.exit()
-elif a[:2] in (['pane','run'],['tab','close']):out({'type':'input_sent'})
-else:sys.exit(9)
-f.write_text(json.dumps(s))
+    (stub/'herdr').write_text(r'''#!/usr/bin/env perl
+use strict;
+use warnings;
+use utf8;
+use Encode qw(decode);
+use JSON::PP;
+binmode STDOUT, ':encoding(UTF-8)';
+my @a = map { decode('UTF-8', $_) } @ARGV;
+my $json = JSON::PP->new->ascii;
+my $file = $ENV{GATE_NATIVE_STATE};
+my $s = {};
+if (-e $file) { open my $input, '<', $file or die $!; local $/; $s = $json->decode(<$input>); }
+open my $log, '>>', $ENV{GATE_NATIVE_LOG} or die $!;
+print $log $json->encode(\@a), "\n";
+close $log;
+my $project = decode('UTF-8', $ENV{GATE_PROJECT});
+my $pid = 0 + $ENV{GATE_NATIVE_PID};
+my $verb = @a >= 2 ? join(' ', @a[0,1]) : '';
+sub out { print $json->encode({result => $_[0]}), "\n"; }
+sub after { my ($key) = @_; for (my $i=0; $i<@a; $i++) { return $a[$i+1] if $a[$i] eq $key; } die "missing $key"; }
+if ($verb eq 'workspace list') {
+    my @spaces = ({workspace_id=>'ws',worktree=>{repo_root=>$project,is_linked_worktree=>JSON::PP::false}});
+    my $candidates = $json->decode($ENV{GATE_CANDIDATES});
+    for (my $i=0; $i<@$candidates; $i++) { push @spaces, {workspace_id=>'ws'.$i,worktree=>{repo_root=>$project,is_linked_worktree=>JSON::PP::true,checkout_path=>$candidates->[$i]}}; }
+    out({workspaces=>\@spaces});
+} elsif ($verb eq 'tab create') {
+    my $label=after('--label');my $gate=$label eq '门禁';$s->{tabs}=($s->{tabs}//0)+1;my $slug=$label.'-'.$s->{tabs};
+    out({root_pane=>{pane_id=>$gate?'gate-pane':'worker-'.$slug,tab_id=>$gate?'gate-tab':'tab-'.$slug,terminal_id=>'gate-terminal'}});
+} elsif ($verb eq 'agent get') {
+    print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1;
+} elsif ($verb eq 'agent prompt') {
+    out({type=>'prompt_sent'});
+} elsif ($verb eq 'agent start') {
+    if (grep { $_ eq '--session-id' } @a) { my $sid=after('--session-id');$s={session=>after('--session-dir').'/2099_'.$sid.'.jsonl',sid=>$sid}; }
+    out({type=>'agent_started'});
+} elsif ($verb eq 'pane get') {
+    my $gate=$a[2] eq 'gate-pane';my $d={pane_id=>$a[2],workspace_id=>'ws',terminal_id=>$gate?'gate-terminal':'ctl-terminal',foreground_cwd=>$project};
+    if (!$gate || exists $s->{session}) { $d->{agent}='pi';$d->{agent_status}='idle';$d->{agent_session}={agent=>'pi',source=>'herdr:pi',kind=>'path',value=>$gate?$s->{session}:'ctl-session'}; }
+    out({pane=>$d});
+} elsif ($verb eq 'pane process-info') {
+    my $live=$a[-1] ne 'gate-pane' || exists $s->{session};my $id=$live?$pid:42;
+    out({process_info=>{pane_id=>$a[-1],shell_pid=>42,foreground_process_group_id=>$id,foreground_processes=>[{pid=>$id,argv0=>$live?'pi':'zsh',argv=>['pi'],cwd=>$project}]}});
+} elsif ($verb eq 'pane read') {
+    print "(openai-codex) gpt-6.1-sol • high\n";exit 0;
+} elsif ($verb eq 'pane run' || $verb eq 'tab close') {
+    out({type=>'input_sent'});
+} else { exit 9; }
+open my $output, '>', $file or die $!;
+print $output $json->encode($s);
+close $output;
 ''')
     for f in stub.iterdir(): f.chmod(0o755)
     env=os.environ|{'PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','GATE_PROJECT':str(p),'GATE_NATIVE_PID':str(os.getpid()),'GATE_NATIVE_STATE':str(state),'GATE_NATIVE_LOG':str(tmp/'native-calls.jsonl'),'GATE_CANDIDATES':json.dumps(list(map(str,[ca,cb,cc])))}
