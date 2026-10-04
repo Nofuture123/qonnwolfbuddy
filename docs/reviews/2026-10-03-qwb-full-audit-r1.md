@@ -292,6 +292,19 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 代码量：`bin/` 合计 7312 → 7602 行（`qwb-lib.sh` 419 → 616、`qwb-worktree.sh` 652 → 764、`qwb-herdr.sh` 256 → 358、`qwb-ledger.sh` 1612 → 1660；`qwb-run.sh` 877 → 821）。这一轮的产出是正确性、可验证性与规则单点定义，不是代码变短。
 
+### 全门并发（2026-10-05，`audit-gate-parallel`，main @ c2079f0）
+
+全门四段（smoke、review-identity、lint、collab-all）改为同时运行、输出按原顺序打印；collab-all 内部限六个并发并先启动最慢的几项；`socket-path-regression.py` 的四个正例与 `collab-herdr.sh` 的八段各自在独立范围里并发。运行时脚本与模板零改动。顺带收口 F47：被中断时由父级监督器按登记回执清理嵌套范围，修复了高负载下残留空登记目录的竞态。
+
+| 对象 | 条件 | 结果 |
+|---|---|---|
+| 候选 f21b1d0（主控测，重启后顺序执行） | 负载 13–23 | 383 秒、440 秒，均 rc=0、843/0 |
+| 依次运行的 main b1a95f6（同一时段，主控测） | 负载 13–23 | 769 秒、1044 秒，均 rc=0、844/0 |
+| 候选 a63304f（工人顺序五连） | 负载 5–47 | 385、421、492、502、487 秒，五次 rc=0、843/0 |
+| 合入后的 main（主控测） | 负载约 55 | 502 秒，rc=0、844/0，无残留目录 |
+
+隔离副本少的 1 条 PASS 是「两份配置一致」检查，副本里没有本地配置，按原规则不适用。失败注入（smoke 段失败、collab 段失败时全门 rc=1 且四段仍按原顺序）与中断回归（TERM 后 5 秒无残留进程与目录）由已接入的 `tests/process-entry-cleanup.py`、`tests/process-fixture-check.py` 覆盖。原定「不超过 300 秒」的线未达到，主控中途作废：最慢的 `collab-gate.sh` 与 `socket-path-regression.py` 单项就要四到八分钟，其中没有可删的空等。并发后全门用时约为依次运行的一半。工人第 3 至 5 次的用时受主控同时在两个真项目里测速的干扰，偏慢。
+
 ### 已装项目升级（2026-10-04，Rocky 指示，安装源 main @ f88eb7a，F48 修复后以 96d60d0 重装）
 
 `qonnwolf-sites`（原 9-27 版）、`qonnwolfmcp`、`video_analysis/class-video-analysis`（原 9-24 版）三个项目用 `bash bin/qwb-init.sh <项目>` 升级。先在本仓库临时目录里对三份安装文件的拷贝试装，确认新版能读旧式 `qwb_worker 名字 herdr 参数…` 声明后再动真项目。结果：三个项目的 15 个运行脚本与母本逐字节相同（安装器自身不装进项目）；`config.sh`、`brief-include.md`、`dispatch-rules.json` 未动；`workers.sh` 只给 claude 行加了 `--add-dir 项目根`；Pi 扩展更新，旧文件留为 `qwb-watch.ts.bak`；`qwb-status.sh` 三处 rc=0；`qwb-lint.sh` 在 sites 与 class-video-analysis 通过，在 qonnwolfmcp 有 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动），升级前的旧版 lint 同样报这一条。改动均未提交，留给各项目自己审。新增的 `pi-sol-high` 等具名工人与 `qwb_family` 声明不会自动出现在已有的 `workers.sh` 里。升级后没有在这三个项目里实际派过票。
