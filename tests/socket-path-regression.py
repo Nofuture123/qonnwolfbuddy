@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check affected entries and exported paths against the ignored socket directory budget."""
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import secrets
@@ -10,9 +11,13 @@ import sys
 sys.dont_write_bytecode = True
 from process_fixture import run
 
+if __name__ == '__main__' and 'QWB_TEST_SOCKET_DIRS' not in os.environ:
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name('process_fixture.py')),
+                             '--command', sys.executable, __file__])
+
 ROOT = Path(__file__).resolve().parents[1]
-BASE = ROOT / '.qwb-tmp'
-BASE.mkdir(exist_ok=True)
+# The existing supervisor owns the export even when TERM skips Python's finally.
+BASE = Path(os.environ['QWB_TEST_SCOPE_DIR'])
 # /.qwb-tmp/xx/s takes fourteen bytes; nested exports must fit the 89-byte root budget.
 width = 89 - len(os.fsencode(BASE)) - 1
 while True:
@@ -37,17 +42,26 @@ try:
     if positive == ROOT:
         print(f'仓内最短导出根 {len(os.fsencode(directory))} 字节超过 89；'
               '正例使用当前源码根，导出副本验证断言前早报', flush=True)
-    for interpreter, script, arguments in [('/bin/bash', 'tests/smoke.sh', ['root-tab-missing']),
-                                           (sys.executable, 'tests/worktree-space.py', []),
-                                           ('/bin/bash', 'tests/collab-herdr.sh', []),
-                                           ('/bin/bash', 'tests/collab-land.sh', [])]:
+    entries = [('/bin/bash', 'tests/smoke.sh', ['root-tab-missing']),
+               (sys.executable, 'tests/worktree-space.py', []),
+               ('/bin/bash', 'tests/collab-herdr.sh', []),
+               ('/bin/bash', 'tests/collab-land.sh', [])]
+
+    def check_entry(entry):
+        interpreter, script, arguments = entry
         env = os.environ.copy()
         env.pop('QWB_TEST_SOCKET_DIRS', None)
-        runner = subprocess.run if interpreter == sys.executable else run
-        result = runner([interpreter, script, *arguments], cwd=positive, env=env,
-                        capture_output=True, text=True)
+        result = subprocess.run([interpreter, script, *arguments], cwd=positive, env=env,
+                                capture_output=True, text=True)
         assert result.returncode == 0, (script, result.stdout, result.stderr)
         assert not any(line.startswith('FAIL') for line in result.stdout.splitlines()), result.stdout
+        return script
+
+    # Each entry already owns its HOME, temporary projects, groups and sockets.
+    # Collect all results before reporting them in the original order.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(check_entry, entries))
+    for script in results:
         size = len(os.fsencode(positive)) + 14
         print(f'PASS {script}: root={len(os.fsencode(positive))} bytes, socket={size} bytes', flush=True)
 
