@@ -108,7 +108,7 @@ PANE="${PANE:-${QWB_CONTROLLER_PANE:-}}"
 WATCHF="$PROJECT_ROOT/qwbuddy/.watch"
 
 # pane get → stdout "cwd<TAB>agent<TAB>workspace"；rc：0 ok / 3 pane 不存在 / 2 其他查询失败
-# 保留：数组字段字符串化含进程内地址，未通过共享版本的逐字节对照。
+# 保留：旧空列与共享接口的 - 占位不同，数组字段字符串化还含进程内地址。
 # 空列只用 cut -f 读取，不能改成 TAB IFS read。
 pane_info() {
   local out
@@ -126,7 +126,14 @@ pane_info() {
 # pane process-info 一次判定 → stdout：wake:<pid>@<值守目标pane> | idle | busy | gone | err
 # 值守进程认定：前台进程组里 argv0 是 shell/脚本本体 且 cmdline 含 qwb-wake.sh 且项目路径匹配；
 # --ensure/--check/--once/--dry-run 这类短调用不算持续值守实例。
-pane_probe() { qwb_pane_probe "$1" "$PROJECT_ROOT"; }
+pane_probe() {
+  local out
+  if ! out="$(herdr pane process-info --pane "$1" 2>&1)"; then
+    printf '%s' "$out" | grep -q 'pane_not_found' && echo gone || echo err
+    return 0
+  fi
+  printf '%s' "$out" | qwb_pane_probe "$PROJECT_ROOT"
+}
 
 # 活值守的目标核验：$1=pane $2=pane_probe 的 wake:* 判定；值守目标 ≠ 本次要求 → 打印修复步骤并 return 1
 ensure_target_ok() {

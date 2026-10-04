@@ -517,21 +517,21 @@ qwb_is_project_worktree() {
   return 1
 }
 
-# pane get 的旧值守契约：cwd<TAB>agent<TAB>workspace；0=成功/3=不存在/2=查询失败。
-# 各列允许为空，只能用 cut -f 读取，不能用 TAB IFS read（会合并空列）。
-# 保留原宽松字段转换与原文错误判定；严格身份核验不能复用此契约。
-# 数组字段会输出含地址的字符串；wake 原调用点未证明字节等价，暂不迁移。
+# pane get 的共享值守契约：cwd<TAB>agent<TAB>workspace；0=成功/3=不存在/2=查询失败。
+# 空字段输出 - 占位，保证各列非空，避免 TAB IFS read 合并空列。
+# 保留原宽松字段转换；严格身份核验不能复用此契约。
+# wake 旧调用点需要原始空列和数组地址字符串，未证明字节等价，暂不迁移。
 qwb_pane_info() {
   local out
   if ! out="$(herdr pane get "$1" 2>&1)"; then
-    printf '%s' "$out" | grep -q 'pane_not_found' && return 3 || return 2
+    grep -q 'pane_not_found' <<< "$out" && return 3 || return 2
   fi
   printf '%s' "$out" | perl -MJSON::PP=decode_json -e '
     my $j = eval { decode_json(join "", <STDIN>) } or exit 2;
     my $p = $j->{result}{pane} or exit 2;
-    printf "%s\t%s\t%s",
+    printf "%s\t%s\t%s", map { $_ eq "" ? "-" : $_ }
       ($p->{foreground_cwd} // $p->{cwd} // ""), ($p->{agent} // ""), ($p->{workspace_id} // "");
-  '
+  ' || return 2
 }
 
 # 调用方已有 pane get 应答时只解析，不重复查询；workspace 接受非引用标量。
@@ -551,14 +551,9 @@ qwb_pane_idle() {
             && $pi->{foreground_process_group_id} == $pi->{shell_pid}) ? 0 : 1);'
 }
 
-# 一次查询并按旧值守规则解析；$2 是项目根，失败文案和后续动作归调用点。
+# 只解析调用点已有的进程应答；$1 是项目根。查询错误与后续动作保留在调用点。
 qwb_pane_probe() {
-  local out
-  if ! out="$(herdr pane process-info --pane "$1" 2>&1)"; then
-    printf '%s' "$out" | grep -q 'pane_not_found' && echo gone || echo err
-    return 0
-  fi
-  printf '%s' "$out" | perl -MJSON::PP=decode_json -MCwd=realpath -e '
+  perl -MJSON::PP=decode_json -MCwd=realpath -e '
     my $root = $ARGV[0];
     my $j = eval { decode_json(join "", <STDIN>) };
     my $pi = ($j && $j->{result}{process_info}) or do { print "err"; exit 0 };
@@ -583,7 +578,7 @@ qwb_pane_probe() {
     my $idle = defined $pi->{foreground_process_group_id} && defined $pi->{shell_pid}
                && $pi->{foreground_process_group_id} == $pi->{shell_pid};
     print($idle ? "idle" : "busy");
-  ' "$2"
+  ' "$1"
 }
 
 # 已有 tab create 应答取 pane_id/tab_id，不重复创建。
