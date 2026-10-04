@@ -197,6 +197,19 @@ def query_cleanup(source, timeout):
         stub.mkdir()
         ready = directory/'query.json'
         notice = directory/'notice'
+        scans = directory/'ps.jsonl'
+        # Audit the real public helper in its interpreter, including absolute /bin/ps calls.
+        (stub/'python3').write_text(f'''#!{sys.executable}
+import json,sys
+from pathlib import Path
+def audit(event,args):
+    if event=='subprocess.Popen' and args[0]=='/bin/ps':
+        with Path({str(scans)!r}).open('a') as log:log.write(json.dumps(args[1])+'\\n')
+sys.addaudithook(audit)
+sys.argv=['-',*sys.argv[3:]]
+exec(compile(sys.stdin.read(),'<stdin>','exec'),{{'__name__':'__main__'}})
+''')
+        (stub/'python3').chmod(0o755)
         (stub/'herdr').write_text(f'''#!{sys.executable}
 import json,os,subprocess,time
 from pathlib import Path
@@ -230,6 +243,8 @@ print(json.dumps(dict(server=dict(socket='/dev/null/qwb-test.sock',session=os.en
             assert (data['seq'],data['phase'],data['panes'])==(1,'fallback',['w:p0']), data
             live = [row for row in processes() if int(row[2])==query['pgid']]
             assert not live, ('query grandchild survived before test cleanup',query,live)
+            ps_calls = scans.read_text().splitlines() if scans.exists() else []
+            assert bool(ps_calls)==timeout, ('normal query must not scan; timeout must confirm group',ps_calls)
             child.terminate()
             out,err = child.communicate(timeout=3)
             assert child.returncode==143 and out=='', (child.returncode,out,err)
@@ -239,7 +254,7 @@ print(json.dumps(dict(server=dict(socket='/dev/null/qwb-test.sock',session=os.en
             else:
                 assert age < 1 and 'timed out' not in err,(age,err)
             print('PASS subscribe query '+('timeout' if timeout else 'return')+
-                  ': child and grandchild ended; fallback notice/stderr and 2s budget preserved',flush=True)
+                  ': child and grandchild ended; normal has no ps; timeout confirms group; 2s budget preserved',flush=True)
         finally:
             if child and child.poll() is None:
                 child.terminate()

@@ -16,18 +16,19 @@ a=p.parse_args(); root=Path(a.project).resolve(); bindir=Path(os.environ['QWB_HE
 def require(ok,why):
     if not ok: raise ValueError(why)
 
-def reap_command(child):
+def reap_command(child,check_group):
     # A query may itself fork; only its own newly-created session may be terminated.
     try: os.killpg(child.pid,signals.SIGKILL)
     except ProcessLookupError: pass
     child.wait()
-    deadline=time.monotonic()+.75
-    while True:
-        rows=subprocess.run(['/bin/ps','-axo','pgid=,stat='],capture_output=True,text=True,check=True).stdout
-        if not any(int(row[0])==child.pid and not row[1].startswith('Z')
-                   for line in rows.splitlines() if (row:=line.split())): break
-        if time.monotonic()>=deadline: raise RuntimeError('subscription command descendants did not exit')
-        time.sleep(.005)
+    if check_group:
+        deadline=time.monotonic()+.75
+        while True:
+            rows=subprocess.run(['/bin/ps','-axo','pgid=,stat='],capture_output=True,text=True,check=True).stdout
+            if not any(int(row[0])==child.pid and not row[1].startswith('Z')
+                       for line in rows.splitlines() if (row:=line.split())): break
+            if time.monotonic()>=deadline: raise RuntimeError('subscription command descendants did not exit')
+            time.sleep(.005)
     child.stdout.close(); child.stderr.close()
 
 def command(argv):
@@ -35,7 +36,7 @@ def command(argv):
         v=subprocess.run(argv,capture_output=True,text=True,timeout=2)
         require(v.returncode==0,'query/action failed: '+(v.stderr or v.stdout).strip())
         return v.stdout
-    child=None
+    child=None; check_group=True
     try:
         # Parent signals stay pending until the handle is registered; the single-threaded
         # child restores the original mask before exec, so it remains normally interruptible.
@@ -46,11 +47,15 @@ def command(argv):
         finally: signals.pthread_sigmask(signals.SIG_SETMASK,mask)
         out,err=child.communicate(timeout=2)
         require(child.returncode==0,'query/action failed: '+(err or out).strip())
+        check_group=False
         return out
+    except BaseException:
+        check_group=True
+        raise
     finally:
         if child is not None:
             mask=signals.pthread_sigmask(signals.SIG_BLOCK,{signals.SIGTERM,signals.SIGINT})
-            try: reap_command(child)
+            try: reap_command(child,check_group)
             finally: signals.pthread_sigmask(signals.SIG_SETMASK,mask)
 
 def herdr(*argv):
