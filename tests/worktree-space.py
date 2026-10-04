@@ -11,6 +11,8 @@ import tempfile
 import socket
 import sys
 import threading
+
+sys.dont_write_bytecode = True
 from process_fixture import run, socket_path as fixture_socket_path
 
 if __name__ == '__main__' and 'QWB_TEST_SOCKET_DIRS' not in os.environ:
