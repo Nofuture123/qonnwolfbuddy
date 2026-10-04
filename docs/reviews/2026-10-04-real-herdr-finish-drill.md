@@ -16,7 +16,7 @@
 
 - **F45 真 Herdr 对没有 agent 的 pane 不返回 `agent` 键，产品要求该键存在且为 null。** 只读查询默认会话里一个普通 shell pane，`herdr pane get` 的应答键为 `agent_status, cwd, focused, foreground_cwd, label, pane_id, revision, scroll, tab_id, terminal_id, workspace_id`，没有 `agent`。`bin/qwb-worktree.sh` 三处、`bin/qwb-herdr.sh` 一处按「键存在且为 null」判定，假 Herdr 夹具一律返回 `"agent": null`，所以测试全绿、真机永远拒绝。受影响：pane 仍在时的 `--writer-proof-missing` 兑底（第 2 轮实测）；land 收尾的两处判定（读代码得出，未做真机演练）。方向是拒绝而不是误删，没有丢成果的风险，但这些路径在真机上走不通。起点 `4678ba0` 已有同样写法，不是本轮引入。
 - **F46 默认收尾被「候选写入者仍持cwd/FD」拒绝后，产品不给出路。** 工人停在自己的界面里时进程 cwd 就在副本目录，默认 `finish --merged` 必然被拒（第 1、3 轮 A 步）。拒绝本身符合「idle/done 不等于已停」的设计，但拒绝信息与两份主控说明都没写该怎么办。同日 Claude Code 主控真机验收的会话记录显示：主控被拒两次，自己读源码、给 devin 发 `/exit`、再把工人 shell `cd` 出副本，才收尾成功。验收脚本的断言全过、也确实无人介入，但这靠的是主控模型临场摸索，不是产品指引。
-- devin 不认主控发的 `/exit`（第 1 轮；Claude 主控那轮是 `/exit` 加两次回车后退出），两次 Ctrl+C 能退回 shell（第 2 轮）。退出方式因工人而异，所以出路选「关闭 pane」而不是「发退出命令」。
+- 让 devin 退出没有稳定的单一做法：第 1 轮用 `herdr pane run` 发 `/exit`、再间隔 0.4 秒发两次 Ctrl+C，各等 15 秒都没退出，最后是关 pane；第 2 轮间隔 1 秒发两次 Ctrl+C 退回了 shell；Claude 主控那轮是发 `/exit` 后又补了回车才退出。原因没有查。退出方式因工人而异，所以出路选「关闭 pane」而不是「发退出命令」。
 
 修复票：`tasks/2026-10-04-audit-finish-real.md`。
 
