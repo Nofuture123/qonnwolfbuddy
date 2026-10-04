@@ -49,15 +49,18 @@ def probe(source, mode, immediate=False, wait_seconds=5, report=None, measure=Fa
             outcome.update(attempts=attempt, reader_ages=read_ages)
             if report:
                 Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
+            age = 'not-started' if outcome['reader_age'] is None else f'{outcome["reader_age"]:.6f}s'
             print(f'INCONCLUSIVE subscribe {mode}: attempt={attempt}/{attempts} '
-                  f'reader_age={outcome["reader_age"]:.6f}s; missed product 2s window', flush=True)
+                  f'reader_age={age}; stage={outcome.get("window_stage", "wake-exit")}; '
+                  'no live observation window', flush=True)
             continue
         outcome.update(attempts=attempt, reader_ages=read_ages + [outcome['reader_age']])
         if report:
             Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
         return outcome
+    ages = ['读账尚未就绪' if age is None else age for age in read_ages]
     raise AssertionError(f'未能验证（测量环境问题，非产品缺陷）：机器负载过高，{attempts} 次都没能'
-                         f'在产品 2 秒超时前建立观察窗口；模式={mode}，各次读龄={read_ages}')
+                         f'在产品 2 秒超时前建立观察窗口；模式={mode}，各次读龄={ages}')
 
 
 def probe_once(source, mode, immediate=False, wait_seconds=5, report=None, measure=False, attempt=1):
@@ -162,9 +165,15 @@ PY
             own(wake.pid)
             # Startup precedes the measured read; allow slow scheduling without changing its 2s window.
             deadline = time.monotonic()+30
-            while not waiting.exists():
-                assert wake.poll() is None and time.monotonic()<deadline, ('wake did not reach wait hook', wake.poll())
-                time.sleep(.001)
+            def wait_for_marker(path, stage):
+                while not path.exists():
+                    rc = wake.poll()
+                    assert rc is None, (stage, rc, wake.communicate())
+                    if time.monotonic() >= deadline:
+                        raise MissedWindow(dict(mode=mode, immediate=immediate, result='inconclusive',
+                                                reader_age=None, attempts=attempt, window_stage=stage))
+                    time.sleep(.001)
+            wait_for_marker(waiting, 'wake-startup')
             if mode == 'normal':
                 # Publish while wake is parked, before arming a fresh blocked read.
                 started = time.monotonic()
@@ -172,9 +181,7 @@ PY
                     '--', 'done: subscription reap fixture progress', env=env)
                 wanted = 2
             armed.touch()
-            while not ready.exists():
-                assert wake.poll() is None and time.monotonic()<deadline, ('reader did not reach FIFO', wake.poll(), wake.communicate() if wake.poll() is not None else '')
-                time.sleep(.001)
+            wait_for_marker(ready, 'reader-ready')
             reader = json.loads(ready.read_text())
             own(reader['pgid'])
             event_dir = Path(shlex.split(reader['subscriber'])[-1]).parent
