@@ -84,19 +84,20 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
 def check_socket_path(path):
     size = len(os.fsencode(path))
     if size > 103:
-        root = Path(path).parent.parent
+        root = Path(path).parents[2]
         raise ValueError(f'测试 socket 路径超限：实际 {size} 字节，上限 103 字节；'
-                         f'仓库根实际 {len(os.fsencode(root))} 字节，最多 97 字节'
-                         f'（固定后缀 6 字节）：{path}')
+                         f'仓库根实际 {len(os.fsencode(root))} 字节，最多 89 字节'
+                         f'（固定后缀 14 字节）：{path}')
 
 
 def socket_path():
-    # The existing supervisor owns both the processes and these shallow directories.
+    # The existing supervisor owns both the processes and these ignored directories.
     root = Path(__file__).resolve().parents[1]
-    check_socket_path(root / '.00' / 's')
+    base = root / '.qwb-tmp'
+    check_socket_path(base / '00' / 's')
     record = Path(os.environ['QWB_TEST_SOCKET_DIRS'])
     while True:
-        directory = root / ('.' + secrets.token_hex(1))
+        directory = base / secrets.token_hex(1)
         try:
             directory.mkdir(mode=0o700)
             break
@@ -128,7 +129,7 @@ def main():
     script = sys.argv[1]
     root = Path(__file__).resolve().parents[1]
     try:
-        check_socket_path(root / '.00' / 's')
+        check_socket_path(root / '.qwb-tmp' / '00' / 's')
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
