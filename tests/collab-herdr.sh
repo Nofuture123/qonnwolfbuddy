@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline public-entry contract: real temporary Git/MD, fake Herdr CLI + Unix stream.
 set -euo pipefail
+# shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
 qwb_test_scope "$@"
 export TMPDIR="${QWB_TEST_SCOPE_DIR}"
@@ -9,6 +10,10 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [[ $# -eq 0 ]]; then
+  python3 -B "$ROOT/tests/herdr-batch.py"
+  exit "$?"
+fi
 # Explicit missing-writer proof: exercise both independent public guards and partial receipts.
 if [[ "${1:-}" != finish-equivalence ]]; then
 python3 -B - "$ROOT" <<'PY'
