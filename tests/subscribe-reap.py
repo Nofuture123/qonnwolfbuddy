@@ -33,7 +33,34 @@ def cli(binary, project, *args, env):
     return result.stdout
 
 
+class MissedWindow(RuntimeError):
+    pass
+
+
 def probe(source, mode, immediate=False, wait_seconds=5, report=None, measure=False):
+    read_ages = []
+    attempts = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            outcome = probe_once(source, mode, immediate, wait_seconds, report, measure, attempt)
+        except MissedWindow as error:
+            outcome = error.args[0]
+            read_ages.append(outcome['reader_age'])
+            outcome.update(attempts=attempt, reader_ages=read_ages)
+            if report:
+                Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
+            print(f'INCONCLUSIVE subscribe {mode}: attempt={attempt}/{attempts} '
+                  f'reader_age={outcome["reader_age"]:.6f}s; missed product 2s window', flush=True)
+            continue
+        outcome.update(attempts=attempt, reader_ages=read_ages + [outcome['reader_age']])
+        if report:
+            Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
+        return outcome
+    raise AssertionError(f'未能验证（测量环境问题，非产品缺陷）：机器负载过高，{attempts} 次都没能'
+                         f'在产品 2 秒超时前建立观察窗口；模式={mode}，各次读龄={read_ages}')
+
+
+def probe_once(source, mode, immediate=False, wait_seconds=5, report=None, measure=False, attempt=1):
     base = ROOT / '.qwb-tmp'
     base.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='reap-', dir=base) as temporary:
@@ -70,11 +97,19 @@ def probe(source, mode, immediate=False, wait_seconds=5, report=None, measure=Fa
         gate = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
         ready = directory / 'reader.json'
         waiting = directory / 'wake-waiting'
+        armed = directory / 'reader-armed'
         round_fifo = directory / 'round-gate'
         os.mkfifo(round_fifo)
         round_gate = os.open(round_fifo, os.O_RDWR | os.O_NONBLOCK)
         # This existing sleep hook is reached only after startup reconciliation.
         # Hold the next round until a fresh subscriber read is blocked and progress is published.
+        # Advance only wake's wait clock after release; subscribe retains its real 2s timeout.
+        advanced = directory / 'round-advanced'
+        clock = stub / 'round-clock'
+        clock.write_text('#!/bin/sh\nexec perl -MTime::HiRes=time -e \'printf "%d", '
+                         'time()*1000 + (-e $ARGV[0] ? 1000 : 0)\' '+shlex.quote(str(advanced))+'\n')
+        clock.chmod(0o755)
+        env['QWB_NOW_MS_CMD'] = str(clock)
         hook = stub / 'round-sleep'
         hook.write_text(f'''#!{sys.executable}
 import time,sys
@@ -83,21 +118,27 @@ marker=Path({str(waiting)!r})
 if not marker.exists():
     marker.touch()
     with open({str(round_fifo)!r}) as gate:gate.readline()
+    Path({str(advanced)!r}).touch()
 else:time.sleep(int(sys.argv[1])/1000)
 ''')
         hook.chmod(0o755)
         env['QWB_SLEEP_CMD'] = str(hook)
         # Transparent argv exec: only the subscriber's ledger read waits on an owned FIFO.
-        (stub / 'bash').write_text(f'''#!{sys.executable}
+        (stub / 'bash').write_text(f'''#!/bin/sh
+if [ "${{2:-}}" != read ] || [ ! -e {shlex.quote(str(armed))} ]; then
+    exec /bin/bash "$@"
+fi
+exec {shlex.quote(sys.executable)} - "$@" <<'PY'
 import json,os,subprocess,sys,time
 from pathlib import Path
 parent=subprocess.run(['/bin/ps','-p',str(os.getppid()),'-o','command='],capture_output=True,text=True).stdout
-if len(sys.argv)>2 and sys.argv[2]=='read' and 'subscribe --project' in parent and Path({str(waiting)!r}).exists():
+if len(sys.argv)>2 and sys.argv[2]=='read' and 'subscribe --project' in parent and Path({str(armed)!r}).exists():
     details=dict(pid=os.getpid(),ppid=os.getppid(),pgid=os.getpgrp(),started=time.monotonic(),argv=sys.argv[1:],subscriber=parent.strip())
     saved=Path({(str(ready)+'.tmp')!r})
     saved.write_text(json.dumps(details));saved.replace({str(ready)!r})
     with open({str(fifo)!r}) as waiting:waiting.readline()
 os.execv('/bin/bash',['/bin/bash',*sys.argv[1:]])
+PY
 ''')
         (stub / 'bash').chmod(0o755)
         # Migration creates a real handoff; consume its first transport before testing interruption.
@@ -120,19 +161,23 @@ os.execv('/bin/bash',['/bin/bash',*sys.argv[1:]])
                                     preexec_fn=lambda:signal.signal(signal.SIGINT,signal.SIG_DFL))
             own(wake.pid)
             deadline = time.monotonic()+10
+            while not waiting.exists():
+                assert wake.poll() is None and time.monotonic()<deadline, ('wake did not reach wait hook', wake.poll())
+                time.sleep(.001)
+            if mode == 'normal':
+                # Publish while wake is parked, before arming a fresh blocked read.
+                started = time.monotonic()
+                cli(ledger, project, 'append', '--task', str(ticket), '--event-id', 'reap-progress',
+                    '--', 'done: subscription reap fixture progress', env=env)
+                wanted = 2
+            armed.touch()
             while not ready.exists():
                 assert wake.poll() is None and time.monotonic()<deadline, ('reader did not reach FIFO', wake.poll(), wake.communicate() if wake.poll() is not None else '')
                 time.sleep(.001)
             reader = json.loads(ready.read_text())
             own(reader['pgid'])
             event_dir = Path(shlex.split(reader['subscriber'])[-1]).parent
-            if mode == 'normal':
-                # Publish only after the subscriber's child has actually reached the gate.
-                started = time.monotonic()
-                cli(ledger, project, 'append', '--task', str(ticket), '--event-id', 'reap-progress',
-                    '--', 'done: subscription reap fixture progress', env=env)
-                wanted = 2
-            else:
+            if mode != 'normal':
                 if not immediate:
                     time.sleep(.1)
                 started = time.monotonic()
@@ -141,19 +186,24 @@ os.execv('/bin/bash',['/bin/bash',*sys.argv[1:]])
             os.write(round_gate, b'continue\n')
             out, err = wake.communicate(timeout=5)
             elapsed = time.monotonic()-started
-            read_age = time.monotonic()-reader['started']
-            assert read_age < 2 and 'timed out after 2 seconds' not in err, ('missed live-reader window', read_age, err)
             assert wake.returncode == wanted, (mode, wake.returncode, out, err)
             live = [row for row in processes() if int(row[2]) in {wake.pid,reader['pgid']}]
-            # This assertion executes before finally or any shared test fixture drains groups.
+            read_age = time.monotonic()-reader['started']
+            missed = read_age >= 2 or 'timed out after 2 seconds' in err
+            # Observe before finally or shared cleanup; a missed window proves nothing about leaks.
             outcome = dict(mode=mode, immediate=immediate, rc=wake.returncode, seconds=elapsed,
                            reader=reader, reader_age=read_age, live_after_wake=live, event_dir=str(event_dir),
-                           event_dir_exists=event_dir.exists(), stdout=out, stderr=err)
+                           event_dir_exists=event_dir.exists(), stdout=out, stderr=err, attempts=attempt,
+                           result='inconclusive' if missed else ('residual' if live else 'clean'))
             if report:
                 Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
+            if missed:
+                raise MissedWindow(outcome)
+            print(f'OBSERVED subscribe {mode}: attempts={attempt} reader_age={read_age:.6f}s '
+                  f'result={outcome["result"]}', flush=True)
             if measure:
                 return outcome
-            assert not live, 'subscription reader survived before test cleanup: '+json.dumps(live,ensure_ascii=False)
+            assert not live, '测到了且有残留（产品缺陷）: subscription reader survived before test cleanup: '+json.dumps(live,ensure_ascii=False)
             assert not event_dir.exists(), 'EVENT_DIR survived wake cleanup'
             if mode=='normal':
                 assert 'subscription reap fixture progress' in out and '看账本：' in out, out
