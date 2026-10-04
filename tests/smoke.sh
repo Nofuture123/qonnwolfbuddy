@@ -160,7 +160,11 @@ case "\${1:-} \${2:-}" in
                 fi
                 fix pane-run.json ;;
   "pane send-keys") fix pane-run.json ;;
-  "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then sleep 8; fi
+  "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then
+                  sleep 8 & slowpid=\$!
+                  printf '%s %s\\n' "\$slowpid" "\$\$" > "\${QWB_STUB_SLOW_PID_FILE:?}"
+                  wait "\$slowpid"
+                fi
                 if [[ "\${HERDR_FAIL:-}" == *list* ]]; then failjson io_error "mocked pane list failure"; fi
                 if [[ -f "\$DYNH/pane-list.json" ]]; then sed '/^#/d' "\$DYNH/pane-list.json"; else fix pane-list.json; fi ;;
   "workspace list") if [[ "\${HERDR_FAIL:-}" == *wslist* ]]; then failjson io_error "mocked workspace list failure"; fi
@@ -2584,12 +2588,25 @@ out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
 # 46c 真实 SIGTERM：持锁期间被 TERM → 锁清、退出码非0、下一次 ensure 可用
 ensreset
 mk_plist "$DYN/pane-list.json" "w93:p1,agent"
+SLOW_LIST_PID="$TMP/slow-list.pid"
+: > "$SLOW_LIST_PID"
 ( cd "$ENSP" && PATH="$STUB:$PATH" HERDR_WORKSPACE_ID=wtestW HERDR_PANE_ID=wtest:ctl \
-    HERDR_DYN_DIR="$DYN" QWB_STUB_SLOW_LIST=1 exec bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl ) &
+    HERDR_DYN_DIR="$DYN" QWB_STUB_SLOW_LIST=1 QWB_STUB_SLOW_PID_FILE="$SLOW_LIST_PID" \
+    exec bash qwbuddy/bin/qwb-wake.sh --ensure --pane wtest:ctl ) &
 termpid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -d "$ENSP/qwbuddy/.watch.lock" ]] && break; sleep 0.2; done
 [[ -d "$ENSP/qwbuddy/.watch.lock" ]] || bad "慢 list 期间未见 .watch.lock（信号时序没锁住）"
-kill -TERM "$termpid" 2>/dev/null; wait "$termpid"; rc=$?
+# Reach the sleeping stub before signaling; then release its owned sleep so
+# Bash can run its pending TERM trap immediately, without eight seconds passing.
+slow_deadline=$((SECONDS + 10))
+while [[ ! -s "$SLOW_LIST_PID" ]] && kill -0 "$termpid" 2>/dev/null && (( SECONDS < slow_deadline )); do sleep 0.01; done
+[[ -s "$SLOW_LIST_PID" ]] || bad "慢 list 夹具未到睡眠握手"
+kill -TERM "$termpid" 2>/dev/null
+if [[ -s "$SLOW_LIST_PID" ]]; then
+  read -r slow_pid slow_owner < "$SLOW_LIST_PID"
+  if [[ "$(/bin/ps -p "$slow_pid" -o ppid=)" -eq "$slow_owner" ]]; then kill "$slow_pid" 2>/dev/null; fi
+fi
+wait "$termpid"; rc=$?
 { [[ "$rc" -ne 0 ]] && [[ ! -d "$ENSP/qwbuddy/.watch.lock" ]]; } \
   && ok "真实 SIGTERM → 锁已清且非0（rc=${rc}）" || { bad "TERM 后锁残留（rc=${rc}）"; ls -la "$ENSP/qwbuddy/"; }
 out="$(ensrun --ensure --pane wtest:ctl 2>&1)"; rc=$?
@@ -3649,7 +3666,8 @@ hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
   || bad "hook 单飞不对（rc=${hook_rc}，out=${hook_out}）"
 
 # 场景：锁存在但 pid 已死 → 接管、跑 --block、rc 2、摘要在输出里、结束后锁已清
-DEADPID=$(sleep 0.1 & echo $!); sleep 0.4
+( exit 0 ) & DEADPID=$!
+wait "$DEADPID"
 echo "$DEADPID" > "$HP/qwbuddy/.hook.lock/pid"
 hook_out="$(hook_run wtest:ctl)"; hook_rc=$?
 { [[ "$hook_rc" -eq 2 ]] \
@@ -3799,7 +3817,8 @@ LP="$TMP/lockproj"; mkdir -p "$LP"; clone_install "$LP" >/dev/null
 LK="$LP/qwbuddy/.controller.lock"
 # 59a 死 pid → 自动回收
 rm -rf "$LK"; mkdir "$LK"
-DEADPID="$(sleep 0.1 & echo $!)"; sleep 0.4
+( exit 0 ) & DEADPID=$!
+wait "$DEADPID"
 printf '2020-01-01T00:00:00Z pid:%s\n' "$DEADPID" > "$LK/owner"
 out="$( cd "$LP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-lock.sh acquire --owner me 2>&1 )"; rc=$?
 { [[ "$rc" -eq 0 ]] && grep -q '回收残留锁' <<<"$out" \
@@ -4342,7 +4361,12 @@ out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
   && ok "init 新建 .pi/extensions/qwb-watch.ts 并提示重启生效" \
   || { bad "init 新建扩展失败（rc=$rc）"; }
 mt() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
-m_before="$(mt "$DST")"; sleep 1
+# Give the file a known old mtime: any rewrite differs even in the same second.
+python3 - "$DST" <<'PY'
+import os, sys
+os.utime(sys.argv[1], (946684800, 946684800))
+PY
+m_before="$(mt "$DST")"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ "$(mt "$DST")" == "$m_before" ]] \
     && grep -q '内容一致' <<<"$out" && [[ ! -f "$DST.bak" ]]; } \
