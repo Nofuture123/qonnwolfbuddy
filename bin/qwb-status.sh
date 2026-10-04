@@ -68,33 +68,41 @@ files=("$LEDGER"/*.md)
 if [[ ${#files[@]} -eq 0 ]]; then
   echo "（无任务书）"
 else
-  for f in "${files[@]}"; do
-    grep -q '^state:' "$f" || continue   # 无 state 字段行 → 非任务书（如 lessons.md），跳过
-    name="$(basename "$f")"
-    st="$(qwb_task_state "$f")"
-    bytes_ok=1
-    qwb_ledger_utf8_ok "$f" || bytes_ok=0
-    if [[ "$bytes_ok" -eq 0 ]]; then
-      mark="未结"
-    else
-      case "$st" in
-        running|blocked|needs-decision) mark="未结" ;;
-        done|verified) mark="已结" ;;
-        *) mark="未结" ;;
-      esac
+  collab_errors=""
+  trap '[[ -z "$collab_errors" ]] || rm -f "$collab_errors"' EXIT
+  while IFS=$'\t' read -r f bytes_ok has_collab st; do
+    name="${f##*/}"
+    valid_state=1
+    case "$st" in
+      running|blocked|needs-decision) mark="未结" ;;
+      done|verified) mark="已结" ;;
+      *) mark="未结"; valid_state=0 ;;
+    esac
+    [[ "$bytes_ok" -eq 1 ]] || mark="未结"
+    collab_ok=0
+    if [[ "$has_collab" -eq 1 ]]; then
+      # reader 只调用一次；保留旧义务/明细两次读账各自位置上的 stderr。
+      if [[ -z "$collab_errors" ]]; then collab_errors="$(mktemp)"; fi
+      if collab="$(qwb_ledger "$PROJECT_ROOT" "$f" read 2>"$collab_errors")"; then
+        collab_ok=1
+        [[ -z "$(printf '%s' "$collab" | qwb_task_obligations_json)" ]] || mark="未结"
+      else
+        mark="未结"
+      fi
+      cat "$collab_errors" >&2
     fi
-    [[ -z "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]] || mark="未结"
     last="$(grep -E '^(working|done|blocked|needs-decision|wake|dispatch):' "$f" 2>/dev/null | tail -1 || true)"
     if [[ "$bytes_ok" -eq 0 ]]; then
       printf '[未结] %-40s state=%s —— 账本 UTF-8 损坏，须主控查看\n' "$name" "$st"
-    elif [[ "$st" != running && "$st" != blocked && "$st" != needs-decision && "$st" != "done" && "$st" != verified ]]; then
+    elif [[ "$valid_state" -eq 0 ]]; then
       printf '[未结] %-40s state=%s —— 状态异常，须主控查看\n' "$name" "$st"
     else
       printf '[%s] %-40s state=%s\n' "$mark" "$name" "$st"
     fi
     [[ -n "$last" ]] && printf '       最近: %s\n' "$last"
     if grep -q '^<!-- qwb-collab-v1$' "$f"; then
-      if collab="$(qwb_ledger "$PROJECT_ROOT" "$f" read)"; then
+      cat "$collab_errors" >&2
+      if [[ "$collab_ok" -eq 1 ]]; then
         printf '%s' "$collab" | perl -MJSON::PP -0777 -e '
           my $d=decode_json(<STDIN>);
           print "       claim未释放: $d->{claim}{op_id}\n" if $d->{claim};
@@ -156,7 +164,7 @@ else
     if printf '%s' "$spev" | grep -qE '^blocked:[[:space:]]*spec-defect:'; then
       printf '       规格疑点未处理: %s\n' "$spev"
     fi
-  done
+  done < <(qwb_ledger_scan "${files[@]}")
 fi
 
 echo
