@@ -824,6 +824,9 @@ sub graph_check {
   return \@evidence;
 }
 sub accepted_history { $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted') }
+sub ready_fingerprint {
+  my ($p,$e)=@_; return sha256_hex($json->encode([$data->{spec_rev},$p->{needs},$e,$p->{authorization}]));
+}
 sub start_check {
   my $selected=shift; fail('用户专属问题未解除') if $data && grep { $_->{resumed} eq '' } values %{$data->{questions}};
   if (!$data || !$data->{planning}) {
@@ -987,7 +990,7 @@ if ($cmd eq 'land-authorize') {
     $p->{ready}={fingerprint=>$fp,spec_rev=>$data->{spec_rev},status=>'blocked',reason=>$reason};
     $line="blocked: planner-not-ready spec_rev=$data->{spec_rev} reason=$reason";
   } else {
-    my $fp=sha256_hex($json->encode([$data->{spec_rev},$p->{needs},$e,$p->{authorization}]));
+    my $fp=ready_fingerprint($p,$e);
     if (($p->{ready}{fingerprint} // '') eq $fp) { print "ready\n"; exit }
     $p->{ready}={fingerprint=>$fp,spec_rev=>$data->{spec_rev},status=>'ready',evidence=>$e};
     $line="working: planner-ready spec_rev=$data->{spec_rev} fingerprint=$fp dependencies-resolved";
@@ -1519,7 +1522,7 @@ if ($cmd eq 'land-authorize') {
   if ($cmd eq 'start-claim') {
     fail('start-claim参数非法') unless @args==2; my $e=start_check($args[1]);
     if ($data->{planning}) {
-      my $p=$data->{planning}; my $fp=sha256_hex($json->encode([$data->{spec_rev},$p->{needs},$e,$p->{authorization}]));
+      my $p=$data->{planning}; my $fp=ready_fingerprint($p,$e);
       $p->{ready}={fingerprint=>$fp,spec_rev=>$data->{spec_rev},evidence=>$e,op_id=>$args[0],worker=>$args[1]};
       $line="working: planner-ready op_id=$args[0] fingerprint=$fp dependencies-resolved"; append_body($line);
     }
@@ -1557,7 +1560,7 @@ if ($cmd eq 'land-authorize') {
   fail('派发记录非法') unless string_ok($line) && string_ok($pane) && $pane ne '' && $line =~ /^dispatch:/ && index($line," pane=$pane dir=")>=0;
   if ($data && $data->{planning} && !$gate) {
     my ($selected)=$line=~/\bworker=([^ ]+)/; my $e=start_check($selected); my $p=$data->{planning};
-    my $fp=sha256_hex($json->encode([$data->{spec_rev},$p->{needs},$e,$p->{authorization}]));
+    my $fp=ready_fingerprint($p,$e);
     fail('派工claim未绑定当前授权/就绪条件') unless ($p->{ready}{op_id} // '') eq $op && ($p->{ready}{worker} // '') eq $selected && ($p->{ready}{fingerprint} // '') eq $fp;
   }
   if ($gate) {
