@@ -4845,6 +4845,10 @@ done
   && ok "第 51 节同型断言连续 20 次全部通过" || bad "第 51 节同型断言仍有假阴性"
 
 
+echo "== 88. 值守退出回收订阅读账及孙进程 =="
+# The probe checks product-owned groups before any shared fixture cleanup can hide a leak.
+python3 -B "$ROOT/tests/subscribe-reap.py" || bad "订阅子进程回收公开入口回归"
+
 # 新节必须加在本行之前
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "SMOKE PASS"; exit 0; else echo "SMOKE FAIL（$FAILS 项）"; exit 1; fi

@@ -4,7 +4,7 @@ set -euo pipefail
 BINDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 export QWB_HERDR_BINDIR="$BINDIR"
 exec python3 -B - "$@" <<'PY'
-import argparse, json, os, re, socket, subprocess, sys, time
+import argparse, json, os, re, signal as signals, socket, subprocess, sys, time
 from pathlib import Path
 
 p=argparse.ArgumentParser(description='Herdr hints, owned Space ordering and focus-safe close')
@@ -16,10 +16,42 @@ a=p.parse_args(); root=Path(a.project).resolve(); bindir=Path(os.environ['QWB_HE
 def require(ok,why):
     if not ok: raise ValueError(why)
 
+def reap_command(child):
+    # A query may itself fork; only its own newly-created session may be terminated.
+    try: os.killpg(child.pid,signals.SIGKILL)
+    except ProcessLookupError: pass
+    child.wait()
+    deadline=time.monotonic()+.75
+    while True:
+        rows=subprocess.run(['/bin/ps','-axo','pgid=,stat='],capture_output=True,text=True,check=True).stdout
+        if not any(int(row[0])==child.pid and not row[1].startswith('Z')
+                   for line in rows.splitlines() if (row:=line.split())): break
+        if time.monotonic()>=deadline: raise RuntimeError('subscription command descendants did not exit')
+        time.sleep(.005)
+    child.stdout.close(); child.stderr.close()
+
 def command(argv):
-    v=subprocess.run(argv,capture_output=True,text=True,timeout=2)
-    require(v.returncode==0,'query/action failed: '+(v.stderr or v.stdout).strip())
-    return v.stdout
+    if a.command!='subscribe':
+        v=subprocess.run(argv,capture_output=True,text=True,timeout=2)
+        require(v.returncode==0,'query/action failed: '+(v.stderr or v.stdout).strip())
+        return v.stdout
+    child=None
+    try:
+        # Parent signals stay pending until the handle is registered; the single-threaded
+        # child restores the original mask before exec, so it remains normally interruptible.
+        mask=signals.pthread_sigmask(signals.SIG_BLOCK,{signals.SIGTERM,signals.SIGINT})
+        try:
+            child=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                start_new_session=True,preexec_fn=lambda:signals.pthread_sigmask(signals.SIG_SETMASK,mask))
+        finally: signals.pthread_sigmask(signals.SIG_SETMASK,mask)
+        out,err=child.communicate(timeout=2)
+        require(child.returncode==0,'query/action failed: '+(err or out).strip())
+        return out
+    finally:
+        if child is not None:
+            mask=signals.pthread_sigmask(signals.SIG_BLOCK,{signals.SIGTERM,signals.SIGINT})
+            try: reap_command(child)
+            finally: signals.pthread_sigmask(signals.SIG_SETMASK,mask)
 
 def herdr(*argv):
     v=json.loads(command(['herdr',*argv])); require(not v.get('error') and isinstance(v.get('result'),dict),'Herdr result unknown')
@@ -76,6 +108,10 @@ def targets():
     return sorted(panes)
 
 def subscribe():
+    def interrupted(signum,_frame):
+        raise SystemExit(128+signum)
+    signals.signal(signals.SIGTERM,interrupted)
+    signals.signal(signals.SIGINT,interrupted)
     notice=Path(a.notice); counter=0; previous=None
     def signal(kind,panes):
         nonlocal counter
