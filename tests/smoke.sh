@@ -4349,109 +4349,6 @@ out="$(stat69)"
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
 
-echo "== 74. 生产运行时返修定向负例 =="
-runtime_out="$(bash "$ROOT/tests/runtime-readiness.sh" 2>&1)"; runtime_rc=$?
-if [[ "$runtime_rc" -eq 0 ]] && grep -q 'RUNTIME READINESS PASS' <<<"$runtime_out" &&
-  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 20 ]]; then
-  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 20 项通过"
-else
-  bad "运行时定向测试失败（rc=$runtime_rc)"
-  printf '%s\n' "$runtime_out"
-fi
-
-echo "== 75. 生产边界定向回归 =="
-if bash "$ROOT/tests/boundary-readiness.sh" > "$TMP/boundary-readiness.log" 2>&1; then
-  ok "生产边界定向回归通过"
-else
-  bad "生产边界定向回归失败"
-  grep -E '^(FAIL|BOUNDARY)' "$TMP/boundary-readiness.log" >&2 || true
-fi
-
-echo "== 76. 生产生命周期定向回归 =="
-if bash "$ROOT/tests/lifecycle-readiness.sh" > "$TMP/lifecycle-readiness.log" 2>&1; then
-  ok "生产生命周期真实子进程与跨 workspace 定向回归通过"
-else
-  bad "生产生命周期定向回归失败"
-  grep -E '^(FAIL|LIFECYCLE|Traceback|AssertionError)' "$TMP/lifecycle-readiness.log" >&2 || true
-fi
-
-echo "== 77. 工人配置 argv 与显式迁移定向回归 =="
-if python3 "$ROOT/tests/worker-config.py" > "$TMP/worker-config.log" 2>&1; then
-  ok "工人配置 argv、提前拒绝与显式迁移定向回归通过"
-else
-  bad "工人配置定向回归失败"
-  cat "$TMP/worker-config.log"
-fi
-
-
-echo "== 78. 按需文档安装与失效路径 =="
-if python3 "$ROOT/tests/on-demand-guide.py"; then
-  ok "按需文档安装、链接及负例通过"
-else
-  bad "按需文档安装、链接及负例失败"
-fi
-
-echo "== 79. worktree Space 拒绝与部分收尾隔离回归 =="
-if python3 "$ROOT/tests/worktree-space.py" > "$TMP/worktree-space.log" 2>&1; then
-  ok "Space 登记、身份与收尾失败路径通过"
-else
-  bad "Space 失败路径回归失败"
-  cat "$TMP/worktree-space.log"
-fi
-
-echo "== 80. R1 Space 收尾与归档恢复公开 CLI 回归 =="
-if grep -q '^R1 OPEN CLEANUP PASS:' "$TMP/worktree-space.log" &&
-   grep -q '^R1 NESTED ROOT PASS:' "$TMP/worktree-space.log" &&
-   grep -q '^R1 WORKER FINISH PASS:' "$TMP/worktree-space.log" &&
-   grep -q '^R1 ARCHIVE RECOVERY PASS:' "$TMP/worktree-space.log"; then
-  ok "R1 三审点 CLI 用例均执行并通过"
-else
-  bad "R1 三审点 CLI 用例未全部通过"
-  cat "$TMP/worktree-space.log"
-fi
-
-echo "== 81. R2 安装权限、Git 布局、收尾续做与派发提示公开 CLI 回归 =="
-if python3 "$ROOT/tests/r2-cli.py" > "$TMP/r2-cli.log" 2>&1; then
-  ok "R2 安装权限、布局、配置清理、部分收尾续做与提示用例通过"
-else
-  bad "R2 公开 CLI 回归失败"
-  cat "$TMP/r2-cli.log"
-fi
-
-echo "== 82. R3 损坏账本仍可点名和值守 =="
-if python3 "$ROOT/tests/invalid-ledger.py" > "$TMP/invalid-ledger.log" 2>&1; then
-  ok "非法 UTF-8 账本在公开 CLI 中可见、可叫醒，lint 明确拒绝"
-else
-  bad "损坏账本公开 CLI 回归失败"
-  cat "$TMP/invalid-ledger.log"
-fi
-
-echo "== 83. R4 UTF-8 唤醒摘要与中文票工人名公开 CLI 回归 =="
-if python3 -B "$ROOT/tests/r4-cli.py" > "$TMP/r4-cli.log" 2>&1; then
-  ok "严格 Herdr 接收摘要，中文票名稳定且不重名，ASCII 命名保持兼容"
-else
-  bad "R4 公开 CLI 回归失败"
-  cat "$TMP/r4-cli.log"
-fi
-
-echo "== 84. 真实 E2E 三宿主帮助与非法参数公开 CLI 回归 =="
-if python3 -B "$ROOT/tests/e2e-controllers-cli.py" > "$TMP/e2e-controllers-cli.log" 2>&1; then
-  ok "三宿主帮助声明及非法主控拒绝通过"
-else
-  bad "真实 E2E 三宿主入口参数回归失败"
-  cat "$TMP/e2e-controllers-cli.log"
-fi
-
-echo "== 85. --block 多轮输出仅最终摘要，空状态行明确显示 =="
-if bash "$ROOT/tests/wake-block-output.sh" > "$TMP/wake-block-output.log" 2>&1; then
-  ok "--block 无逐轮跳过；--once/--dry-run 保留日志；空状态行有说明"
-else
-  bad "--block 输出公开 CLI 回归失败"
-  cat "$TMP/wake-block-output.log"
-fi
-
-# JEV_ROLES_BEGIN（可提取本节定向跑；仍通过真实脚本与 curl）
-echo "== 86. JEV agents 角色层：本地 HTTP 全链路 =="
 jev_roles_smoke() (
   FAILS=0
   JR="$TMP/jev-roles"
@@ -4797,7 +4694,161 @@ PY
   trap - EXIT
   [[ "$FAILS" -eq 0 ]]
 )
-jev_roles_smoke || bad "JEV agents HTTP 全链路"
+
+# Each command owns its HOME and supervised process group. The socket helper
+# allocates a separate short path and records it in that command's own scope.
+# §80 depends on §79's log; collect everything before reporting in the old order.
+# Bound fan-out to four jobs: lifecycle probes have real wall-clock deadlines.
+# Bash 3.2 has no wait -n; retire the oldest owned job before launching another.
+SMOKE_PIDS=()
+smoke_start() {
+  local name="$1" slot; shift
+  if [[ "${#SMOKE_PIDS[@]}" -ge 4 ]]; then
+    slot=$(( ${#SMOKE_PIDS[@]} - 4 ))
+    wait "${SMOKE_PIDS[$slot]}"
+    SMOKE_PIDS[$slot]=""
+  fi
+  (
+    job="$TMP/parallel/$name"
+    mkdir -p "$job/home/.codex" "$job/tmp" || exit 1
+    printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$job/home/.codex/config.toml"
+    export HOME="$job/home" TMPDIR="$job/tmp"
+    python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
+      export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+      exec "$@"
+    ' smoke-child "$@" > "$TMP/$name.log" 2>&1
+    printf '%s\n' "$?" > "$TMP/$name.rc"
+  ) &
+  SMOKE_PIDS+=("$!")
+}
+smoke_start runtime-readiness bash "$ROOT/tests/runtime-readiness.sh"
+smoke_start boundary-readiness bash "$ROOT/tests/boundary-readiness.sh"
+smoke_start lifecycle-readiness bash "$ROOT/tests/lifecycle-readiness.sh"
+smoke_start worker-config python3 -B "$ROOT/tests/worker-config.py"
+smoke_start on-demand-guide python3 -B "$ROOT/tests/on-demand-guide.py"
+smoke_start worktree-space python3 -B "$ROOT/tests/worktree-space.py"
+smoke_start r2-cli python3 -B "$ROOT/tests/r2-cli.py"
+smoke_start invalid-ledger python3 -B "$ROOT/tests/invalid-ledger.py"
+smoke_start r4-cli python3 -B "$ROOT/tests/r4-cli.py"
+smoke_start e2e-controllers-cli python3 -B "$ROOT/tests/e2e-controllers-cli.py"
+smoke_start wake-block-output bash "$ROOT/tests/wake-block-output.sh"
+export -f jev_roles_smoke ok bad
+export ROOT
+smoke_start jev-roles bash -c 'TMP="$TMPDIR/project"; jev_roles_smoke'
+export -n -f jev_roles_smoke ok bad
+for smoke_pid in "${SMOKE_PIDS[@]}"; do
+  [[ -z "$smoke_pid" ]] || wait "$smoke_pid"
+done
+SMOKE_PIDS=()
+smoke_result() { [[ -f "$TMP/$1.rc" && "$(<"$TMP/$1.rc")" == 0 ]]; }
+
+echo "== 74. 生产运行时返修定向负例 =="
+runtime_out="$(<"$TMP/runtime-readiness.log")"; runtime_rc=1
+[[ ! -f "$TMP/runtime-readiness.rc" ]] || read -r runtime_rc < "$TMP/runtime-readiness.rc"
+if [[ "$runtime_rc" -eq 0 ]] && grep -q 'RUNTIME READINESS PASS' <<<"$runtime_out" &&
+  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 20 ]]; then
+  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 20 项通过"
+else
+  bad "运行时定向测试失败（rc=$runtime_rc)"
+  printf '%s\n' "$runtime_out"
+fi
+
+echo "== 75. 生产边界定向回归 =="
+if smoke_result boundary-readiness; then
+  ok "生产边界定向回归通过"
+else
+  bad "生产边界定向回归失败"
+  cat "$TMP/boundary-readiness.log" >&2
+fi
+
+echo "== 76. 生产生命周期定向回归 =="
+if smoke_result lifecycle-readiness; then
+  ok "生产生命周期真实子进程与跨 workspace 定向回归通过"
+else
+  bad "生产生命周期定向回归失败"
+  cat "$TMP/lifecycle-readiness.log" >&2
+fi
+
+echo "== 77. 工人配置 argv 与显式迁移定向回归 =="
+if smoke_result worker-config; then
+  ok "工人配置 argv、提前拒绝与显式迁移定向回归通过"
+else
+  bad "工人配置定向回归失败"
+  cat "$TMP/worker-config.log"
+fi
+
+
+echo "== 78. 按需文档安装与失效路径 =="
+cat "$TMP/on-demand-guide.log"
+if smoke_result on-demand-guide; then
+  ok "按需文档安装、链接及负例通过"
+else
+  bad "按需文档安装、链接及负例失败"
+fi
+
+echo "== 79. worktree Space 拒绝与部分收尾隔离回归 =="
+if smoke_result worktree-space; then
+  ok "Space 登记、身份与收尾失败路径通过"
+else
+  bad "Space 失败路径回归失败"
+  cat "$TMP/worktree-space.log"
+fi
+
+echo "== 80. R1 Space 收尾与归档恢复公开 CLI 回归 =="
+if grep -q '^R1 OPEN CLEANUP PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 NESTED ROOT PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 WORKER FINISH PASS:' "$TMP/worktree-space.log" &&
+   grep -q '^R1 ARCHIVE RECOVERY PASS:' "$TMP/worktree-space.log"; then
+  ok "R1 三审点 CLI 用例均执行并通过"
+else
+  bad "R1 三审点 CLI 用例未全部通过"
+  cat "$TMP/worktree-space.log"
+fi
+
+echo "== 81. R2 安装权限、Git 布局、收尾续做与派发提示公开 CLI 回归 =="
+if smoke_result r2-cli; then
+  ok "R2 安装权限、布局、配置清理、部分收尾续做与提示用例通过"
+else
+  bad "R2 公开 CLI 回归失败"
+  cat "$TMP/r2-cli.log"
+fi
+
+echo "== 82. R3 损坏账本仍可点名和值守 =="
+if smoke_result invalid-ledger; then
+  ok "非法 UTF-8 账本在公开 CLI 中可见、可叫醒，lint 明确拒绝"
+else
+  bad "损坏账本公开 CLI 回归失败"
+  cat "$TMP/invalid-ledger.log"
+fi
+
+echo "== 83. R4 UTF-8 唤醒摘要与中文票工人名公开 CLI 回归 =="
+if smoke_result r4-cli; then
+  ok "严格 Herdr 接收摘要，中文票名稳定且不重名，ASCII 命名保持兼容"
+else
+  bad "R4 公开 CLI 回归失败"
+  cat "$TMP/r4-cli.log"
+fi
+
+echo "== 84. 真实 E2E 三宿主帮助与非法参数公开 CLI 回归 =="
+if smoke_result e2e-controllers-cli; then
+  ok "三宿主帮助声明及非法主控拒绝通过"
+else
+  bad "真实 E2E 三宿主入口参数回归失败"
+  cat "$TMP/e2e-controllers-cli.log"
+fi
+
+echo "== 85. --block 多轮输出仅最终摘要，空状态行明确显示 =="
+if smoke_result wake-block-output; then
+  ok "--block 无逐轮跳过；--once/--dry-run 保留日志；空状态行有说明"
+else
+  bad "--block 输出公开 CLI 回归失败"
+  cat "$TMP/wake-block-output.log"
+fi
+
+# JEV_ROLES_BEGIN（可提取本节定向跑；仍通过真实脚本与 curl）
+echo "== 86. JEV agents 角色层：本地 HTTP 全链路 =="
+cat "$TMP/jev-roles.log"
+smoke_result jev-roles || bad "JEV agents HTTP 全链路"
 # JEV_ROLES_END
 
 echo "== 87. lint 大输出与占位警告 UTF-8 截断回归 =="
