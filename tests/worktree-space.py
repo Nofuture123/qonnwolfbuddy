@@ -19,7 +19,7 @@ if __name__ == '__main__' and 'QWB_TEST_SOCKET_DIRS' not in os.environ:
     sys.exit(run([sys.executable, __file__, *sys.argv[1:]]).returncode)
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_TMP_ROOT = ROOT / ".qwb-tmp"
+TEST_TMP_ROOT = Path(os.environ.get("QWB_TEST_SCOPE_DIR", str(ROOT / ".qwb-tmp")))
 TEST_TMP_ROOT.mkdir(exist_ok=True)
 os.environ["TMPDIR"] = str(TEST_TMP_ROOT)
 os.environ["GIT_CEILING_DIRECTORIES"] = str(TEST_TMP_ROOT)

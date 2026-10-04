@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Public CLI contract for optional routing. All projects, keys and processes are fake.
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+export TMPDIR="${QWB_TEST_SCOPE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
