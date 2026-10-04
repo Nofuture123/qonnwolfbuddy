@@ -127,6 +127,12 @@ sub safe_open {
   fail("路径非本人常规单链接文件 $path") unless @s && @l && S_ISREG($s[2]) && $s[3]==1 && $s[4]==$< && $s[0]==$l[0] && $s[1]==$l[1];
   binmode $fh; return $fh;
 }
+sub read_file {
+  my ($path,$close_error)=@_; my $fh=safe_open($path,O_RDONLY);
+  my $s=do { local $/; <$fh> }; my $closed=close $fh;
+  fail($close_error) if defined($close_error) && !$closed;
+  return $s;
+}
 # Lock order: controller directory -> posture. Task writers already hold controller
 # before their read-only posture probe; never invert that order in mode mutations.
 my $posture_controller_guard;
@@ -151,8 +157,7 @@ my $creating=$cmd eq 'new' && !-e $file;
 my $absent=($posture || $creating) && !-e $file && !-l $file;
 my $raw='';
 unless ($absent) {
-  my $in=safe_open($file,O_RDONLY);
-  $raw=do { local $/; <$in> }; close $in or fail('读关闭失败');
+  $raw=read_file($file,'读关闭失败');
   fail('票为空') unless defined($raw) && length($raw);
 }
 my $byte_legacy=0;
@@ -263,7 +268,7 @@ if ($posture) {
   if ($cmd eq 'mode-enter' || $cmd eq 'mode-exit') {
     # Match the ledger's existing controller owner, with the same directory lock.
     fail('主控锁符号链接非法') if -l "$parent/.controller.lock";
-    my $own=safe_open("$parent/.controller.lock/owner",O_RDONLY); my $owner_raw=do { local $/; <$own> }; close $own;
+    my $owner_raw=read_file("$parent/.controller.lock/owner");
     my ($owner)=$owner_raw =~ /^\S+\s+(\S+)\s*\z/;
     fail('模式变更仅现有主控；同UID防误用，不是OS沙箱') unless defined($owner) && $owner eq $actor;
     my ($kind,$to,$words);
@@ -291,7 +296,7 @@ if ($posture) {
       my $t="$root/tasks/$name";
       my $row={task=>text($t)};
       my $ok=eval {
-        my $fh=safe_open($t,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+        my $s=read_file($t);
         if ($s !~ /^state:/m) { $row->{non_task}=1 } else {
         my $pid=open(my $probe,'-|'); defined($pid) or fail('无法启动逐票reader');
         if (!$pid) { exec('bash',"$bindir/qwb-ledger.sh",'read','--project',$root,'--task',$t) or exit 255 }
@@ -623,7 +628,7 @@ sub capture {
   $s=~s/\n\z//; return $s;
 }
 sub json_file {
-  my $fh=safe_open(encode('UTF-8',$_[0]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file(encode('UTF-8',$_[0]));
   return (strict_json($s),sha256_hex($s));
 }
 sub ci_bytes {
@@ -644,7 +649,7 @@ sub test_policy {
   fail('策略版本非法') unless $rev=~/\A[A-Za-z0-9_-]{1,80}\z/;
   my $path="$root/qwbuddy/test-policy/$rev.md";
   fail('策略目录非法') unless -d dirname($path) && !-l dirname($path) && realpath(dirname($path)) eq dirname($path);
-  my $fh=safe_open($path,O_RDONLY); my $raw=do { local $/; <$fh> }; close $fh;
+  my $raw=read_file($path);
   my $s=text($raw);
   my %expected=(schema=>'qwb-test-policy-v1',policy_rev=>$rev,risks=>'normal high','required-gates'=>'full');
   for my $key (keys %expected) {
@@ -672,10 +677,10 @@ sub gate_context {
   fail('候选路径变化') unless (realpath($c) // '') eq $c && capture('git','-C',$c,'rev-parse','--show-toplevel') eq $c;
   fail('候选非本项目副本') unless capture('git','-C',$c,'rev-parse','--path-format=absolute','--git-common-dir') eq capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
   my $conf=-f "$c/qwbuddy/config.sh" ? "$c/qwbuddy/config.sh" : "$c/qwb.config.sh";
-  my $fh=safe_open($conf,O_RDONLY); my $cfg=do { local $/; <$fh> }; close $fh;
-  my $workers=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $worker_config=do { local $/; <$workers> }; close $workers;
+  my $cfg=read_file($conf);
+  my $worker_config=read_file("$root/qwbuddy/workers.sh");
   fail('工人型号/effort配置已变，交主控重授权') unless $observe || sha256_hex($worker_config) eq $b->{workers_sha256};
-  my $envfh=safe_open(encode('UTF-8',$b->{environment}),O_RDONLY); my $envbody=do { local $/; <$envfh> }; close $envfh;
+  my $envbody=read_file(encode('UTF-8',$b->{environment}));
   my %commands;
   for my $name (keys %{$b->{required}}) {
     my $cmd=capture('bash','-c','. "$1" >&2; v="QWB_GATE_${2}"; printf "%s" "${!v}"','gate',$conf,uc($name));
@@ -763,7 +768,7 @@ sub land_md_snapshot {
 }
 sub ticket_snapshot {
   my $name=shift; fail('依赖票路径非法/歧义') unless defined($name) && $name=~/\A[A-Za-z0-9_.-]+\.md\z/;
-  my $path="$parent/$name"; my $fh=safe_open($path,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $path="$parent/$name"; my $s=read_file($path);
   my $t=text($s); fail("缺少已迁真实票 $name") unless $t=~/\n<!-- qwb-collab-v1\n([^\n]+)\n-->\n?\z/;
   my $d=strict_json(encode('UTF-8',$1)); fail('依赖票schema未知') unless ref($d) eq 'HASH' && ($d->{schema} // '') eq '1';
   planning_validate($d->{planning}) if exists $d->{planning}; return $d;
@@ -780,7 +785,7 @@ sub authorization {
     fail('授权须具名工人，不用auto') unless id_ok($w) && $w ne 'auto';
     $a->{profiles}{$w}=strict_json(capture('bash','-c','. "$1"; qwb_gate_profile "$2" "$3"','plan',"$bindir/qwb-lib.sh",$root,$w));
   }
-  my $fh=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file("$root/qwbuddy/workers.sh");
   $a->{workers_sha256}=sha256_hex($s); authorization_ok($a); return $a;
 }
 sub graph_check {
@@ -799,7 +804,7 @@ sub graph_check {
     my $d=$tickets{$e->{task}}; my $plan=$d->{planning} // fail("前置票未登记产物 $e->{task}");
     my $a=$plan->{artifacts}{$e->{artifact}} // fail("缺少指定产物 $e->{task}/$e->{artifact}");
     fail('旧版本产物/旧spec不能解除依赖') unless $a->{version} eq $e->{version} && $a->{spec_rev}==$e->{spec_rev} && $d->{spec_rev}==$e->{spec_rev} && !$plan->{pending_revision};
-    my $fh=safe_open(encode('UTF-8',$a->{ref}),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+    my $s=read_file(encode('UTF-8',$a->{ref}));
     fail('产物解除证据变化') unless sha256_hex($s) eq $a->{sha256};
     if ($e->{condition} ne 'available') {
       fail('接口可用不等于accepted') unless $d->{gate} && $d->{gate}{verdict} eq 'accepted' && $d->{gate}{binding}{spec_rev}==$d->{spec_rev};
@@ -821,7 +826,7 @@ sub start_check {
   fail('已验收历史不重复派工') if $data->{phase} eq 'verified' || ($data->{gate} && $data->{gate}{verdict} eq 'accepted');
   fail('工人/权限未授权，不可用default兜底') if defined($selected) && $selected ne 'auto' && !grep { $_ eq $selected } @{$a->{workers}};
   fail('本代规划授权已失效') if $planner_native && !$planner;
-  my $fh=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file("$root/qwbuddy/workers.sh");
   fail('指定工人型号/effort配置已变化') unless sha256_hex($s) eq $a->{workers_sha256};
   my $used=grep { $_->{kind} eq 'dispatch' && $_->{spec_rev}==$data->{spec_rev} && !($data->{gate} && exists($data->{gate}{dispatches}{$_->{op_id}})) } @{$data->{events}};
   fail('启动预算已耗尽/事件已派，不重复派发') if $used >= $a->{budget};
@@ -933,14 +938,14 @@ if ($cmd eq 'land-authorize') {
   }
   fail('不覆盖既有未迁票') unless $creating;
   for my $path (glob("$parent/*.md")) {
-    next if $path eq $file; my $fh=safe_open($path,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+    next if $path eq $file; my $s=read_file($path);
     next unless $s=~/\n<!-- qwb-collab-v1\n([^\n]+)\n-->\n?\z/;
     my $d=strict_json($1); next unless $d->{planning} && $d->{planning}{request_id} eq $r->{request_id};
     fail('request映射已存在且不一致，未知中断先对账') unless $json->encode($d->{planning}{packages}) eq $json->encode($r->{packages}) && $json->encode($d->{planning}{source}) eq $json->encode($source);
     fail('request/package已有不同票') if $d->{planning}{package_id} eq $r->{package_id};
   }
   my %installed;
-  for my $path (map { "$bindir/qwb-$_.sh" } qw(lib run wake worktree ledger send role)) { my $fh=safe_open($path,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh; $installed{$path}=sha256_hex($s) }
+  for my $path (map { "$bindir/qwb-$_.sh" } qw(lib run wake worktree ledger send role)) { my $s=read_file($path); $installed{$path}=sha256_hex($s) }
   $data={schema=>1,rev=>0,seq=>0,spec_rev=>0,phase=>'blocked',claim=>undef,workers=>{},questions=>{},events=>[],ops=>{},migration=>{task_sha256=>sha256_hex(''),confirm=>{map { $_=>'new ticket: no previous writers' } qw(run wake worktree worker controller old-fds external-actions)},installed=>\%installed}};
   fail('新票必须自带可验证场景') unless defined($r->{scenarios}) && $r->{scenarios}=~/\A## 验收场景\n/ && $r->{scenarios}=~/Given/ && $r->{scenarios}=~/When/ && $r->{scenarios}=~/Then/ && $r->{scenarios}=~/失败|拒绝|fail|error/i && index($r->{scenarios},'<!-- qwb-collab-')<0;
   $body="# 任务书：$r->{package_id}\nstate: blocked\n## 原始意图\n$source->{text}\n## 工程规格\n$r->{spec}\n## 必要约束\n$r->{constraints}\n$r->{scenarios}\n";
@@ -987,7 +992,7 @@ if ($cmd eq 'land-authorize') {
   my ($a)=json_file($args[0]); keys_only($a,qw(name version ref)); fail('产物名/版本非法') unless id_ok($a->{name}) && id_ok($a->{version});
   my $p=$data->{planning} // fail('无规划票'); fail('需求修订未交接，不能解除旧依赖') if $p->{pending_revision};
   my $path=realpath(encode('UTF-8',$a->{ref})) // fail('产物不存在');
-  my $fh=safe_open(encode('UTF-8',$a->{ref}),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file(encode('UTF-8',$a->{ref}));
   fail('已核旧产物不能覆盖；修订spec后重新登记') if $p->{artifacts}{$a->{name}} && $p->{artifacts}{$a->{name}}{spec_rev}==$data->{spec_rev};
   $p->{artifacts}{$a->{name}}={version=>$a->{version},spec_rev=>$data->{spec_rev},ref=>text($path),sha256=>sha256_hex($s)};
   $line="working: artifact-available name=$a->{name} version=$a->{version} spec_rev=$data->{spec_rev} evidence=".sha256_hex($s); append_body($line);
@@ -1263,7 +1268,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'gate-assign') {
   fail('授权仅现主控且票必须已迁/无在途claim') unless $controller && $data && !$data->{claim};
   fail('门禁身份未证实或已授权（不覆盖历史）') unless @args==2 && $identity->{actor} eq $args[0] && !$data->{gate};
-  my $fh=safe_open(encode('UTF-8',$args[1]),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file(encode('UTF-8',$args[1]));
   my $b=strict_json($s); keys_only($b,qw(candidate base attempt policy environment required workers));
   keys_only($b->{workers},qw(review rework));
   fail('工人授权须显式配置名，不用auto') if grep { !id_ok($_) || $_ eq 'auto' } values %{$b->{workers}};
@@ -1290,7 +1295,7 @@ if ($cmd eq 'land-authorize') {
     my @risks=$body=~/^risk:[ \t]*(\S+)[ \t]*$/mg;
     fail('策略票须唯一normal/high风险') unless @risks==1 && $risks[0]=~/\A(normal|high)\z/;
   }
-  my $workers=safe_open("$root/qwbuddy/workers.sh",O_RDONLY); my $worker_config=do { local $/; <$workers> }; close $workers;
+  my $worker_config=read_file("$root/qwbuddy/workers.sh");
   $b->{workers_sha256}=sha256_hex($worker_config);
   $b->{worker_profiles}={};
   for my $purpose (qw(review rework)) {
@@ -1367,7 +1372,7 @@ if ($cmd eq 'land-authorize') {
         $h->{accepted}=$actor; $h->{owner_fp}=sha256_hex($owner_raw); $h->{op_id}=$idop; $h->{activity_at}=$now;
       } elsif ($cmd eq 'handoff-reconcile') {
         fail('接班必须持版本和原claim') unless @args==2 && $expect ne '' && $h->{accepted} ne '' && !$h->{handled};
-        my $fh=safe_open(encode('UTF-8',$args[1]),O_RDONLY); my $proof=do { local $/; <$fh> }; close $fh;
+        my $proof=read_file(encode('UTF-8',$args[1]));
         my $p=strict_json($proof); keys_only($p,qw(task_sha256 op_id previous_owner reconciled));
         fail('接班快照/claim/对账证据不一致') unless $p->{task_sha256} eq sha256_hex($raw) && $p->{op_id} eq $h->{op_id} && $p->{previous_owner} eq $h->{accepted} && string_ok($p->{reconciled}) && $p->{reconciled} ne '';
         my $old=$h->{accepted};
@@ -1395,7 +1400,7 @@ if ($cmd eq 'land-authorize') {
           my $ref=encode('UTF-8',$args[2]); $ref="$root/$ref" unless $ref=~m{^/};
           my $resolved=realpath($ref) // fail('result_ref不存在');
           fail('result_ref越项目或符号链接') unless index($resolved,"$root/")==0 && !-l $ref;
-          my $fh=safe_open($ref,O_RDONLY); my $proof=do { local $/; <$fh> }; close $fh;
+          my $proof=read_file($ref);
           my $p=strict_json($proof); keys_only($p,qw(event_id op_id outcome evidence));
           fail('结果读回不匹配/未知') unless $p->{event_id} eq $id && $p->{op_id} eq $h->{op_id} && $p->{outcome}=~/\A(applied|not-applied)\z/ && string_ok($p->{evidence}) && $p->{evidence} ne '';
           if ($h->{handled}) { fail('重复handled结果冲突') unless $h->{result_ref} eq text($resolved) && $h->{result_sha256} eq sha256_hex($proof); print "$id\n"; exit }
@@ -1409,8 +1414,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'migrate') {
   fail('已迁入协议，不能重迁') if $data;
   fail('仅主控能迁移') unless $controller;
-  my $mfh=safe_open(encode('UTF-8',$args[0] // ''),O_RDONLY);
-  my $manifest=do { local $/; <$mfh> }; close $mfh;
+  my $manifest=read_file(encode('UTF-8',$args[0] // ''));
   my $m=strict_json($manifest); keys_only($m,qw(task_sha256 confirm));
   fail('迁移快照变动；重新对账') unless $m->{task_sha256} eq sha256_hex($raw);
   my @writers=qw(run wake worktree worker controller old-fds external-actions);
@@ -1433,18 +1437,18 @@ if ($cmd eq 'land-authorize') {
   my $templates=-f "$dir/QWBUDDY.md" ? $dir : "$root/templates";
   my %installed;
   for my $path (map { "$base/qwb-$_.sh" } qw(lib run wake worktree)) {
-    my $fh=safe_open($path,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+    my $s=read_file($path);
     fail("未迁调用者 $path") unless index($s,'qwb_ledger')>=0;
     $installed{$path}=sha256_hex($s);
   }
   for my $path ("$templates/TASK.md","$templates/QWBUDDY.md","$templates/roles/执行者.md") {
-    my $fh=safe_open($path,O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+    my $s=read_file($path);
     fail("未迁模板 $path") unless index($s,'qwb-ledger.sh')>=0;
     $installed{$path}=sha256_hex($s);
   }
   fail('旧票state不合法') unless state_of($body)=~/\A(running|blocked|needs-decision|done|verified)\z/;
   if (-e "$file.qwb-original" || -l "$file.qwb-original") {
-    my $backup=safe_open("$file.qwb-original",O_RDONLY); my $saved=do { local $/; <$backup> }; close $backup;
+    my $saved=read_file("$file.qwb-original");
     fail('既有原字节备份与当前票不一致，必须对账') unless $saved eq $raw;
   } else {
     my $backup=safe_open("$file.qwb-original",O_WRONLY|O_CREAT|O_EXCL);
@@ -1523,7 +1527,7 @@ if ($cmd eq 'land-authorize') {
   fail('接管必须持期望版本') if $expect eq '';
   $op=$args[0]; fail('接管op与持久claim不符') unless id_ok($op) && $data->{claim} && $data->{claim}{op_id} eq $op;
   my $old=$data->{claim}{owner}; fail('不能接管本人/不一致op') if $old eq $actor || !exists($data->{ops}{$op}) || $data->{ops}{$op}{owner} ne $old;
-  my $fh=safe_open(encode('UTF-8',$args[1] // ''),O_RDONLY); my $s=do { local $/; <$fh> }; close $fh;
+  my $s=read_file(encode('UTF-8',$args[1] // ''));
   my $e=strict_json($s); keys_only($e,qw(task_sha256 op_id previous_owner reconciled));
   fail('接管快照/op/原owner/对账证据不符') unless $e->{task_sha256} eq sha256_hex($raw) && $e->{op_id} eq $op && $e->{previous_owner} eq $old && string_ok($e->{reconciled}) && $e->{reconciled} ne '';
   if ($old =~ /\Apid:([1-9][0-9]*)\z/) {
