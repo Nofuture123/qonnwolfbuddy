@@ -149,7 +149,8 @@ SH
   printf '0.94' > "$JR/confidence"
   : > "$JR/requests"
   # 随机端口由同一个 server socket 分配并持有，避免先找空端口再绑定的竞态。
-  python3 - "$JR" <<'PY' &
+  (
+  exec python3 - "$JR" <<'PY'
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -188,6 +189,7 @@ server = HTTPServer(('127.0.0.1', 0), Handler)
 (root / 'port').write_text(str(server.server_port))
 server.serve_forever()
 PY
+  ) &
   JR_PID=$!
   trap 'kill "$JR_PID" 2>/dev/null || true; wait "$JR_PID" 2>/dev/null || true' EXIT
   trap 'exit 1' INT TERM
@@ -797,13 +799,13 @@ fc_finish() {
   fc_stop_watchdog
   qwb_test_release "$WPID" || { bad "§12 已登记进程组未能排空"; return 1; }
   if [[ -f "$FCT/watchdog-fired" ]]; then
-    bad "§12 看门狗15秒触发（rc=$FC_RC，now=$(cat "$FKN")，sleep=$(wc -l < "$FKS" | tr -d ' ')）"
+    bad "§12 看门狗15秒触发（rc=${FC_RC}，now=$(cat "$FKN")，sleep=$(wc -l < "$FKS" | tr -d ' ')）"
     cat "$FCT/runtime.log"
   elif [[ "$FC_RC" != 143 ]]; then
-    bad "§12 公开入口异常退出（rc=$FC_RC，非夹具TERM自停）"
+    bad "§12 公开入口异常退出（rc=${FC_RC}，非夹具TERM自停）"
     cat "$FCT/runtime.log"
   else
-    ok "§12 夹具TERM自停/排空（rc=$FC_RC），看门狗未触发"
+    ok "§12 夹具TERM自停/排空（rc=${FC_RC}），看门狗未触发"
   fi
 }
 fc_pane_ok() {
@@ -846,7 +848,7 @@ PY
   if grep -q 'events.subscribe' "$WIRELOG"; then
     local scans; scans="$(grep -c '^herdr pane get wtest:p9' "$FCLOG" || true)"
     [[ "$scans" -eq "$2" ]] && ok "真实公开账本扫描恰$2轮（已耗预算不重复启动等待）" \
-      || bad "预算轮数不符：实际扫描=$scans，期望=$2"
+      || bad "预算轮数不符：实际扫描=${scans}，期望=$2"
   fi
 }
 for burn in 250 600 0; do
@@ -1702,7 +1704,7 @@ for mode in existing symlink directory missing-parent missing-value duplicate; d
   else
     bash "$ROOT/bin/qwb-test.sh" fast --project "$RP" --report "$target" > "$RD/reject.out" 2> "$RD/reject.err"; rc=$?
   fi
-  [[ "$rc" -eq 2 && ! -e "$RP/count" ]] && ok "报告 $mode 预检拒绝且门未执行" || bad "报告 $mode 预检错误（rc=$rc）"
+  [[ "$rc" -eq 2 && ! -e "$RP/count" ]] && ok "报告 $mode 预检拒绝且门未执行" || bad "报告 $mode 预检错误（rc=${rc}）"
   case "$mode" in
     existing) [[ "$(cat "$target")" == preserved ]] || bad "已有报告被改"; rm "$target" ;;
     symlink) [[ "$(cat "$RD/link-target")" == link-target ]] || bad "符号链接目标被改"; rm "$target" ;;
@@ -4758,7 +4760,7 @@ run_pi_ext() {
 extout="$(run_pi_ext)"; extrc=$?
 { [[ $extrc -eq 0 ]] && grep -q 'pi-ext tests: 18 passed' <<<"$extout"; } \
   && ok "pi 扩展单元测试 18 项通过（锁主/晚获锁/退出交付/投递重试/退避/清理）" \
-  || { bad "pi 扩展单元测试失败（rc=$extrc）"; printf '%s\n' "$extout"; }
+  || { bad "pi 扩展单元测试失败（rc=${extrc}）"; printf '%s\n' "$extout"; }
 # TS 语法门（票 §2：tsc --noEmit 本机无 → 用 node type-stripping 转译检查，转译失败即门失败）
 if command -v node >/dev/null 2>&1; then
   chk node -e 'const{pathToFileURL}=require("node:url");import(pathToFileURL(process.argv[1]).href).then(()=>process.exit(0),e=>{console.error(String((e&&e.message)||e));process.exit(1)})' "$ROOT/templates/pi-extensions/qwb-watch.ts" \
@@ -4773,7 +4775,7 @@ DST="$P3/.pi/extensions/qwb-watch.ts"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ -f "$DST" ]] && grep -q '重启 pi 或 /reload' <<<"$out"; } \
   && ok "init 新建 .pi/extensions/qwb-watch.ts 并提示重启生效" \
-  || { bad "init 新建扩展失败（rc=$rc）"; }
+  || { bad "init 新建扩展失败（rc=${rc}）"; }
 mt() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
 # Give the file a known old mtime: any rewrite differs even in the same second.
 python3 - "$DST" <<'PY'
@@ -4785,14 +4787,14 @@ out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ "$(mt "$DST")" == "$m_before" ]] \
     && grep -q '内容一致' <<<"$out" && [[ ! -f "$DST.bak" ]]; } \
   && ok "init 幂等：同内容不重写（mtime 不变）、无备份" \
-  || { bad "init 幂等不对（rc=$rc，mtime 前=$m_before 后=$(mt "$DST")）"; }
+  || { bad "init 幂等不对（rc=${rc}，mtime 前=$m_before 后=$(mt "$DST")）"; }
 printf '\n// 项目本地改动\n' >> "$DST"
 out="$(bash "$ROOT/bin/qwb-init.sh" "$P3" 2>&1)"; rc=$?
 { [[ $rc -eq 0 ]] && [[ -f "$DST.bak" ]] && grep -q '项目本地改动' "$DST.bak" \
     && ! grep -q '项目本地改动' "$DST" \
     && grep -q '备份为 qwb-watch.ts.bak' <<<"$out"; } \
   && ok "init 遇不同内容：备份 .bak 后覆盖、stdout 说明" \
-  || { bad "init 备份覆盖不对（rc=$rc，out=$out）"; }
+  || { bad "init 备份覆盖不对（rc=${rc}，out=${out}）"; }
 
 echo "== 73. status 值守第四态 pi-ext：pid 活 → pi-ext，pid 死 → 未运行 =="
 DYN="$TMP/herdr-dyn-s69"; mkdir -p "$DYN"; rm -f "$TMP/qwbuddy/.watch"; rm -rf "$TMP/qwbuddy/.hook.lock"
