@@ -52,8 +52,8 @@ Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Sto
 
 ## 证据与路线图
 
-在本台 macOS 机器（Darwin 27.0.0）上，本票从 `ded7d88` 派生的隔离副本实测：`fast` 4.62 秒、smoke 267.73 秒，804 PASS / 0 FAIL，共 95 个节标题（含字母子节，编号末节为 88）。[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)记录了同机全门观测：第 1 波提交 `0b9faef` 为 572.27 秒，第 2 波提交 `703b44a` 为 625.04 秒、840 PASS / 0 FAIL。全门依次运行 smoke、review-identity、lint、`tests/collab-all.sh`（12 项）；本票执行者跑 fast 与 smoke，未跑全门。这些是所引源码与机器的记录，不是速度保证、最低版本或后续提交的测试证明。
+在本台 macOS 机器（Darwin 27.0.0）上，提交 `20ea2cc` 的主控实测：`fast` 2.85 秒；smoke 单独两次为 190.13 秒与 191.28 秒，804 PASS / 0 FAIL，共 95 个节标题（含字母子节，编号末节为 88）；全门 574.34 秒（同机稍早一次为 456.58 秒），844 PASS / 0 FAIL。全门依次运行 smoke、review-identity、lint、`tests/collab-all.sh`（15 项并发）。该环境的 Herdr 为 0.9.3、Pi 为 1.0.2、Bash 为 5.3.20（另以 `/bin/bash` 3.2.57 做语法与兼容检查）。完整的逐票证据与起点对比见[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)。这些是所引源码与机器的记录，不是速度保证、最低版本或后续提交的测试证明。
 
-[E2E 运行记录](docs/E2E-RUNBOOK.md)对应旧 `e917008` 基线，且首次派发有人工介入；它不能证明当前源码已有无人值守的真机闭环。当前源码的真机验收结果见[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)。`tests/e2e-real.sh` 选择 `--controller pi` 时，主控默认模型为 `magpie/codex/gpt-6.1-sol`，推理档为 `high`。
+[E2E 运行记录](docs/E2E-RUNBOOK.md)对应旧 `e917008` 基线，且首次派发有人工介入；它不能证明当前源码已有无人值守的真机闭环。当前源码的真机验收：在提交 `20ea2cc` 上，`tests/e2e-real.sh --worker devin --controller pi`（Pi 主控 `magpie/codex/gpt-6.1-sol` / `high`，devin 工人，Herdr 0.9.3，独立 named session）退出码 0、断言全部通过，无人工介入地走完派发、值守唤醒、验收、合入与收尾（[运行记录](docs/reviews/2026-10-04-e2e-real-pi-sol-devin.md)）。这只覆盖这一种主控与工人的组合：Claude Code 主控在修复前的一轮走到收尾才被拒（[记录](docs/reviews/2026-10-04-e2e-real-claude-devin-blocked.md)），修复后未用它重跑完整一轮；Codex 主控与 cmdc 工人在当前源码上未跑通过（额度原因未测）。首次信任提示处理、长时间值守与重启恢复验证、`--writer-proof-missing` 兑底在真 Herdr 上的演练、生产场景试用仍待完成。详见[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)。`tests/e2e-real.sh` 选择 `--controller pi` 时，主控默认模型为 `magpie/codex/gpt-6.1-sol`，推理档为 `high`。
 
 仓库结构：`bin/` 是安装器和运行脚本（当前源码共 16 个 shell 文件）；`templates/` 是主控说明、任务与角色模板、配置和 Pi 扩展；`tests/` 是 smoke 与契约检查；`docs/` 是设计、审核和历史 E2E 记录；`tasks/` 是主账本。
