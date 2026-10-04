@@ -523,14 +523,15 @@ if (-e "$dir/.controller.lock/owner") {
   $owner_raw=<$own> // ''; close $own;
   ($owner)=$owner_raw =~ /^\S+\s+(\S+)\s*\z/; $owner //='';
 }
+my $owner_fp=sha256_hex($owner_raw);
 my $controller=$owner ne '' && $owner eq $actor;
 my $worker=$data && exists $data->{workers}{$actor};
 my $identity=strict_json($identity_raw);
-my $planner_native=($identity->{role} // '') eq '规划' && ($identity->{pane} // '') eq $actor && ($identity->{owner_fp} // '') eq sha256_hex($owner_raw);
+my $planner_native=($identity->{role} // '') eq '规划' && ($identity->{pane} // '') eq $actor && ($identity->{owner_fp} // '') eq $owner_fp;
 my $planning_grant=$data ? ($data->{planning_authority} // ($data->{planning} ? $data->{planning}{authority} : undef)) : undef;
 my $planner=$planner_native && $planning_grant && $json->encode($identity) eq $json->encode($planning_grant->{identity});
-my $test=$data && $identity->{pane} && grep { $json->encode($_->{identity}) eq $json->encode($identity) && $identity->{pane} eq $actor && $identity->{owner_fp} eq sha256_hex($owner_raw) } values %{$data->{test_requests} // {}};
-my $gate=$data && $data->{gate} && $identity->{pane} && $identity->{pane} eq $actor && $json->encode($identity) eq $json->encode($data->{gate}{identity}) && $identity->{owner_fp} eq sha256_hex($owner_raw);
+my $test=$data && $identity->{pane} && grep { $json->encode($_->{identity}) eq $json->encode($identity) && $identity->{pane} eq $actor && $identity->{owner_fp} eq $owner_fp } values %{$data->{test_requests} // {}};
+my $gate=$data && $data->{gate} && $identity->{pane} && $identity->{pane} eq $actor && $json->encode($identity) eq $json->encode($data->{gate}{identity}) && $identity->{owner_fp} eq $owner_fp;
 sub native_reply {
   # Herdr失败JSON在stderr；合并后严格解析整份回复，混入诊断/第二份JSON仍拒绝。
   my $pid=open(my $probe,'-|'); defined($pid) or fail('原生身份探针无法启动');
@@ -549,7 +550,7 @@ if ($data && ($wake_cmd || $handoff_watch || $cmd eq 'plan-ready') && !$controll
   # .watch由主控ensure在同一目录锁内登记，绑定原owner文件代次；换主控自动失效。
   my $w=safe_open("$dir/.watch",O_RDONLY); my $s=<$w> // ''; close $w;
   my ($pane,$target,$generation)=$s =~ /\Apane=(\S+) workspace=\S+ pid=\S* started=\S+ controller=(\S+) owner-fp=([0-9a-f]{64}) cmd=/;
-  fail('值守未获本代主控wake授权') unless defined($pane) && $pane eq $actor && $target eq $owner && ($args[0] // '') eq $owner && $generation eq sha256_hex($owner_raw);
+  fail('值守未获本代主控wake授权') unless defined($pane) && $pane eq $actor && $target eq $owner && ($args[0] // '') eq $owner && $generation eq $owner_fp;
   my ($j,$rc)=native_reply('pane','process-info','--pane',$actor);
   fail('值守原生进程身份未知') if $rc;
   my $pi=$j->{result}{process_info}; fail('值守进程信息非法') unless ref($pi) eq 'HASH' && ref($pi->{foreground_processes}) eq 'ARRAY';
@@ -574,7 +575,7 @@ if (!$data && $legacy && $cmd ne 'migrate' && $cmd ne 'new') {
   # 仅已接线运行时可用；公开工人入口必须先受控迁票。
   fail('旧票仅支持运行时兼容动作') unless $cmd =~ /\A(check|start-check|wake-check|wake|append|prepare|revise|dispatch|not-sent)\z/;
 } elsif ($cmd ne 'migrate' && $cmd ne 'new') { fail('旧票只读；先停写/对账/确认迁移') unless $data }
-my $ci_actor=$cmd eq 'ci-report' && $identity->{pane} && $identity->{pane} eq $actor && $identity->{owner_fp} eq sha256_hex($owner_raw);
+my $ci_actor=$cmd eq 'ci-report' && $identity->{pane} && $identity->{pane} eq $actor && $identity->{owner_fp} eq $owner_fp;
 my $gate_allowed=$cmd =~ /\A(claim|release|check|append|dispatch|not-sent|gate-context|gate-reuse|test-request|gate-receipt|gate-review|gate-verdict|gate-candidate|gate-diff|gate-dispatch|revision-handoff|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
 my $planner_allowed=$cmd =~ /\A(start-check|plan-ready|plan-needs|plan-revision|revise|revise-scenarios|start-claim|claim|release|prepare|append|dispatch|not-sent|handoff-send|handoff-pending|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/;
 fail('角色未授权（主控/绑定工人/本代门禁/范围内规划）') unless $controller || $watcher || $ci_actor || ($test && $cmd=~/\A(test-reply|handoff-received|handoff-accept|handoff-activity|handoff-prepared|handoff-handled)\z/) || ($gate && $gate_allowed) || ($planner && $planner_allowed) || ($planner_native && $cmd eq 'new') || ($worker && $cmd =~ /\A(append|question|handoff-send)\z/) || (!$data && $legacy && $cmd ne 'migrate' && $cmd ne 'new');
@@ -603,7 +604,7 @@ sub handoff_due {
   my ($h,$retry)=@_;
   return 0 if $h->{handled} || $h->{transport_count}>=3;
   # 回复迟到不是失活；工具活动或有界合理wait保住本代claim。
-  if ($h->{accepted} ne '' && $h->{owner_fp} eq sha256_hex($owner_raw)) {
+  if ($h->{accepted} ne '' && $h->{owner_fp} eq $owner_fp) {
     return 0 if $now < $h->{wait_until} || $now-$h->{activity_at} < $retry;
   }
   return !$h->{transport_at} || $now-$h->{transport_at} >= $retry;
@@ -731,7 +732,7 @@ sub land_ready {
 }
 sub land_identity {
   my $l=$data->{land} // fail('缺明确land授权');
-  fail('land仅现主控本人claim；门禁未新增自主权限') unless $controller && @args==2 && $args[0] eq $l->{op_id} && $args[1] eq $l->{auth_ref} && $l->{caller} eq $actor && $l->{owner_fp} eq sha256_hex($owner_raw);
+  fail('land仅现主控本人claim；门禁未新增自主权限') unless $controller && @args==2 && $args[0] eq $l->{op_id} && $args[1] eq $l->{auth_ref} && $l->{caller} eq $actor && $l->{owner_fp} eq $owner_fp;
   require_claim($args[0]) unless $cmd eq 'land-close' && $l->{stage} eq 'closed'; return $l;
 }
 sub land_main {
@@ -850,7 +851,7 @@ if ($cmd eq 'land-authorize') {
     fail('恢复授权仅限已landed同op、精确本地C、新auth_ref；不覆盖原授权') unless @args==4 && $l->{stage}=~/\A(prepared|landed)\z/ && $l->{op_id} eq $args[0] && $l->{auth_ref} ne $args[1] && land_main($l) eq $l->{after};
     fail('旧auth_ref不能重复授权') if grep { $_->{auth_ref} eq $args[1] } @{$data->{land_history} // []};
     push @{$data->{land_history}},{%$l};
-    @{$l}{qw(auth_ref reason caller owner_fp)}=($args[1],$args[3],$actor,sha256_hex($owner_raw));
+    @{$l}{qw(auth_ref reason caller owner_fp)}=($args[1],$args[3],$actor,$owner_fp);
     if ($l->{stage} eq 'prepared') { $l->{stage}='landed'; $l->{landed_at}=int(time()*1000); $kind='land-apply' }
     $op=$args[0]; $line="working: land-reauthorized op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after} remaining-cleanup-only"; append_body($line);
   } else {
@@ -859,7 +860,7 @@ if ($cmd eq 'land-authorize') {
   my $task_id=basename($file); $task_id=~s/^[0-9][0-9-]*-//; $task_id=~s/\.md$//;
   fail('本票land只收标准独立候选目录') unless $c->{candidate} eq text("$root/.worktrees/$task_id");
   my $branch=capture('git','-C',encode('UTF-8',$c->{candidate}),'symbolic-ref','--short','HEAD');
-  $data->{land}={op_id=>$args[0],auth_ref=>$args[1],reason=>$args[3],caller=>$actor,owner_fp=>sha256_hex($owner_raw),main=>'refs/heads/main',before=>$c->{base},after=>$c->{head},context=>$c,md=>[@args[4..$#args]],stage=>'authorized',branch=>$branch,prepared_at=>0,landed_at=>0,closed_at=>0};
+  $data->{land}={op_id=>$args[0],auth_ref=>$args[1],reason=>$args[3],caller=>$actor,owner_fp=>$owner_fp,main=>'refs/heads/main',before=>$c->{base},after=>$c->{head},context=>$c,md=>[@args[4..$#args]],stage=>'authorized',branch=>$branch,prepared_at=>0,landed_at=>0,closed_at=>0};
   my $l=$data->{land}; fail('main旧基线；退出交隔离candidate有界整合并新验收') unless land_main($l) eq $l->{before};
   land_md_snapshot($l); $op=$args[0]; $line="working: land-authorized op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after}"; append_body($line);
   }
@@ -1022,7 +1023,7 @@ if ($cmd eq 'land-authorize') {
   fail('重诊须同因三轮停止线') if $reason eq 'rediagnose' && $data->{gate}{verdict} ne 'rediagnose';
   fail('场景不在原票') unless grep { $_ eq $scenario } map { @$_ } values %{$c->{required}};
   my $ti=strict_json($test_identity_raw);
-  fail('测试负责人身份/代次未知') unless ($ti->{actor} // '') eq $recipient && $ti->{owner_fp} eq sha256_hex($owner_raw);
+  fail('测试负责人身份/代次未知') unless ($ti->{actor} // '') eq $recipient && $ti->{owner_fp} eq $owner_fp;
   $data->{test_requests} //= {};
   if (my $old=$data->{test_requests}{$id}) {
     fail('请求重放内容/spec冲突') unless $old->{reason} eq $reason && $old->{scenario} eq $scenario && $json->encode($old->{identity}) eq $json->encode($ti) && $json->encode($old->{context}) eq $json->encode($c);
@@ -1042,7 +1043,7 @@ if ($cmd eq 'land-authorize') {
   fail('回复不匹配原票/spec/对象/策略') unless $reply->{task} eq text($file) && $reply->{request_id} eq $args[0] && $json->encode($reply->{context}) eq $json->encode($request->{context}) && $json->encode($reply->{context}) eq $json->encode($c);
   fail('只能给最小验证/受限补测建议') unless ref($reply->{validation}) eq 'ARRAY' && @{$reply->{validation}} && ref($reply->{tests}) eq 'ARRAY' && !grep { !string_ok($_) || $_ eq '' } (@{$reply->{validation}},@{$reply->{tests}});
   my $h=$data->{handoffs}{source_id($request->{event_id})} // fail('先读03持久请求');
-  fail('先通过03接手并prepared，不能替作者自证') unless $h->{accepted} eq $actor && $h->{prepared} && $h->{owner_fp} eq sha256_hex($owner_raw);
+  fail('先通过03接手并prepared，不能替作者自证') unless $h->{accepted} eq $actor && $h->{prepared} && $h->{owner_fp} eq $owner_fp;
   if ($request->{reply_sha256} ne '') {
     fail('有效reply不可覆盖') unless $json->encode($request->{reply}) eq $json->encode($reply);
     print "$request->{reply_sha256}\n"; exit;
@@ -1155,7 +1156,7 @@ if ($cmd eq 'land-authorize') {
     fail('审核批准尚未答复/恢复') unless $q->{answer} ne '' && $q->{resumed} ne '';
     my $a=strict_json(encode('UTF-8',$q->{answer}));
     keys_only($a,qw(schema context implementer_session reviewer_session owner_fp approval));
-    fail('审核批准范围/对象/身份不匹配') unless $a->{schema} eq 'qwb-sol-astra-review-v1' && $json->encode($a->{context}) eq $json->encode($c) && $a->{implementer_session} eq $r->{implementer}{session} && $a->{reviewer_session} eq $r->{reviewer}{session} && $a->{owner_fp} eq sha256_hex($owner_raw) && string_ok($a->{approval}) && $a->{approval} ne '' && $r->{implementer}{model} eq 'gpt-6.1-sol' && $r->{reviewer}{model} eq 'gpt-6-astra';
+    fail('审核批准范围/对象/身份不匹配') unless $a->{schema} eq 'qwb-sol-astra-review-v1' && $json->encode($a->{context}) eq $json->encode($c) && $a->{implementer_session} eq $r->{implementer}{session} && $a->{reviewer_session} eq $r->{reviewer}{session} && $a->{owner_fp} eq $owner_fp && string_ok($a->{approval}) && $a->{approval} ne '' && $r->{implementer}{model} eq 'gpt-6.1-sol' && $r->{reviewer}{model} eq 'gpt-6-astra';
     $authorized=1;
   }
   fail('同family审核冲突；保留现有身份门') if $r->{implementer}{family} eq $r->{reviewer}{family} && !$authorized;
@@ -1238,7 +1239,7 @@ if ($cmd eq 'land-authorize') {
   my ($id,$attempt,$candidate,$base)=@args; my $g=$data->{gate};
   if ($integration) {
     my $l=$data->{land} // fail('集成更新须有被旧M挡住的land授权');
-    fail('仅主控在旧M拒绝后登记原副本集成；不在main上merge/rebase') unless $controller && $l->{op_id} eq $id && $l->{stage}=~/\A(authorized|prepared)\z/ && $l->{caller} eq $actor && $l->{owner_fp} eq sha256_hex($owner_raw) && land_main($l) ne $l->{before} && $base eq land_main($l);
+    fail('仅主控在旧M拒绝后登记原副本集成；不在main上merge/rebase') unless $controller && $l->{op_id} eq $id && $l->{stage}=~/\A(authorized|prepared)\z/ && $l->{caller} eq $actor && $l->{owner_fp} eq $owner_fp && land_main($l) ne $l->{before} && $base eq land_main($l);
     push @{$data->{land_history}},$l; delete $data->{land};
   }
   fail('只能提交合规新attempt/base') unless id_ok($attempt) && $attempt ne $g->{binding}{attempt} && ($integration || $g->{verdict} eq 'rework' && $base eq $g->{binding}{base});
@@ -1365,27 +1366,27 @@ if ($cmd eq 'land-authorize') {
       } elsif ($cmd eq 'handoff-accept') {
         my $idop=$args[1]; fail('accept必须先received且op_id合法') unless @args==2 && $h->{received} eq $actor && id_ok($idop);
         if ($h->{accepted} ne '') {
-          fail('claim已存在，须先对账接班') unless $h->{accepted} eq $actor && $h->{owner_fp} eq sha256_hex($owner_raw) && $h->{op_id} eq $idop;
+          fail('claim已存在，须先对账接班') unless $h->{accepted} eq $actor && $h->{owner_fp} eq $owner_fp && $h->{op_id} eq $idop;
           print "$id\n"; exit;
         }
         fail('op_id已用于另一动作') if exists($data->{ops}{$idop}) || grep { $_->{op_id} eq $idop } values %{$data->{handoffs}};
-        $h->{accepted}=$actor; $h->{owner_fp}=sha256_hex($owner_raw); $h->{op_id}=$idop; $h->{activity_at}=$now;
+        $h->{accepted}=$actor; $h->{owner_fp}=$owner_fp; $h->{op_id}=$idop; $h->{activity_at}=$now;
       } elsif ($cmd eq 'handoff-reconcile') {
         fail('接班必须持版本和原claim') unless @args==2 && $expect ne '' && $h->{accepted} ne '' && !$h->{handled};
         my $proof=read_file(encode('UTF-8',$args[1]));
         my $p=strict_json($proof); keys_only($p,qw(task_sha256 op_id previous_owner reconciled));
         fail('接班快照/claim/对账证据不一致') unless $p->{task_sha256} eq sha256_hex($raw) && $p->{op_id} eq $h->{op_id} && $p->{previous_owner} eq $h->{accepted} && string_ok($p->{reconciled}) && $p->{reconciled} ne '';
         my $old=$h->{accepted};
-        fail('同pane新代际无法证明旧claim owner死亡，保留待办') if $old eq $actor && $h->{owner_fp} ne sha256_hex($owner_raw);
+        fail('同pane新代际无法证明旧claim owner死亡，保留待办') if $old eq $actor && $h->{owner_fp} ne $owner_fp;
         if ($old ne $actor) {
           if ($old =~ /\Apid:([1-9][0-9]*)\z/) { fail('旧claim owner仍活或未知') unless !kill(0,$1) && $! == ESRCH }
           else { my ($j,$rc)=native_reply('pane','get',$old); fail('旧claim owner仍活或未知') unless $rc && ($j->{error}{code} // '') eq 'pane_not_found' }
         }
-        $h->{accepted}=$actor; $h->{received}=$actor; $h->{owner_fp}=sha256_hex($owner_raw); $h->{activity_at}=$now;
+        $h->{accepted}=$actor; $h->{received}=$actor; $h->{owner_fp}=$owner_fp; $h->{activity_at}=$now;
         $h->{wait_until}=0; $h->{wait_reason}='';
         # op/prepared保持原值；先读回结果，绝不因为重启而重放副作用。
       } else {
-        fail('无本代accepted claim；接班先对账') unless $h->{accepted} eq $actor && $h->{owner_fp} eq sha256_hex($owner_raw);
+        fail('无本代accepted claim；接班先对账') unless $h->{accepted} eq $actor && $h->{owner_fp} eq $owner_fp;
         if ($cmd eq 'handoff-activity') {
           my ($id0,$wait,$reason)=@args;
           fail('activity/wait非法') unless @args==3 && $wait=~/\A[0-9]+\z/ && $wait<=86400000 && string_ok($reason) && ($wait==0 || $reason ne '');
