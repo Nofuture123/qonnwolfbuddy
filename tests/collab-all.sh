@@ -3,7 +3,7 @@
 # 用法：
 #   bash tests/collab-all.sh            # 跑默认清单（下方显式写死的测试）
 #   bash tests/collab-all.sh <脚本…>    # 跑指定脚本，替代默认清单（验收失败路径用）
-# 每个测试一个后台进程并发跑，stdout+stderr 各写一份日志；全部结束后按清单顺序汇报，
+# 每个测试一个后台进程，最多四项同时跑，stdout+stderr 各写一份日志；结束后按清单顺序汇报，
 # 末行汇总，任一失败退出码 1。一个失败不影响其他测试的运行与汇报。
 #
 # 清单内测试使用各自的 mktemp/tempfile 项目与 AF_UNIX 路径，环境变量仅影响该进程。
@@ -126,26 +126,45 @@ trap 'exit 143' TERM
 total=${#TESTS[@]}
 # 每个测试自己记退出码+耗时：父进程按清单序 wait，先结束的测试会被后面的等待拖住，
 # 到时才读表会把所有测试都报成总时长——所以耗时必须由子进程自己写状态文件。
-i=0
-while [[ $i -lt $total ]]; do
-  ( s=$(date +%s)
-    read -r interpreter script <<< "${TESTS[$i]}"
-    "$interpreter" "$script" >"$TMPD/$i.log" 2>&1 &
-    child=$!
-    trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 130' INT
-    trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM
-    wait "$child"
-    rc=$?
-    trap - INT TERM
-    printf '%s %s\n' "$rc" "$(( $(date +%s) - s ))" >"$TMPD/$i.st" ) &
-  PIDS+=($!)
-  i=$((i + 1))
+# 先启动最慢四项，避免 socket 回归排在短项之后；输出仍按 TESTS 原序。
+ORDER=()
+for name in tests/collab-gate.sh tests/socket-path-regression.py tests/collab-herdr.sh tests/collab-land.sh; do
+  for ((i=0; i<total; i++)); do
+    [[ "${TESTS[$i]#* }" != "$name" ]] || ORDER+=("$i")
+  done
+done
+for ((i=0; i<total; i++)); do
+  case " ${ORDER[*]-} " in *" $i "*) ;; *) ORDER+=("$i") ;; esac
+  PIDS[i]=""
 done
 
-# 全部回收后再汇报；清空已回收的 PID，避免退出清理误杀复用该 PID 的其他进程。
-for ((i=0; i<total; i++)); do
-  wait "${PIDS[$i]}"
-  PIDS[i]=""
+# ponytail: 四个槽限制进程开销；仅在同机实测证明更快时增加。
+next=0; running=0
+while [[ "$next" -lt "$total" || "$running" -gt 0 ]]; do
+  while [[ "$next" -lt "$total" && "$running" -lt 4 ]]; do
+    i=${ORDER[$next]}
+    ( s=$(date +%s)
+      read -r interpreter script <<< "${TESTS[$i]}"
+      "$interpreter" "$script" >"$TMPD/$i.log" 2>&1 &
+      child=$!
+      trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 130' INT
+      trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM
+      wait "$child"
+      rc=$?
+      trap - INT TERM
+      printf '%s %s\n' "$rc" "$(( $(date +%s) - s ))" >"$TMPD/$i.st" ) &
+    PIDS[i]=$!
+    next=$((next + 1)); running=$((running + 1))
+  done
+  for ((i=0; i<total; i++)); do
+    [[ -n "${PIDS[$i]}" ]] || continue
+    if [[ -f "$TMPD/$i.st" ]] || ! kill -0 "${PIDS[$i]}" 2>/dev/null; then
+      wait "${PIDS[$i]}" || true
+      PIDS[i]="" # 退休已回收的 PID，避免退出清理误杀复用它的其他进程。
+      running=$((running - 1))
+    fi
+  done
+  [[ "$running" -eq 0 ]] || sleep .05
 done
 
 fails=0
