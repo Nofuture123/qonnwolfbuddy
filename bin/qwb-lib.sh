@@ -253,20 +253,7 @@ qwb_task_obligations() {
   grep -q '<!-- qwb-collab-' "$2" || return 0
   local data
   data="$(qwb_ledger "$1" "$2" read)" || { printf '%s' 'protocol-unknown'; return 0; }
-  printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha256_hex -0777 -e '
-    my $d=decode_json(<STDIN>);
-    print "claim=$d->{claim}{op_id} " if $d->{claim};
-    my $stage=$d->{land} ? $d->{land}{stage} : "";
-    print "gate=$d->{gate}{verdict} pending-land-cleanup " if $d->{gate} && $stage ne "closed";
-    print "land=$stage " if $d->{land} && $stage ne "closed";
-    for my $k (sort keys %{$d->{questions}}) { print "key=$k " if $d->{questions}{$k}{resumed} eq "" }
-    my $h=$d->{handoffs} // {};
-    print "handoff=$_ " for sort grep { !$h->{$_}{handled} } keys %$h;
-    for my $e (@{$d->{events}}) {
-      my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
-    }
-  '
+  printf '%s' "$data" | qwb_task_obligations_json
 }
 
 # 点名复用同一次 reader 的 JSON；义务判定保持 qwb_task_obligations 原规则。
