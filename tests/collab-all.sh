@@ -106,19 +106,15 @@ mkdir -p "$TMPBASE" || exit 1
 
 TMPD="$(mktemp -d "$TMPBASE/collab-all.XXXXXXXX")" || exit 1
 PIDS=()
-# shellcheck disable=SC2329 # 仅被下方 trap 字符串间接调用，shellcheck 数据流分析看不出
-kill_tree() { # 递归杀整棵进程树：测试会派生 python/git 等子进程，只杀直接子进程会留孤儿
-  local pid="$1" k kids
-  kids="$(pgrep -P "$pid" 2>/dev/null)"
-  for k in $kids; do kill_tree "$k"; done
-  kill "$pid" 2>/dev/null || true
-}
-# shellcheck disable=SC2329 # 同上，由 trap 间接调用
-cleanup() { # 退出（含被 INT/TERM 打断）时删临时目录并杀掉仍在跑的测试进程树
+# shellcheck disable=SC2329 # EXIT trap 调用
+cleanup() { # 通知各测试的监督器，等待进程与目录清理结束再删除日志。
   local p
   if [[ "${#PIDS[@]}" -gt 0 ]]; then
     for p in "${PIDS[@]}"; do
-      if [[ -n "$p" ]]; then kill_tree "$p"; wait "$p" 2>/dev/null || true; fi
+      [[ -z "$p" ]] || kill "$p" 2>/dev/null || true
+    done
+    for p in "${PIDS[@]}"; do
+      [[ -z "$p" ]] || wait "$p" 2>/dev/null || true
     done
   fi
   rm -rf "$TMPD"
@@ -134,8 +130,13 @@ i=0
 while [[ $i -lt $total ]]; do
   ( s=$(date +%s)
     read -r interpreter script <<< "${TESTS[$i]}"
-    "$interpreter" "$script" >"$TMPD/$i.log" 2>&1
+    "$interpreter" "$script" >"$TMPD/$i.log" 2>&1 &
+    child=$!
+    trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 130' INT
+    trap 'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM
+    wait "$child"
     rc=$?
+    trap - INT TERM
     printf '%s %s\n' "$rc" "$(( $(date +%s) - s ))" >"$TMPD/$i.st" ) &
   PIDS+=($!)
   i=$((i + 1))

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check exit-code preservation and cleanup of an owned, TERM-resistant writer."""
 from pathlib import Path
+import os
 import signal
 import shutil
 import subprocess
@@ -12,8 +13,10 @@ sys.dont_write_bytecode = True
 from process_fixture import run
 
 ROOT = Path(__file__).resolve().parents[1]
-(ROOT / '.qwb-tmp').mkdir(exist_ok=True)
-with tempfile.TemporaryDirectory(dir=ROOT / '.qwb-tmp') as temporary:
+if 'QWB_TEST_SOCKET_DIRS' not in os.environ:
+    os.execv(sys.executable, [sys.executable, str(ROOT / 'tests/process_fixture.py'),
+                             '--command', sys.executable, __file__])
+with tempfile.TemporaryDirectory(dir=os.environ['QWB_TEST_SCOPE_DIR']) as temporary:
     directory = Path(temporary)
     pidfile = directory / 'writer.pid'
     script = directory / 'shell.sh'

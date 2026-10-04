@@ -192,7 +192,9 @@ def main():
             child.wait()
         if socket_dirs is not None and socket_dirs.exists():
             for path in socket_dirs.read_text().splitlines():
-                shutil.rmtree(path)
+                # Entries may retire their owned exports before their supervisor exits.
+                if Path(path).exists():
+                    shutil.rmtree(path)
         if directory is not None:
             shutil.rmtree(directory)
     return rc if rc >= 0 else 128 - rc

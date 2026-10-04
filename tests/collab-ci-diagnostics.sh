@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Public entrances + private Git and fake Herdr. No network/model/real endpoints.
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.

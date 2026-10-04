@@ -176,6 +176,10 @@ printf '%s\\n' '{index}:end'
 
 
 if __name__ == '__main__':
+    if 'QWB_TEST_SOCKET_DIRS' not in os.environ:
+        os.execv(sys.executable, [sys.executable, str(ROOT / 'tests/process_fixture.py'),
+                                 '--command', sys.executable, __file__])
+
     def interrupted(signum, _frame):
         signal.signal(signum, signal.SIG_IGN)
         raise SystemExit(128 + signum)
@@ -187,6 +191,8 @@ if __name__ == '__main__':
         checkout = BASE / secrets.token_hex(1)
         try:
             checkout.mkdir(mode=0o700)
+            with open(os.environ['QWB_TEST_SOCKET_DIRS'], 'a') as record:
+                record.write(str(checkout) + '\n')
             break
         except FileExistsError:
             continue
@@ -206,6 +212,7 @@ if __name__ == '__main__':
         check(['bash', 'tests/smoke.sh', 'root-tab-missing'], interrupt=True)
         check(['bash', 'tests/smoke.sh'], interrupt=True)
         check(['bash', 'tests/collab-handoff.sh'], interrupt=True, ready='handoff')
+        check(['/bin/bash', 'tests/full-gate.sh'], interrupt=True)
         check_full_gate()
         print('PROCESS ENTRY CLEANUP PASS')
     finally:

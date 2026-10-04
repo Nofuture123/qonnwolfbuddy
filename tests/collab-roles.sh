@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Public role/control entrances; Herdr alone is a fixture, never a live pane.
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.

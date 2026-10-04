@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # 仅检查本地路径语义，不调用账本/身份/进程探针或 Herdr。
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 perl -MCwd=realpath -MFile::Temp=tempdir -e '
