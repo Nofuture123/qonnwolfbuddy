@@ -116,7 +116,7 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     try:
         # This new session contains only this invocation's inherited descendants.
-        argv = sys.argv[2:] if command else ['/bin/bash', script, *sys.argv[2:]]
+        argv = sys.argv[2:] if command else [env.get('QWB_TEST_SHELL', '/bin/bash'), script, *sys.argv[2:]]
         child = subprocess.Popen(argv, env=env, start_new_session=True)
         os.environ['QWB_TEST_GROUP'] = str(child.pid)
         os.environ['QWB_TEST_GROUPS'] = str(records)

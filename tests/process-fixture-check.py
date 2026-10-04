@@ -14,6 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(dir=ROOT / '.qwb-tmp') as temporary:
     directory = Path(temporary)
     pidfile = directory / 'writer.pid'
+    script = directory / 'shell.sh'
+    script.write_text('. "$1"\nqwb_test_scope "$@"\nprintf "%s\\n" "$BASH_VERSION"\n')
+    for shell in ['/bin/bash', 'bash']:
+        original = subprocess.run([shell, '-c', 'printf "%s\\n" "$BASH_VERSION"'],
+                                  capture_output=True, text=True, check=True)
+        wrapped = subprocess.run([shell, str(script), str(ROOT / 'tests/process-fixture.sh')],
+                                 capture_output=True, text=True)
+        assert wrapped.returncode == 0 and wrapped.stdout == original.stdout, wrapped
+    print('PASS Bash 3.2 and PATH Bash retain the invoking interpreter')
     command = ['/bin/bash', '-c', '''
 /bin/bash -c 'trap "" TERM; echo "$BASHPID" > "$1"; while :; do sleep .02; done' writer "$1" &
 while [[ ! -s "$1" ]]; do sleep .01; done
