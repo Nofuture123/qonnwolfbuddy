@@ -39,9 +39,7 @@ exit 7
     print('PASS original failure/output preserved; TERM-resistant descendant ended before return')
 
     # Real TERM at the record-publication boundary, before a child may be launched.
-    helper = directory / 'tests/process_fixture.py'
-    helper.parent.mkdir()
-    shutil.copy2(ROOT / 'tests/process_fixture.py', helper)
+    helper = ROOT / 'tests/process_fixture.py'
     marker = directory / 'unexpected-child'
     setup_signal = '''
 from pathlib import Path
@@ -52,7 +50,9 @@ print('SETUP_PID='+str(os.getpid()),flush=True)
 original_touch=Path.touch
 def touch(path,*args,**kwargs):
     result=original_touch(path,*args,**kwargs)
-    if path.name=='socket-directories':os.kill(os.getpid(),signal.SIGTERM)
+    if path.name=='socket-directories':
+        print('OWNED_SCOPE='+str(path.parent),flush=True)
+        os.kill(os.getpid(),signal.SIGTERM)
     return result
 Path.touch=touch
 marker=sys.argv[2]
@@ -61,9 +61,16 @@ raise SystemExit(process_fixture.main())
 '''
     interrupted = subprocess.run([sys.executable, '-B', '-c', setup_signal, str(helper.parent), str(marker)],
                                  capture_output=True, text=True, timeout=20)
-    assert interrupted.returncode == 143, interrupted
-    assert not marker.exists() and not list((directory / '.qwb-tmp').iterdir())
-    print('PASS real TERM during scope records returns 143, launches no child, leaves no directory; '+interrupted.stdout.strip())
+    owned_scope = Path(next(line.split('=', 1)[1] for line in interrupted.stdout.splitlines()
+                            if line.startswith('OWNED_SCOPE=')))
+    assert owned_scope.parent == ROOT / '.qwb-tmp'
+    try:
+        assert interrupted.returncode == 143, interrupted
+        assert not marker.exists() and not owned_scope.exists()
+        print('PASS real TERM during scope records returns 143, launches no child, leaves no directory; '+interrupted.stdout.splitlines()[0])
+    finally:
+        if owned_scope.exists():
+            shutil.rmtree(owned_scope)
 
     pidfile.unlink()
     process = subprocess.Popen([sys.executable, str(ROOT / 'tests/process_fixture.py'), '--command',
