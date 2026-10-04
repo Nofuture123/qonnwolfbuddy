@@ -114,6 +114,405 @@ for f in AGENTS.md CLAUDE.md; do
   [[ "$n" == "1" ]] && ok "$f 钩子未重复" || bad "$f 钩子重复（$n 处）"
 done
 
+jev_roles_smoke() (
+  FAILS=0
+  JR="$TMP/jev-roles"
+  mkdir -p "$JR/qwbuddy" "$JR/bin" "$JR/tasks"
+  cp "$ROOT/templates/config.sh" "$JR/qwbuddy/config.sh"
+  printf 'QWB_WORKERS="$QWB_WORKERS sol sol-herdr"\n' >> "$JR/qwbuddy/config.sh"
+  cp "$ROOT/templates/workers.sh" "$JR/qwbuddy/workers.sh"
+  printf 'qwb_worker sol pane-run codex --model gpt-6-sol -c model_reasoning_effort=medium\nqwb_worker sol-herdr herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high\n' >> "$JR/qwbuddy/workers.sh"
+  cat > "$JR/bin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JR/quota-calls"
+[[ "$*" == "--json --no-credential-refresh" ]] || exit 3
+[[ -z "${TYPESAFE_API_KEY:-}${TYPESAFE_API_KEY_PRIVATE:-}" ]] || { touch "$JR/quota-secret-leak"; exit 4; }
+[[ "$(cat "$JR/quota-mode")" != fail ]] || exit 1
+cat "$JR/quota.json"
+SH
+  cat > "$JR/bin/curl" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" http://127.0.0.1:"*) exec /usr/bin/curl "$@" ;; *) exit 99 ;; esac
+SH
+  cat > "$JR/bin/herdr" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JR/herdr-calls"
+exit 99
+SH
+  chmod +x "$JR/bin/quota-axi" "$JR/bin/curl" "$JR/bin/herdr"
+  export JR
+  export PATH="$JR/bin:$PATH"
+  printf ok > "$JR/quota-mode"
+  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
+  printf '跨模块实现任务\n' > "$JR/brief.md"
+  printf 'rule_2' > "$JR/choice"
+  printf '0.94' > "$JR/confidence"
+  : > "$JR/requests"
+  # 随机端口由同一个 server socket 分配并持有，避免先找空端口再绑定的竞态。
+  python3 - "$JR" <<'PY' &
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        if self.path != '/v1/systemone':
+            self.send_error(404)
+            return
+        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        with (root / 'requests').open('a') as log:
+            log.write(json.dumps(request, ensure_ascii=False) + '\n')
+        choice = (root / 'choice').read_text()
+        confidence = float((root / 'confidence').read_text())
+        choices = request['questions']['rule']['criteria']
+        rest = [key for key in choices if key != choice]
+        probabilities = {key: (1 - confidence) / len(rest) for key in rest}
+        probabilities[choice] = confidence
+        body = json.dumps({'model': 'jev-test', 'answers': {'rule': {
+            'type': 'choice', 'choice': choice, 'confidence': confidence,
+            'probabilities': probabilities}},
+            'usage': {'input_tokens': 10, 'output_tokens': 2}}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+server = HTTPServer(('127.0.0.1', 0), Handler)
+(root / 'port').write_text(str(server.server_port))
+server.serve_forever()
+PY
+  JR_PID=$!
+  trap 'kill "$JR_PID" 2>/dev/null || true; wait "$JR_PID" 2>/dev/null || true' EXIT
+  trap 'exit 1' INT TERM
+  for ((jr_wait=0; jr_wait<100; jr_wait++)); do
+    [[ -s "$JR/port" ]] && break
+    kill -0 "$JR_PID" 2>/dev/null || break
+    sleep 0.02
+  done
+  [[ -s "$JR/port" ]] || { bad "JEV 假 server 未就绪"; exit 1; }
+  JR_BASE="http://127.0.0.1:$(cat "$JR/port")"
+  # 旧名 fixture 保留旧格式回归；下方另验实际具名模板，不把旧名放回产品模板。
+  jq '.agents |= with_entries(.value |= map(
+    if . == "codex-sol-high" then "codex" elif . == "claude-fable-high" then "claude"
+    elif . == "pi-glm-high" then "pi" elif . == "omp-gemini" then "omp" else . end))' \
+    "$ROOT/templates/dispatch-rules.json" > "$JR/legacy-rules.json"
+  jr_reset() { cp "$JR/legacy-rules.json" "$JR/qwbuddy/dispatch-rules.json"; }
+  jr_edit() {
+    jq "$1" "$JR/qwbuddy/dispatch-rules.json" > "$JR/edited.json" &&
+      cp "$JR/edited.json" "$JR/qwbuddy/dispatch-rules.json"
+  }
+  jr_run() {
+    JR_OUT=$(env -u TYPESAFE_API_KEY ${JR_KEY:+TYPESAFE_API_KEY=$JR_KEY} \
+      QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" bash "$ROOT/bin/qwb-dispatch.sh" \
+      "$JR/brief.md" --project "$JR" "$@" 2>"$JR/stderr")
+    JR_RC=$?
+  }
+  JR_KEY='fake-local-jev-key'
+  jr_reset
+  jr_run
+  { [[ "$JR_RC" -eq 0 ]] && grep -qx '  status: clear' <<<"$JR_OUT" &&
+    grep -qx '  worker: codex' <<<"$JR_OUT" && grep -qx '  role: cross_module' <<<"$JR_OUT"; } \
+    && ok "JEV role 文本解析 cross_module → codex" || bad "JEV role 文本解析失败"
+  jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.status == "clear" and .worker == "codex" and .role == "cross_module" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null; } \
+    && ok "JEV role JSON 解析含已解析 default_worker" || bad "JEV role JSON 解析失败"
+  jq -se 'length == 2 and all(.[]; .model == "jev-latest" and
+    .state.task.brief == "跨模块实现任务\n" and
+    (.questions.rule.criteria | keys) == ["default","rule_1","rule_2","rule_3","rule_4","rule_5"] and
+    (tostring | test("architect|cross_module|high_risk|planning|implement|codex|fake-local-jev-key") | not))' "$JR/requests" >/dev/null \
+    && ok "JEV HTTP 请求契约：只有 when，无角色/工人/key" || bad "JEV HTTP 请求契约失败"
+  # 换人只改映射；分类与规则保持不动。
+  jr_edit '.agents.cross_module = ["claude"]'
+  jr_run --json
+  jq -e '.worker == "claude" and .role == "cross_module"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 修改 agents 即切换工人" || bad "JEV 修改 agents 未切换工人"
+  jr_reset
+  jr_edit '.rules[1].worker = "custom_worker"'
+  jr_run --json
+  jq -e '.worker == "custom_worker" and .role == "-"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV agents 存在仍接受字面工人" || bad "JEV 字面工人被当成角色"
+  # 旧格式即使字面名字恰为五分类之一也不引入角色语义。
+  jr_edit 'del(.agents) | .rules[1].worker = "planning" | .default.worker = "pi"'
+  jr_run
+  { [[ "$JR_RC" -eq 0 ]] && grep -qx '  worker: planning' <<<"$JR_OUT" && grep -qx '  role: -' <<<"$JR_OUT"; } \
+    && ok "JEV 无 agents 旧格式文本原样输出" || bad "JEV 旧格式文本不兼容"
+  jr_run --json
+  jq -e '.worker == "planning" and .role == "-" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 无 agents 旧格式 JSON 原样输出" || bad "JEV 旧格式 JSON 不兼容"
+  jr_reset
+  printf 'default' > "$JR/choice"
+  jr_run --json
+  jq -e '.worker == "pi" and .role == "implement" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV default 角色解析" || bad "JEV default 未解析"
+  printf 'rule_2' > "$JR/choice"
+  printf '0.4' > "$JR/confidence"
+  jr_run --json
+  jq -e '.status == "ambiguous" and (has("worker") | not) and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 低置信度不派角色工人" || bad "JEV 低置信度误派工人"
+  printf '0.94' > "$JR/confidence"
+  jr_reset
+  jr_edit '.agents.cross_module = ["unknown", "codex", "claude"] | .agents_disabled = ["codex"]'
+  jr_run --json
+  jq -e '.worker == "claude" and .role == "cross_module"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 跳过未注册和禁用候选" || bad "JEV 注册/禁用筛选失败"
+  jr_edit '.agents_disabled = []'
+  jr_run --json
+  jq -e '.worker == "codex"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 解除禁用后按原顺序选择" || bad "JEV 候选顺序失败"
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":9},{"kind":"session","percentRemaining":90}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV schema5 weekly 优先且低于阈值跳过" || bad "JEV weekly 额度门失败"
+  QWB_QUOTA_FLOOR=9 jr_run --json
+  jq -e '.worker == "codex"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 阈值可调且包含等号" || bad "JEV 额度边界失败"
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"session","percentRemaining":9}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 无 weekly 时使用 session" || bad "JEV session 回退失败"
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"other","windows":[{"kind":"weekly","percentRemaining":0}]},{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":80}]}]}' > "$JR/quota.json"
+  jr_edit '.agents.cross_module = ["sol", "claude"]'
+  jr_run --json
+  jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV schema6 按 harness 绑定 codex-home，具名工人不误绑首行" || bad "JEV schema6 绑定失败"
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"default","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV schema6 default 账户回退仍执行额度门" || bad "JEV schema6 default 回退失败"
+  # 重复身份的两行分别为耗尽/充足；两种顺序都必须丢弃整个快照。
+  for jr_schema in 5 6; do
+    for jr_order in '[0,80]' '[80,0]'; do
+      jq -cn --argjson schema "$jr_schema" --argjson remaining "$jr_order" '
+        {schemaVersion:$schema, providers:[$remaining[] |
+          {provider:"codex", windows:[{kind:"weekly",percentRemaining:.}]} +
+          (if $schema == 6 then {accountKey:"codex-home"} else {} end)]}' > "$JR/quota.json"
+      jr_run --json
+      { [[ "$JR_RC" -eq 0 ]] &&
+        [[ "$(jq -c '{status,worker,role,default_worker}' <<<"$JR_OUT")" == '{"status":"clear","worker":"sol","role":"cross_module","default_worker":"pi"}' ]] &&
+        grep -q 'quota-axi 快照不合法，降级为注册+禁名单' "$JR/stderr"; } \
+        && ok "JEV schema${jr_schema} 重复身份降级且与行序无关：${jr_order}" \
+        || bad "JEV schema${jr_schema} 重复身份未稳定降级：${jr_order}"
+    done
+  done
+  cp "$ROOT/templates/dispatch-rules.json" "$JR/qwbuddy/dispatch-rules.json"
+  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
+  jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "codex-sol-high" and .role == "cross_module" and .default_worker == "pi-glm-high"' <<<"$JR_OUT" >/dev/null; } \
+    && ok "JEV 实际模板按具名 agent 路由" || bad "JEV 模板退化为 harness 名"
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "claude-fable-high"' <<<"$JR_OUT" >/dev/null; } \
+    && ok "JEV 具名 agent 用显式 harness+model 绑定 quota" || bad "JEV 把 agent 名当 quota provider"
+  jr_reset
+  jr_edit '.agents.cross_module = ["sol-herdr", "claude"]'
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 显式 harness 低额候选被跳过" || bad "JEV 显式 harness 未应用额度门"
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":80}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "sol-herdr"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 显式 harness 有额候选恢复" || bad "JEV 显式 harness 有额被误拒"
+  jr_edit '.agents.cross_module = ["pi-glm-high", "codex-sol-high"]'
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"pi","accountKey":"other","windows":[{"kind":"weekly","percentRemaining":80}]},{"provider":"pi","accountKey":"zai-coding-cn","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "codex-sol-high"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 具名 Pi 按显式 harness 与 model 前缀绑定 lane" || bad "JEV Pi lane 绑定失败"
+  jr_edit '.agents.cross_module = ["omp-gemini", "codex-sol-high"]'
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"omp","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "codex-sol-high"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV OMP quota provider 直接取 harness" || bad "JEV OMP provider 被 agent 名或模型覆盖"
+  jr_edit '.agents.cross_module = ["sol", "claude"]'
+  printf fail > "$JR/quota-mode"
+  jr_run --json
+  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
+    && ok "JEV quota 命令失败诚实降级" || bad "JEV quota 失败未降级"
+  printf ok > "$JR/quota-mode"
+  printf 'not-json' > "$JR/quota.json"
+  jr_run --json
+  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
+    && ok "JEV quota 坏快照诚实降级" || bad "JEV quota 坏快照未降级"
+  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
+  jr_run --json
+  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
+    && ok "JEV quota 无 provider 诚实降级" || bad "JEV quota provider 缺失未降级"
+  # 命中角色耗尽时必须阻止 auto 的既有 error→default 回退，且列出每个排除原因。
+  jr_edit '.agents.cross_module = ["unknown", "codex", "claude"] | .agents_disabled = ["claude"]'
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
+    grep -q 'unknown（未注册' "$JR/stderr" && grep -q 'codex（quota weekly 0% < 10%' "$JR/stderr" &&
+    grep -q 'claude（agents_disabled' "$JR/stderr"; } \
+    && ok "JEV 命中角色耗尽 exit 2，逐候选说明原因" || bad "JEV 候选耗尽错误契约失败"
+  jr_auto() {
+    { printf '# 任务书\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n## 工程规格\n'; cat "$JR/brief.md"; } > "$JR/tasks/2099-01-01-jev.md"
+    cp "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"
+    : > "$JR/herdr-calls"
+    JR_OUT=$(TYPESAFE_API_KEY="$JR_KEY" QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" \
+      bash "$ROOT/bin/qwb-run.sh" --task "$JR/tasks/2099-01-01-jev.md" --project "$JR" --worker auto --here 2>"$JR/stderr")
+    JR_RC=$?
+  }
+  jr_auto
+  { [[ "$JR_RC" -eq 2 ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
+    [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
+    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
+    && ok "JEV auto 耗尽拒派，无 Herdr/锁/worktree/账本副作用" || bad "JEV auto 耗尽仍派发或有副作用"
+  jr_edit '.default.worker = "cross_module"'
+  jr_before=$(wc -l < "$JR/requests")
+  jr_run --json
+  { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
+    [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
+    && ok "JEV default 耗尽在 JEV 请求之前 exit 2" || bad "JEV default 耗尽未提前拒绝"
+  jr_reset
+  jr_edit 'del(.agents.cross_module)'
+  jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "cross_module" and .role == "-"' <<<"$JR_OUT" >/dev/null; } \
+    && ok "JEV 删除映射后按字面名输出，无保留字" || bad "JEV 未知字面工人语义错误"
+  jr_auto
+  { [[ "$JR_RC" -eq 1 ]] && grep -q '不在 config.sh 的 QWB_WORKERS' "$JR/stderr" &&
+    [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
+    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
+    && ok "JEV auto 拒绝未注册字面名且零副作用" || bad "JEV auto 字面名未拒绝"
+  jr_reset
+  jr_edit '.agents.cross_module = ["sol", "claude"]'
+  # QWB_WORKERS 有名字但 workers.sh 无定义不能被当作已注册。
+  cp "$JR/qwbuddy/workers.sh" "$JR/workers-before.sh"
+  sed '/qwb_worker sol /d' "$JR/workers-before.sh" > "$JR/qwbuddy/workers.sh"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 候选缺启动定义时跳过" || bad "JEV 把仅列名当作注册"
+  cp "$JR/workers-before.sh" "$JR/qwbuddy/workers.sh"
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":10},{"kind":"session","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV weekly 恰为默认门槛时通过，不受 session 干扰" || bad "JEV 默认阈值/weekly 优先失败"
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":90},{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 多 weekly 限制取最小余量" || bad "JEV 宽松窗口掩盖耗尽"
+  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":null},{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  jr_run --json
+  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
+    && ok "JEV 未知窗口不掩盖已知耗尽" || bad "JEV 未知窗口绕过已知耗尽"
+  for jr_snapshot in '{"schemaVersion":5,"providers":[42]}' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[42]}]}'; do
+    printf '%s' "$jr_snapshot" > "$JR/quota.json"
+    jr_run --json
+    { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
+      && ok "JEV quota 错型快照诚实降级" || bad "JEV quota 错型快照未降级"
+  done
+  # 构建无 quota-axi 的 PATH，不能移走替身后意外跑到宿主真额度命令。
+  mkdir -p "$JR/noquota"
+  for jr_cmd in env bash jq cp chmod mktemp rm grep tail cat basename perl python3; do
+    ln -s "$(command -v "$jr_cmd")" "$JR/noquota/$jr_cmd"
+  done
+  ln -s "$JR/bin/curl" "$JR/noquota/curl"
+  PATH="$JR/noquota" jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota-axi 未安装.*降级' "$JR/stderr"; } \
+    && ok "JEV quota 未安装诚实降级" || bad "JEV quota 未安装路径失败"
+  jr_reset
+  for jr_floor in -1 101 bad; do
+    QWB_QUOTA_FLOOR="$jr_floor" jr_run --json
+    { [[ "$JR_RC" -eq 2 ]] && grep -q 'QWB_QUOTA_FLOOR' "$JR/stderr"; } \
+      && ok "JEV 非法额度阈值拒绝：${jr_floor}" || bad "JEV 非法额度阈值被接受：${jr_floor}"
+  done
+  { [[ ! -e "$JR/quota-secret-leak" ]] && ! grep -vx -- '--json --no-credential-refresh' "$JR/quota-calls"; } \
+    && ok "JEV quota 仅本地快照、禁credential刷新且子进程无 key" || bad "JEV quota argv/key 契约失败"
+  jr_quota_before=$(wc -l < "$JR/quota-calls")
+  jr_reset
+  # off/配置错都不得碰网络；与前面真实请求成功形成正负对照。
+  jr_before=$(wc -l < "$JR/requests")
+  JR_KEY=''
+  jr_run
+  { [[ "$JR_RC" -eq 0 && -z "$JR_OUT" ]] && [[ "$(wc -l < "$JR/stderr")" -eq 1 ]] &&
+    grep -q '^qwb-dispatch: off' "$JR/stderr" && [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
+    && ok "JEV off 文本：一行 stderr、无 stdout、零网络" || bad "JEV off 文本边界失败"
+  jr_run --json
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.status == "off" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null &&
+    [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
+    && ok "JEV off JSON：解析 default_worker、零网络" || bad "JEV off JSON 未解析默认工人"
+  [[ "$(wc -l < "$JR/quota-calls")" -eq "$jr_quota_before" ]] \
+    && ok "JEV off 零 quota 查询" || bad "JEV off 意外查询 quota"
+  for jr_disabled in 'null' '{}' '[42]' '["bad worker"]'; do
+    jr_reset
+    jr_edit ".agents_disabled = $jr_disabled"
+    jr_run --json
+    { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'agents_disabled' "$JR/stderr"; } \
+      && ok "JEV 禁名单坏配置拒绝：${jr_disabled}" || bad "JEV 禁名单坏配置未拒：${jr_disabled}"
+  done
+  for jr_bad in 'null' '[]' '"bad"' '{"architect":""}' '{"architect":"has space"}' '{"architect":"bad\nworker"}' '{"architect":42}' '{"architect":["planning"],"planning":["pi"]}' '{"architect":["architect"]}' '{"architect":[]}' '{"architect":[""]}' '{"architect":[42]}' '{"architect":["has space"]}'; do
+    jr_reset
+    jr_edit ".agents = $jr_bad"
+    jr_run --json
+    { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'agents' "$JR/stderr" &&
+      [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
+      && ok "JEV agents 坏配置拒绝且零网络：${jr_bad}" || bad "JEV agents 坏配置未拒：${jr_bad}"
+  done
+  kill "$JR_PID" && wait "$JR_PID" 2>/dev/null
+  kill -0 "$JR_PID" 2>/dev/null && bad "JEV 假 server 残留" || ok "JEV 假 server 已退出并回收"
+  trap - EXIT
+  [[ "$FAILS" -eq 0 ]]
+)
+
+# Each command owns its HOME and supervised process group. The socket helper
+# allocates a separate short path and records it in that command's own scope.
+# §80 depends on §79's log; collect everything before reporting in the old order.
+# Bound fan-out to four jobs: lifecycle probes have real wall-clock deadlines.
+# Bash 3.2 has no wait -n; retire the oldest owned job before launching another.
+SMOKE_PIDS=()
+smoke_start() {
+  local name="$1" slot; shift
+  if [[ "${#SMOKE_PIDS[@]}" -ge 4 ]]; then
+    slot=$(( ${#SMOKE_PIDS[@]} - 4 ))
+    wait "${SMOKE_PIDS[$slot]}"
+    SMOKE_PIDS[$slot]=""
+  fi
+  (
+    job="$TMP/parallel/$name"
+    mkdir -p "$job/home/.codex" "$job/tmp" || exit 1
+    printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$job/home/.codex/config.toml"
+    export HOME="$job/home" TMPDIR="$job/tmp"
+    python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
+      export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+      exec "$@"
+    ' smoke-child "$@" > "$TMP/$name.log" 2>&1
+    printf '%s\n' "$?" > "$TMP/$name.rc"
+  ) &
+  SMOKE_PIDS+=("$!")
+}
+# Run independent regressions alongside the main smoke body; their output
+# remains private until §74. The narrow root-tab entry excludes this block.
+(
+smoke_start runtime-readiness bash "$ROOT/tests/runtime-readiness.sh"
+smoke_start boundary-readiness bash "$ROOT/tests/boundary-readiness.sh"
+smoke_start lifecycle-readiness bash "$ROOT/tests/lifecycle-readiness.sh"
+smoke_start worker-config python3 -B "$ROOT/tests/worker-config.py"
+smoke_start on-demand-guide python3 -B "$ROOT/tests/on-demand-guide.py"
+smoke_start worktree-space python3 -B "$ROOT/tests/worktree-space.py"
+smoke_start r2-cli python3 -B "$ROOT/tests/r2-cli.py"
+smoke_start invalid-ledger python3 -B "$ROOT/tests/invalid-ledger.py"
+smoke_start r4-cli python3 -B "$ROOT/tests/r4-cli.py"
+smoke_start e2e-controllers-cli python3 -B "$ROOT/tests/e2e-controllers-cli.py"
+smoke_start wake-block-output bash "$ROOT/tests/wake-block-output.sh"
+export -f jev_roles_smoke ok bad
+export ROOT
+smoke_start jev-roles bash -c 'TMP="$TMPDIR/project"; jev_roles_smoke'
+export -n -f jev_roles_smoke ok bad
+for smoke_pid in "${SMOKE_PIDS[@]}"; do
+  [[ -z "$smoke_pid" ]] || wait "$smoke_pid"
+done
+SMOKE_PIDS=()
+) &
+SMOKE_BATCH_PID=$!
+smoke_result() { [[ -f "$TMP/$1.rc" && "$(<"$TMP/$1.rc")" == 0 ]]; }
+
+
 echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
@@ -4414,398 +4813,7 @@ out="$(stat69)"
   || { bad "status pid 死未报未运行"; printf '%s\n' "$out"; }
 rm -f "$TMP/qwbuddy/.watch"; rm -rf "$DYN"
 
-jev_roles_smoke() (
-  FAILS=0
-  JR="$TMP/jev-roles"
-  mkdir -p "$JR/qwbuddy" "$JR/bin" "$JR/tasks"
-  cp "$ROOT/templates/config.sh" "$JR/qwbuddy/config.sh"
-  printf 'QWB_WORKERS="$QWB_WORKERS sol sol-herdr"\n' >> "$JR/qwbuddy/config.sh"
-  cp "$ROOT/templates/workers.sh" "$JR/qwbuddy/workers.sh"
-  printf 'qwb_worker sol pane-run codex --model gpt-6-sol -c model_reasoning_effort=medium\nqwb_worker sol-herdr herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high\n' >> "$JR/qwbuddy/workers.sh"
-  cat > "$JR/bin/quota-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$JR/quota-calls"
-[[ "$*" == "--json --no-credential-refresh" ]] || exit 3
-[[ -z "${TYPESAFE_API_KEY:-}${TYPESAFE_API_KEY_PRIVATE:-}" ]] || { touch "$JR/quota-secret-leak"; exit 4; }
-[[ "$(cat "$JR/quota-mode")" != fail ]] || exit 1
-cat "$JR/quota.json"
-SH
-  cat > "$JR/bin/curl" <<'SH'
-#!/usr/bin/env bash
-case " $* " in *" http://127.0.0.1:"*) exec /usr/bin/curl "$@" ;; *) exit 99 ;; esac
-SH
-  cat > "$JR/bin/herdr" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$JR/herdr-calls"
-exit 99
-SH
-  chmod +x "$JR/bin/quota-axi" "$JR/bin/curl" "$JR/bin/herdr"
-  export JR
-  export PATH="$JR/bin:$PATH"
-  printf ok > "$JR/quota-mode"
-  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
-  printf '跨模块实现任务\n' > "$JR/brief.md"
-  printf 'rule_2' > "$JR/choice"
-  printf '0.94' > "$JR/confidence"
-  : > "$JR/requests"
-  # 随机端口由同一个 server socket 分配并持有，避免先找空端口再绑定的竞态。
-  python3 - "$JR" <<'PY' &
-import json
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-
-root = Path(sys.argv[1])
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-
-    def do_POST(self):
-        if self.path != '/v1/systemone':
-            self.send_error(404)
-            return
-        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        with (root / 'requests').open('a') as log:
-            log.write(json.dumps(request, ensure_ascii=False) + '\n')
-        choice = (root / 'choice').read_text()
-        confidence = float((root / 'confidence').read_text())
-        choices = request['questions']['rule']['criteria']
-        rest = [key for key in choices if key != choice]
-        probabilities = {key: (1 - confidence) / len(rest) for key in rest}
-        probabilities[choice] = confidence
-        body = json.dumps({'model': 'jev-test', 'answers': {'rule': {
-            'type': 'choice', 'choice': choice, 'confidence': confidence,
-            'probabilities': probabilities}},
-            'usage': {'input_tokens': 10, 'output_tokens': 2}}).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-server = HTTPServer(('127.0.0.1', 0), Handler)
-(root / 'port').write_text(str(server.server_port))
-server.serve_forever()
-PY
-  JR_PID=$!
-  trap 'kill "$JR_PID" 2>/dev/null || true; wait "$JR_PID" 2>/dev/null || true' EXIT
-  trap 'exit 1' INT TERM
-  for ((jr_wait=0; jr_wait<100; jr_wait++)); do
-    [[ -s "$JR/port" ]] && break
-    kill -0 "$JR_PID" 2>/dev/null || break
-    sleep 0.02
-  done
-  [[ -s "$JR/port" ]] || { bad "JEV 假 server 未就绪"; exit 1; }
-  JR_BASE="http://127.0.0.1:$(cat "$JR/port")"
-  # 旧名 fixture 保留旧格式回归；下方另验实际具名模板，不把旧名放回产品模板。
-  jq '.agents |= with_entries(.value |= map(
-    if . == "codex-sol-high" then "codex" elif . == "claude-fable-high" then "claude"
-    elif . == "pi-glm-high" then "pi" elif . == "omp-gemini" then "omp" else . end))' \
-    "$ROOT/templates/dispatch-rules.json" > "$JR/legacy-rules.json"
-  jr_reset() { cp "$JR/legacy-rules.json" "$JR/qwbuddy/dispatch-rules.json"; }
-  jr_edit() {
-    jq "$1" "$JR/qwbuddy/dispatch-rules.json" > "$JR/edited.json" &&
-      cp "$JR/edited.json" "$JR/qwbuddy/dispatch-rules.json"
-  }
-  jr_run() {
-    JR_OUT=$(env -u TYPESAFE_API_KEY ${JR_KEY:+TYPESAFE_API_KEY=$JR_KEY} \
-      QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" bash "$ROOT/bin/qwb-dispatch.sh" \
-      "$JR/brief.md" --project "$JR" "$@" 2>"$JR/stderr")
-    JR_RC=$?
-  }
-  JR_KEY='fake-local-jev-key'
-  jr_reset
-  jr_run
-  { [[ "$JR_RC" -eq 0 ]] && grep -qx '  status: clear' <<<"$JR_OUT" &&
-    grep -qx '  worker: codex' <<<"$JR_OUT" && grep -qx '  role: cross_module' <<<"$JR_OUT"; } \
-    && ok "JEV role 文本解析 cross_module → codex" || bad "JEV role 文本解析失败"
-  jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.status == "clear" and .worker == "codex" and .role == "cross_module" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null; } \
-    && ok "JEV role JSON 解析含已解析 default_worker" || bad "JEV role JSON 解析失败"
-  jq -se 'length == 2 and all(.[]; .model == "jev-latest" and
-    .state.task.brief == "跨模块实现任务\n" and
-    (.questions.rule.criteria | keys) == ["default","rule_1","rule_2","rule_3","rule_4","rule_5"] and
-    (tostring | test("architect|cross_module|high_risk|planning|implement|codex|fake-local-jev-key") | not))' "$JR/requests" >/dev/null \
-    && ok "JEV HTTP 请求契约：只有 when，无角色/工人/key" || bad "JEV HTTP 请求契约失败"
-  # 换人只改映射；分类与规则保持不动。
-  jr_edit '.agents.cross_module = ["claude"]'
-  jr_run --json
-  jq -e '.worker == "claude" and .role == "cross_module"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 修改 agents 即切换工人" || bad "JEV 修改 agents 未切换工人"
-  jr_reset
-  jr_edit '.rules[1].worker = "custom_worker"'
-  jr_run --json
-  jq -e '.worker == "custom_worker" and .role == "-"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV agents 存在仍接受字面工人" || bad "JEV 字面工人被当成角色"
-  # 旧格式即使字面名字恰为五分类之一也不引入角色语义。
-  jr_edit 'del(.agents) | .rules[1].worker = "planning" | .default.worker = "pi"'
-  jr_run
-  { [[ "$JR_RC" -eq 0 ]] && grep -qx '  worker: planning' <<<"$JR_OUT" && grep -qx '  role: -' <<<"$JR_OUT"; } \
-    && ok "JEV 无 agents 旧格式文本原样输出" || bad "JEV 旧格式文本不兼容"
-  jr_run --json
-  jq -e '.worker == "planning" and .role == "-" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 无 agents 旧格式 JSON 原样输出" || bad "JEV 旧格式 JSON 不兼容"
-  jr_reset
-  printf 'default' > "$JR/choice"
-  jr_run --json
-  jq -e '.worker == "pi" and .role == "implement" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV default 角色解析" || bad "JEV default 未解析"
-  printf 'rule_2' > "$JR/choice"
-  printf '0.4' > "$JR/confidence"
-  jr_run --json
-  jq -e '.status == "ambiguous" and (has("worker") | not) and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 低置信度不派角色工人" || bad "JEV 低置信度误派工人"
-  printf '0.94' > "$JR/confidence"
-  jr_reset
-  jr_edit '.agents.cross_module = ["unknown", "codex", "claude"] | .agents_disabled = ["codex"]'
-  jr_run --json
-  jq -e '.worker == "claude" and .role == "cross_module"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 跳过未注册和禁用候选" || bad "JEV 注册/禁用筛选失败"
-  jr_edit '.agents_disabled = []'
-  jr_run --json
-  jq -e '.worker == "codex"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 解除禁用后按原顺序选择" || bad "JEV 候选顺序失败"
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":9},{"kind":"session","percentRemaining":90}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV schema5 weekly 优先且低于阈值跳过" || bad "JEV weekly 额度门失败"
-  QWB_QUOTA_FLOOR=9 jr_run --json
-  jq -e '.worker == "codex"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 阈值可调且包含等号" || bad "JEV 额度边界失败"
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"session","percentRemaining":9}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 无 weekly 时使用 session" || bad "JEV session 回退失败"
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"other","windows":[{"kind":"weekly","percentRemaining":0}]},{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":80}]}]}' > "$JR/quota.json"
-  jr_edit '.agents.cross_module = ["sol", "claude"]'
-  jr_run --json
-  jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV schema6 按 harness 绑定 codex-home，具名工人不误绑首行" || bad "JEV schema6 绑定失败"
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"default","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV schema6 default 账户回退仍执行额度门" || bad "JEV schema6 default 回退失败"
-  # 重复身份的两行分别为耗尽/充足；两种顺序都必须丢弃整个快照。
-  for jr_schema in 5 6; do
-    for jr_order in '[0,80]' '[80,0]'; do
-      jq -cn --argjson schema "$jr_schema" --argjson remaining "$jr_order" '
-        {schemaVersion:$schema, providers:[$remaining[] |
-          {provider:"codex", windows:[{kind:"weekly",percentRemaining:.}]} +
-          (if $schema == 6 then {accountKey:"codex-home"} else {} end)]}' > "$JR/quota.json"
-      jr_run --json
-      { [[ "$JR_RC" -eq 0 ]] &&
-        [[ "$(jq -c '{status,worker,role,default_worker}' <<<"$JR_OUT")" == '{"status":"clear","worker":"sol","role":"cross_module","default_worker":"pi"}' ]] &&
-        grep -q 'quota-axi 快照不合法，降级为注册+禁名单' "$JR/stderr"; } \
-        && ok "JEV schema${jr_schema} 重复身份降级且与行序无关：${jr_order}" \
-        || bad "JEV schema${jr_schema} 重复身份未稳定降级：${jr_order}"
-    done
-  done
-  cp "$ROOT/templates/dispatch-rules.json" "$JR/qwbuddy/dispatch-rules.json"
-  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
-  jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "codex-sol-high" and .role == "cross_module" and .default_worker == "pi-glm-high"' <<<"$JR_OUT" >/dev/null; } \
-    && ok "JEV 实际模板按具名 agent 路由" || bad "JEV 模板退化为 harness 名"
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "claude-fable-high"' <<<"$JR_OUT" >/dev/null; } \
-    && ok "JEV 具名 agent 用显式 harness+model 绑定 quota" || bad "JEV 把 agent 名当 quota provider"
-  jr_reset
-  jr_edit '.agents.cross_module = ["sol-herdr", "claude"]'
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 显式 harness 低额候选被跳过" || bad "JEV 显式 harness 未应用额度门"
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":80}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "sol-herdr"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 显式 harness 有额候选恢复" || bad "JEV 显式 harness 有额被误拒"
-  jr_edit '.agents.cross_module = ["pi-glm-high", "codex-sol-high"]'
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"pi","accountKey":"other","windows":[{"kind":"weekly","percentRemaining":80}]},{"provider":"pi","accountKey":"zai-coding-cn","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "codex-sol-high"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 具名 Pi 按显式 harness 与 model 前缀绑定 lane" || bad "JEV Pi lane 绑定失败"
-  jr_edit '.agents.cross_module = ["omp-gemini", "codex-sol-high"]'
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"omp","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "codex-sol-high"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV OMP quota provider 直接取 harness" || bad "JEV OMP provider 被 agent 名或模型覆盖"
-  jr_edit '.agents.cross_module = ["sol", "claude"]'
-  printf fail > "$JR/quota-mode"
-  jr_run --json
-  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
-    && ok "JEV quota 命令失败诚实降级" || bad "JEV quota 失败未降级"
-  printf ok > "$JR/quota-mode"
-  printf 'not-json' > "$JR/quota.json"
-  jr_run --json
-  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
-    && ok "JEV quota 坏快照诚实降级" || bad "JEV quota 坏快照未降级"
-  printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
-  jr_run --json
-  { jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
-    && ok "JEV quota 无 provider 诚实降级" || bad "JEV quota provider 缺失未降级"
-  # 命中角色耗尽时必须阻止 auto 的既有 error→default 回退，且列出每个排除原因。
-  jr_edit '.agents.cross_module = ["unknown", "codex", "claude"] | .agents_disabled = ["claude"]'
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
-    grep -q 'unknown（未注册' "$JR/stderr" && grep -q 'codex（quota weekly 0% < 10%' "$JR/stderr" &&
-    grep -q 'claude（agents_disabled' "$JR/stderr"; } \
-    && ok "JEV 命中角色耗尽 exit 2，逐候选说明原因" || bad "JEV 候选耗尽错误契约失败"
-  jr_auto() {
-    { printf '# 任务书\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n## 工程规格\n'; cat "$JR/brief.md"; } > "$JR/tasks/2099-01-01-jev.md"
-    cp "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"
-    : > "$JR/herdr-calls"
-    JR_OUT=$(TYPESAFE_API_KEY="$JR_KEY" QWB_TYPESAFE_BASE="$JR_BASE" QUOTA_AXI_SNAPSHOT="$JR/quota.json" \
-      bash "$ROOT/bin/qwb-run.sh" --task "$JR/tasks/2099-01-01-jev.md" --project "$JR" --worker auto --here 2>"$JR/stderr")
-    JR_RC=$?
-  }
-  jr_auto
-  { [[ "$JR_RC" -eq 2 ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
-    [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
-    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
-    && ok "JEV auto 耗尽拒派，无 Herdr/锁/worktree/账本副作用" || bad "JEV auto 耗尽仍派发或有副作用"
-  jr_edit '.default.worker = "cross_module"'
-  jr_before=$(wc -l < "$JR/requests")
-  jr_run --json
-  { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'role cross_module 全部候选不可用' "$JR/stderr" &&
-    [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
-    && ok "JEV default 耗尽在 JEV 请求之前 exit 2" || bad "JEV default 耗尽未提前拒绝"
-  jr_reset
-  jr_edit 'del(.agents.cross_module)'
-  jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "cross_module" and .role == "-"' <<<"$JR_OUT" >/dev/null; } \
-    && ok "JEV 删除映射后按字面名输出，无保留字" || bad "JEV 未知字面工人语义错误"
-  jr_auto
-  { [[ "$JR_RC" -eq 1 ]] && grep -q '不在 config.sh 的 QWB_WORKERS' "$JR/stderr" &&
-    [[ ! -s "$JR/herdr-calls" && ! -e "$JR/qwbuddy/.controller.lock" && ! -e "$JR/.worktrees" ]] &&
-    cmp -s "$JR/tasks/2099-01-01-jev.md" "$JR/brief-before.md"; } \
-    && ok "JEV auto 拒绝未注册字面名且零副作用" || bad "JEV auto 字面名未拒绝"
-  jr_reset
-  jr_edit '.agents.cross_module = ["sol", "claude"]'
-  # QWB_WORKERS 有名字但 workers.sh 无定义不能被当作已注册。
-  cp "$JR/qwbuddy/workers.sh" "$JR/workers-before.sh"
-  sed '/qwb_worker sol /d' "$JR/workers-before.sh" > "$JR/qwbuddy/workers.sh"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 候选缺启动定义时跳过" || bad "JEV 把仅列名当作注册"
-  cp "$JR/workers-before.sh" "$JR/qwbuddy/workers.sh"
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":10},{"kind":"session","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV weekly 恰为默认门槛时通过，不受 session 干扰" || bad "JEV 默认阈值/weekly 优先失败"
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":90},{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 多 weekly 限制取最小余量" || bad "JEV 宽松窗口掩盖耗尽"
-  printf '%s' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[{"kind":"weekly","percentRemaining":null},{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
-  jr_run --json
-  jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
-    && ok "JEV 未知窗口不掩盖已知耗尽" || bad "JEV 未知窗口绕过已知耗尽"
-  for jr_snapshot in '{"schemaVersion":5,"providers":[42]}' '{"schemaVersion":5,"providers":[{"provider":"codex","windows":[42]}]}'; do
-    printf '%s' "$jr_snapshot" > "$JR/quota.json"
-    jr_run --json
-    { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota.*降级' "$JR/stderr"; } \
-      && ok "JEV quota 错型快照诚实降级" || bad "JEV quota 错型快照未降级"
-  done
-  # 构建无 quota-axi 的 PATH，不能移走替身后意外跑到宿主真额度命令。
-  mkdir -p "$JR/noquota"
-  for jr_cmd in env bash jq cp chmod mktemp rm grep tail cat basename perl python3; do
-    ln -s "$(command -v "$jr_cmd")" "$JR/noquota/$jr_cmd"
-  done
-  ln -s "$JR/bin/curl" "$JR/noquota/curl"
-  PATH="$JR/noquota" jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "sol"' <<<"$JR_OUT" >/dev/null && grep -q 'quota-axi 未安装.*降级' "$JR/stderr"; } \
-    && ok "JEV quota 未安装诚实降级" || bad "JEV quota 未安装路径失败"
-  jr_reset
-  for jr_floor in -1 101 bad; do
-    QWB_QUOTA_FLOOR="$jr_floor" jr_run --json
-    { [[ "$JR_RC" -eq 2 ]] && grep -q 'QWB_QUOTA_FLOOR' "$JR/stderr"; } \
-      && ok "JEV 非法额度阈值拒绝：${jr_floor}" || bad "JEV 非法额度阈值被接受：${jr_floor}"
-  done
-  { [[ ! -e "$JR/quota-secret-leak" ]] && ! grep -vx -- '--json --no-credential-refresh' "$JR/quota-calls"; } \
-    && ok "JEV quota 仅本地快照、禁credential刷新且子进程无 key" || bad "JEV quota argv/key 契约失败"
-  jr_quota_before=$(wc -l < "$JR/quota-calls")
-  jr_reset
-  # off/配置错都不得碰网络；与前面真实请求成功形成正负对照。
-  jr_before=$(wc -l < "$JR/requests")
-  JR_KEY=''
-  jr_run
-  { [[ "$JR_RC" -eq 0 && -z "$JR_OUT" ]] && [[ "$(wc -l < "$JR/stderr")" -eq 1 ]] &&
-    grep -q '^qwb-dispatch: off' "$JR/stderr" && [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
-    && ok "JEV off 文本：一行 stderr、无 stdout、零网络" || bad "JEV off 文本边界失败"
-  jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.status == "off" and .default_worker == "pi"' <<<"$JR_OUT" >/dev/null &&
-    [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
-    && ok "JEV off JSON：解析 default_worker、零网络" || bad "JEV off JSON 未解析默认工人"
-  [[ "$(wc -l < "$JR/quota-calls")" -eq "$jr_quota_before" ]] \
-    && ok "JEV off 零 quota 查询" || bad "JEV off 意外查询 quota"
-  for jr_disabled in 'null' '{}' '[42]' '["bad worker"]'; do
-    jr_reset
-    jr_edit ".agents_disabled = $jr_disabled"
-    jr_run --json
-    { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'agents_disabled' "$JR/stderr"; } \
-      && ok "JEV 禁名单坏配置拒绝：${jr_disabled}" || bad "JEV 禁名单坏配置未拒：${jr_disabled}"
-  done
-  for jr_bad in 'null' '[]' '"bad"' '{"architect":""}' '{"architect":"has space"}' '{"architect":"bad\nworker"}' '{"architect":42}' '{"architect":["planning"],"planning":["pi"]}' '{"architect":["architect"]}' '{"architect":[]}' '{"architect":[""]}' '{"architect":[42]}' '{"architect":["has space"]}'; do
-    jr_reset
-    jr_edit ".agents = $jr_bad"
-    jr_run --json
-    { [[ "$JR_RC" -eq 2 && -z "$JR_OUT" ]] && grep -q 'agents' "$JR/stderr" &&
-      [[ "$(wc -l < "$JR/requests")" -eq "$jr_before" ]]; } \
-      && ok "JEV agents 坏配置拒绝且零网络：${jr_bad}" || bad "JEV agents 坏配置未拒：${jr_bad}"
-  done
-  kill "$JR_PID" && wait "$JR_PID" 2>/dev/null
-  kill -0 "$JR_PID" 2>/dev/null && bad "JEV 假 server 残留" || ok "JEV 假 server 已退出并回收"
-  trap - EXIT
-  [[ "$FAILS" -eq 0 ]]
-)
-
-# Each command owns its HOME and supervised process group. The socket helper
-# allocates a separate short path and records it in that command's own scope.
-# §80 depends on §79's log; collect everything before reporting in the old order.
-# Bound fan-out to four jobs: lifecycle probes have real wall-clock deadlines.
-# Bash 3.2 has no wait -n; retire the oldest owned job before launching another.
-SMOKE_PIDS=()
-smoke_start() {
-  local name="$1" slot; shift
-  if [[ "${#SMOKE_PIDS[@]}" -ge 4 ]]; then
-    slot=$(( ${#SMOKE_PIDS[@]} - 4 ))
-    wait "${SMOKE_PIDS[$slot]}"
-    SMOKE_PIDS[$slot]=""
-  fi
-  (
-    job="$TMP/parallel/$name"
-    mkdir -p "$job/home/.codex" "$job/tmp" || exit 1
-    printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$job/home/.codex/config.toml"
-    export HOME="$job/home" TMPDIR="$job/tmp"
-    python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
-      export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
-      exec "$@"
-    ' smoke-child "$@" > "$TMP/$name.log" 2>&1
-    printf '%s\n' "$?" > "$TMP/$name.rc"
-  ) &
-  SMOKE_PIDS+=("$!")
-}
-smoke_start runtime-readiness bash "$ROOT/tests/runtime-readiness.sh"
-smoke_start boundary-readiness bash "$ROOT/tests/boundary-readiness.sh"
-smoke_start lifecycle-readiness bash "$ROOT/tests/lifecycle-readiness.sh"
-smoke_start worker-config python3 -B "$ROOT/tests/worker-config.py"
-smoke_start on-demand-guide python3 -B "$ROOT/tests/on-demand-guide.py"
-smoke_start worktree-space python3 -B "$ROOT/tests/worktree-space.py"
-smoke_start r2-cli python3 -B "$ROOT/tests/r2-cli.py"
-smoke_start invalid-ledger python3 -B "$ROOT/tests/invalid-ledger.py"
-smoke_start r4-cli python3 -B "$ROOT/tests/r4-cli.py"
-smoke_start e2e-controllers-cli python3 -B "$ROOT/tests/e2e-controllers-cli.py"
-smoke_start wake-block-output bash "$ROOT/tests/wake-block-output.sh"
-export -f jev_roles_smoke ok bad
-export ROOT
-smoke_start jev-roles bash -c 'TMP="$TMPDIR/project"; jev_roles_smoke'
-export -n -f jev_roles_smoke ok bad
-for smoke_pid in "${SMOKE_PIDS[@]}"; do
-  [[ -z "$smoke_pid" ]] || wait "$smoke_pid"
-done
-SMOKE_PIDS=()
-smoke_result() { [[ -f "$TMP/$1.rc" && "$(<"$TMP/$1.rc")" == 0 ]]; }
+wait "$SMOKE_BATCH_PID"
 
 echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(<"$TMP/runtime-readiness.log")"; runtime_rc=1
