@@ -106,7 +106,8 @@ def main():
     records = Path(directory) / 'groups'
     records.touch()
     env = dict(os.environ, QWB_TEST_SCOPE_SCRIPT=script, QWB_TEST_SCOPE_DIR=directory,
-               QWB_TEST_GROUPS=str(records))
+               QWB_TEST_GROUPS=str(records), QWB_TEST_SUPERVISOR_PID=str(os.getpid()))
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
     child = None
     rc = 1

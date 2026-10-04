@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+sys.dont_write_bytecode = True
 from process_fixture import run
 
 ROOT = Path(__file__).resolve().parents[1]

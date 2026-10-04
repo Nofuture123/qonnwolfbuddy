@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
 from process_fixture import run
 
 ROOT = Path(__file__).resolve().parents[1]

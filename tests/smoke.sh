@@ -17,6 +17,8 @@ assert_file() { [[ -f "$1" ]] && ok "存在 $1" || bad "缺文件 $1"; }
 assert_dir()  { [[ -d "$1" ]] && ok "存在 $1" || bad "缺目录 $1"; }
 
 . "$ROOT/tests/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="$QWB_TEST_SCOPE_DIR"
 
 # ROOT_TAB_ONLY_BEGIN：窄入口执行原S4–S10与原公共脚本，不复制断言/替换产品。
 if [[ "${1:-}" == root-tab-missing ]]; then
@@ -25,6 +27,8 @@ import shlex, subprocess, sys
 from pathlib import Path
 source=Path(sys.argv[1]).read_text()
 prefix=source.split('# ROOT_TAB_ONLY_BEGIN',1)[0]
+# The stdin fragment inherits its outer supervisor; $0 here will be bash.
+prefix=prefix.replace('qwb_test_scope "$@"\n','',1)
 source=source.split('\n# ROOT_TAB_ONLY_END\n',1)[1]
 def block(start,end):
     assert source.count(start)==1 and source.count(end)==1,(start,end)
@@ -42,9 +46,6 @@ PY
   exit "$?"
 fi
 # ROOT_TAB_ONLY_END
-
-qwb_test_scope "$@"
-export TMPDIR="$QWB_TEST_SCOPE_DIR"
 
 echo "== 1. bash -n 语法检查 =="
 for s in "$ROOT"/bin/qwb-*.sh; do chk bash -n "$s"; done
