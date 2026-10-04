@@ -1,0 +1,223 @@
+# 全仓审核 r1：代码与性能（2026-10-03）
+
+审核者：Claude Code 主控（Fable 5.1，Herdr pane `w14Z:p1`），四个只读子审核并行（复用 / 简化 / 性能 / 层次）。对象：`main` @ `4678ba0`，范围 `bin/*.sh`、`templates/pi-extensions/qwb-watch.ts`、`templates/*.sh`、`tests/`。不含 `docs/`、`tasks/`、角色与说明文档。本轮只审不改；修复经任务书派给 Pi 工人。
+
+## 一、人话结论
+
+**不用换架构，也几乎没有死代码。问题集中在三件事：门有洞、值守空转、同一条规则到处手抄。**
+
+1. **门有洞。** 主仓现在跑全门是红的（一条测试自己写错了），而且有 12 个测试文件根本没接进任何门——1612 行的账本脚本 `qwb-ledger.sh` 在全门里零保护。后果：谁改账本脚本都没人拦。这条要最先修，否则后面的优化没有安全网。
+2. **值守空转。** 值守循环每秒把全部任务书重扫一遍，现在 52 个文件一轮要 1.05 秒、起约 308 个进程，等于它一直在全速扫、没有真正「等」过；票数翻倍耗时翻倍。好比门卫每秒把整栋楼所有房间重新敲一遍门，包括早就搬空的。改成一次扫描后原型是 15 毫秒。
+3. **规则手抄。** 「什么算未结」「场景门怎么判」「锁主是谁」「herdr 回了什么」这些规则，每个脚本各写一份，bash、perl、python、TS 四种语言都有。已经查实三处抄走样了（见 F14–F16）。后果：改一条规则要同步十几处，漏一处就是隐蔽 bug。
+
+测试耗时方面：装机脚本一次要 0.68 秒，其中四成花在 `basename`/`dirname` 子进程上，而全门里装机被调 60–75 次；另有两处真等待（8 秒、3 秒）。
+
+**「直到没有任何可优化点」不可能一轮清零。** 本轮共 32 条发现，按文件簇分三波派工；每波落地后在新 HEAD 上复审（r2、r3…），哪一轮查不出值得动的就停。
+
+## 二、基线（main @ 4678ba0，本机实测）
+
+机器：macOS（Darwin 27.0.0），PATH 上的 bash 5.3.20，`/bin/bash` 3.2.57。测量时本机还有别的项目的工人在跑（load average 约 4），所以绝对数字偏高，但两次测量互相吻合。
+
+| 项 | 结果 |
+|---|---|
+| `bash bin/qwb-test.sh fast` | 退出码 0，2.98 秒 |
+| `bash bin/qwb-test.sh full`（第一次，四个子审核同时在跑） | **退出码 1**，386.92 秒（user 178.54 / sys 140.05） |
+| `bash tests/smoke.sh`（第二次，子审核已结束） | **退出码 1**，394.46 秒（user 177.90 / sys 144.69）；790 PASS / 1 FAIL，共 93 节 |
+| 唯一 FAIL | §25「lint 无逐项 PASS 输出」——见 F1 |
+| `bash tests/review-identity.sh` | 退出码 0，3.6 秒 |
+| `bash bin/qwb-lint.sh` | 退出码 0，`LINT PASS`（10 行 PASS） |
+
+README 记录的旧基线是 `1c500b3` 上 full 88.35 秒 / smoke 567 PASS。现在断言数涨到 791，耗时涨到约 6.5 分钟；sys 时间占四成以上，说明主要花在起进程上。
+
+smoke 最耗时的节（第二次测量，按节标题间的时间差）：
+
+| 节 | 秒 | 内容 |
+|---|---|---|
+| §79 | 37.6 | `tests/worktree-space.py` |
+| §49 | 34.3 | JEV 自动派工 |
+| §81 | 30.9 | `tests/r2-cli.py` |
+| §82 | 17.6 | `tests/invalid-ledger.py` |
+| §83 | 14.2 | `tests/r4-cli.py` |
+| §51 | 12.9 | 工人最高权限启动 |
+| §74 | 12.7 | `tests/runtime-readiness.sh` |
+| §77 | 12.5 | `tests/worker-config.py` |
+| §86 | 11.8 | JEV agents 角色层 |
+| §17b / §17c | 11.5 / 10.7 | 根 pane 派发 / `--add-dir` |
+| §46 | 9.7 | workspace 边界 |
+
+§74–§86 这批子测试脚本合计约 154 秒，占 smoke 的四成（对应 F13）。
+
+未接门的 12 个测试单独跑的结果：
+
+| 测试 | 退出码 | 秒 |
+|---|---|---|
+| `collab-ci-diagnostics.sh` | 0 | 43.2 |
+| `collab-gate.sh` | 0 | 209.9 |
+| `collab-handoff.sh` | 0 | 39.1 |
+| `collab-herdr.sh` | 0 | 38.8 |
+| `collab-land.sh` | **1** | 109.6 |
+| `collab-ledger.sh` | 0 | 26.9 |
+| `collab-planning.sh` | 0 | 104.3 |
+| `collab-posture.sh` | 0 | 44.3 |
+| `collab-roles.sh` | 0 | 40.3 |
+| `collab-test-policy.sh` | 0 | 64.1 |
+| `lint-scenario-stream.sh` | 0 | 0.9 |
+| `path-canonicalization.sh` | 0 | 0.0 |
+
+串行合计约 12 分钟。`collab-land.sh` 在 `4678ba0` 上是红的（F34）：第 295 行断言失败，`qwb-worktree.sh land recover-endpoint` 在重新授权后仍返回 1，stderr 为「拒绝：Herdr Space task-space 关闭/焦点读回未确认，Git 未动：Herdr refusal/unknown: query/action failed:」。复跑 3 次（`4678ba0` 主仓一次、`cf4a9c0` 与 `8067347` 的 `git archive` 导出副本各一次）结果完全相同：都是 7 个 PASS 之后在同一断言失败。所以它是确定性失败，且不是今天这几个提交引入的。根因未定：可能是测试的假 herdr 落后于产品（`142cb80` 之后关闭 Space 多了焦点读回），可能是真缺陷，也可能与本机环境有关（Herdr 0.9.3、负载高时 `bin/qwb-herdr.sh:20` 的 2 秒硬超时）。第 1 波收工、机器空下来后单开一张只诊断不修的票：二分找首个变红的提交并给出根因。
+
+## 三、发现清单
+
+风险：低 / 中 / 高。带「已核」的是主控亲自对过代码或复现过的；其余为子审核读码结论，执行者动手前须自行复核。
+
+### A. 门与测试完整性
+
+| # | 位置 | 问题 | 后果 | 风险 |
+|---|---|---|---|---|
+| F1 已核 | `tests/smoke.sh:1374` | 用 `grep -qE '^[4-9]'` 判断 lint 的 PASS 行数 ≥4。主仓有 `qwbuddy/config.sh` 时 lint 输出 10 行 PASS，「10」以 1 开头 → 判失败。干净副本只有 9 行所以一直绿。 | 主仓全门恒红；lint 再多一项检查，所有环境都红。 | 低 |
+| F2 已核 | `tests/collab-*.sh`（10 个）、`tests/lint-scenario-stream.sh`、`tests/path-canonicalization.sh` | 没有任何门或入口调用（`QWB_GATE_FULL` 只跑 smoke + review-identity + lint，smoke 里也不调）。 | 已迁票协议（`qwb-ledger.sh` 约 1000 行）在全门里零覆盖。 | 低 |
+| F34 已核 | `tests/collab-land.sh:295`（here-doc 内行号） | 该测试在 `4678ba0` 上退出码 1，因为没人跑所以没人知道。 | 确定性失败（3 个提交上复现），根因待诊断；定性前不接进全门。 | 待查 |
+
+### B. 运行时性能
+
+| # | 位置 | 问题 | 实测 / 估算 | 风险 |
+|---|---|---|---|---|
+| F3 已核 | `bin/qwb-wake.sh:489-510`（`open_items`）+ `:811-815` | 每轮对每张票起 6 个外部进程，已结票也照付；等待被夹在 1 秒内，所以每秒重扫。 | `--dry-run --once` 1054ms / 约 308 次 exec（52 文件）；104 文件 2077ms，线性。单进程 perl 原型 15.5ms，输出与现实现逐字节一致。 | 低–中 |
+| F4 | `bin/qwb-wake.sh:774-786, 791, 817-823` | 等待期每 50ms 一拍，每拍 `$(event_mark)` 起 head、`$(now_ms)` 起 perl、`sleep "$(printf …)"` 再起子 shell。 | 每拍 11.9ms 纯开销，约 48 次 exec/秒。 | 低 |
+| F5 | `bin/qwb-status.sh:71-159` | 每票 13 个进程；已迁票读两次（`:86`、`:97`）。 | 1981ms / 约 665 次 exec。 | 低–中 |
+| F6 | `bin/qwb-lint.sh:86-101, 191-225, 243-276, 286-291, 298-303` | 对账本跑 5 遍独立循环。 | 3032ms / 约 1030 次 exec；一次全门里对真账本跑 3 次。 | 低–中 |
+| F7 | `bin/qwb-herdr.sh:58-76, 101-103`；`bin/qwb-wake.sh:503` → `bin/qwb-lib.sh:211-229` | 每张已迁票每秒一次 `qwb-ledger.sh read`（60.7ms/次）。 | N 张已迁票 → 每秒 N×60ms，还会堵事件接收。本仓现有 0 张已迁票，属推算。 | 中 |
+| F8 | `bin/qwb-lib.sh:95` → `bin/qwb-role.sh:283, 240-272` | 身份核验触发全账本义务扫描，结果被丢弃。 | 每次角色写账多付 N×60ms（推算）。 | 低 |
+
+### C. 测试耗时
+
+| # | 位置 | 问题 | 实测 / 估算 | 风险 |
+|---|---|---|---|---|
+| F9 已核 | `bin/qwb-init.sh:171, 197, 199-200, 218, 301-302` | 每个文件用 `$(basename …)`/`$(dirname …)`，一次装机约 122 个 fork。 | 装机 677ms → 换参数展开后 403ms，产物 `diff -r` 一致。全门约调 60–75 次，推算省 16–20 秒。 | 低 |
+| F10 | `tests/smoke.sh:138 + 2555-2559`（§46c）；`:2479` + `bin/qwb-wake.sh:427-430, 453-456`（§45）；`:4300`、`:3607`、`:3757` | 真等待：stub 睡 8 秒；裸 `sleep 0.5`×6 不吃假睡注入；另有 1 秒、0.4 秒×2。 | 合计约 11 秒。 | 低–中 |
+| F11 | `tests/smoke.sh` 约 25 处（`:1376, 1619, 1630, …, 4127`） | 只需要「一个装好的项目」的节各自重跑装机。 | 每次 0.67 秒；`cp -R` 黄金安装 21ms。F9 之后还能再省约 9 秒。 | 中 |
+| F12 | `tests/smoke.sh:44, 1371, 3412` | §51 重跑整份真仓 lint（§25 已跑过，期间真仓没变）；§2 逐文件 shellcheck。 | 约 3.5 秒。 | 低 |
+| F13 已核 | `tests/smoke.sh:4331-4430` | §74–86 的子测试脚本串行，各自独立建临时目录。 | 实测合计约 154 秒（占 smoke 四成）；并发跑预计省 100 秒以上，前提是各给独立 HOME。 | 中 |
+| F33 已核 | `tests/smoke.sh` §49（JEV 自动派工） | 单节 34.3 秒，原因未查。 | 第 2 波先定位再决定。 | 待查 |
+
+### D. 同一条规则多处实现（已有漂移的排前）
+
+| # | 位置 | 问题 | 已发生的漂移 | 风险 |
+|---|---|---|---|---|
+| F14 已核 | `bin/qwb-run.sh:282-292`、`bin/qwb-lint.sh:205-215`、`bin/qwb-ledger.sh:945, 1002, 1499` | 验收场景门规则三份。 | 失败路径关键词：run/lint 是 8 个（`失败\|拒绝\|报错\|异常\|负例\|非法\|fail\|error`），ledger 只有 4 个。只写「报错」的场景过得了派发门，过不了账本修订门。 | 低 |
+| F15 已核 | `bin/qwb-ledger.sh:1317` 对 `bin/qwb-lib.sh:226` | 已迁票「未结义务」规则两份。 | ledger 排除 `handoff-\|ci-\|gate-(?!verdict)`，lib 漏了 `ci-`。推演后果：带 CI 事件的已迁票被值守永远算未结，`--block` 回不了 0。 | 低–中 |
+| F16 已核 | `bin/qwb-wake.sh:489-510`、`bin/qwb-status.sh:74-94`、`bin/qwb-worktree.sh:86-99` | 「这张票算不算未结」三份。 | worktree 那份不查未结义务，且用文件名子串匹配（`*"$1"*`）——同文件 `unique_task_for` 已是精确匹配。 | 低–中 |
+| F17 | `bin/qwb-lock.sh:106, 133`；`bin/qwb-wake.sh:217, 560, 870, 929`；`bin/qwb-send.sh:49`；`bin/qwb-hook-claude-stop.sh:50`；`bin/qwb-role.sh:141`；`bin/qwb-ledger.sh:266, 517, 879`；`qwb-watch.ts:309-318` | 主控锁 owner 解析 13 处、4 种语言、至少 4 种语义（首行去首字段 / 首行末字段 / 末非空行末字段 / 整文件匹配）。 | 今天一致只因写入方只写单行。 | 低 |
+| F18 | `pane get`：`qwb-run.sh:339-344, 371-373, 410-414, 419-428`、`qwb-wake.sh:111-122`、`qwb-lib.sh:399-413`、`qwb-worktree.sh:189-196, 470-475, 511-512`、`qwb-lock.sh:88-93` 等；`process-info`「前台是空闲 shell」5 份；`tab create` 2 份 | herdr 查询响应没有共享解析层，每个脚本各自 perl/python 解析。 | `pane_not_found` 两种判法并存（grep 原文 / JSON `error.code`）；空闲 shell 判定宽严不一；`tab create` 取 `root_pane` 一严一宽。 | 中 |
+| F19 | `bin/qwb-lib.sh:16-46` 对 `bin/qwb-dispatch.sh:201-235`；`bin/qwb-lib.sh:130-143` 对 `bin/qwb-role.sh:169-186` | `workers.sh` 声明解析两份；Pi 固定档位解析两份。 | 模板自带的 `pi-glm-high`（`--model zai-coding-cn/glm-5.3`，无 `--provider`）能当常驻角色，不能当门禁审核工人。**需裁决**，见第五节。 | 中 |
+| F20 | `bin/qwb-herdr.sh:159-163, 184-213` 对 `bin/qwb-worktree.sh:205-254, 448-533` | 删 worktree 前的「写入者已死」证明两份 python。 | worktree 版用 `/bin/ps` 绝对路径加固，herdr 版没跟上。删除安全接缝，排最后。 | 中–高 |
+| F21 | state 五值 9 处；状态行前缀集合 12 处 | 值域字面量散落。 | `qwb-dispatch.sh:167` 的头部键集合比别处多。 | 低 |
+| F22 | `bin/qwb-ledger.sh:1140` | `known_family` 把三个模型型号写死在账本 writer 里，模板 `workers.sh` 的四个具名型号一个都不在表里。**需裁决**。 | — | 中 |
+
+### E. 单文件内的手抄与死代码
+
+| # | 位置 | 问题 | 风险 |
+|---|---|---|---|
+| F23 | `bin/qwb-ledger.sh` | 「打开→整读→关闭」手抄 24 处；「子 op 仍在途」判定逐字重复 5 处；另有 8 类判定各抄 2–5 份（已验收历史、规格疑点末事件、场景块合法性、规格正文剥离、identity 八键、旧 owner 已死、就绪指纹、`sha256_hex($owner_raw)` 18 次）。 | 低–中（依赖 F2 先落地） |
+| F24 | `bin/qwb-worktree.sh:575-588` 对 `617-634`；`195-199` 对 `511-516`、`524-527`；`281-282` 对 `550-551` | merged 与 archive 的「删 worktree 后删分支」同构；「pane 已回 shell 且 agent 为空」抄 3 份；`LAND_PROOF` 两处各起 2 个 python。 | 中（`partial_fail` 的 stage 字符串须逐字保留） |
+| F25 已核 | `bin/qwb-run.sh:828-869`；`:151-153` 对 `:194-196`；`:235-241, 556-558, 563/565, 625/635, 208/229, 474-476, 326-328/390-392, 468-473, 431-434, 768-783` | 「跑命令→判 rc→失败回滚→打印」写了 7 遍；非 auto 时 `start-check` 连调两次；一批零散冗余（一次性别名、连赋两次、恒真嵌套、同一 JSON 起两次 perl）。 | 低 |
+| F26 | `bin/qwb-wake.sh:425-437` 对 `451-462`；`681-682` 对 `697-698`；`607` 对 `611`；`585-586`；`870` 对 `929` | 值守启动探测、gate 身份 proof、跳过文案、取锁主各抄两份；`lostrc` 可推导。 | 低 |
+| F27 已核 | `bin/qwb-lib.sh:378-383`（`qwb_pane_activity`）；`bin/qwb-wake.sh:788`（`sleep_interval`）；`qwb-watch.ts:100, 153`（`onStdout` 形参）；`qwb-watch.ts:68, 110, 125, 292, 298-300`（`childIsProbe`） | 四处零调用的死代码。 | 低 |
+| F28 | `now_ms`/`sleep_ms`：`qwb-run.sh:801-810` 对 `qwb-wake.sh:774-786`；单引号转义：`qwb-run.sh:221-228` 对 `qwb-init.sh:33-40`；任务 id→任务书：`qwb-run.sh:95-99` 对 `qwb-worktree.sh:103-111`；调用者 workspace：`qwb-run.sh:407-416` 对 `qwb-wake.sh:307-314` | 跨文件逐字重复，该进 `qwb-lib.sh`。 | 低 |
+| F29 已核 | `qwb-watch.ts:227-244`；`262-268` 对 `282-291` | `onExit` 的 probe 与非 probe 分支逐项相同；失锁清理与 `shutdown` 的状态复位重复。 | 低 |
+| F30 | `bin/qwb-status.sh:75-94`；`bin/qwb-dispatch.sh:67-70, 101-108, 401-406` | status 的 `mark` 判两遍；dispatch 的 `no_rules` 单调用点、两次 `jq -e` 接同一句 `die`。 | 低 |
+| F31 | `tests/smoke.sh:929, 2598, 2726, 3231, 3859, 3955, 3994`；`:119, 672, 2221`；`:3672, 4316`；`:3252-3288`；`:4341-4431` | 7 个近乎相同的 `mk_*_task`；3 个逐字相同的清洗函数；2 对同体函数；§51 留着旧格式翻译器；§75–85 九节同形包装；`ok/bad` 在三个文件各一份。 | 低–中 |
+| F32 | `tests/r2-cli.py`、`worktree-space.py`、`r4-cli.py`、`invalid-ledger.py`、`collab-herdr.sh:313-316`；collab-* 的假 herdr | Python 夹具靠 `runpy`/`exec` 字符串切片互相借用；假 herdr 在 17 个文件各写一份且已互相漂移。 | 低–中 |
+
+### 查过、不报
+
+- 主控锁、信任预置、`--add-dir` 等按宿主的特判：有 lesson 支撑的必要差异。
+- `qwb-watch.ts` 的空 `onTurnEnd()`：r2 误荐 `turn_end` 后留的回归护栏。
+- 可见值守 tab（`qwb-wake.sh:106-468`）、旧 `QWB_WORKER_LAUNCH` 迁移器、`pane-run`：DECISIONS 明确保留的兼容面。
+- `qwb-wake.sh` 的 1 秒节奏：`:813` 注释写明的设计，只降每轮成本，不动节奏。
+- `qwb-lib.sh` 的 source 期开销：没有值得报的。
+
+## 四、分波计划
+
+按文件簇分票，同一波内白名单互不相交。
+
+| 波 | 票 | 文件 | 覆盖发现 |
+|---|---|---|---|
+| 1 | audit-gate-repair | `tests/smoke.sh`、`qwb.config.sh` | F1、F2 |
+| 1 | audit-init-forks | `bin/qwb-init.sh` | F9 |
+| 1 | audit-wake-hotpath | `bin/qwb-wake.sh`、`bin/qwb-lib.sh` | F3、F4、F27（bash 两处） |
+| 1 | audit-run-simplify | `bin/qwb-run.sh` | F25 |
+| 1 | audit-watch-ts | `templates/pi-extensions/qwb-watch.ts`、`tests/pi-ext.test.mjs` | F27（TS 两处）、F29 |
+| 2 | status/lint 复用单遍扫描 | `bin/qwb-status.sh`、`bin/qwb-lint.sh` | F5、F6、F30 |
+| 2 | worktree 收敛 | `bin/qwb-worktree.sh` | F16、F24 |
+| 2 | lib 下沉 | `bin/qwb-lib.sh` + 调用方 | F14（bash 侧）、F17、F26、F28 |
+| 2 | smoke 提速 | `tests/smoke.sh` | F10、F11、F12、F31 |
+| 3 | ledger 去重与对齐 | `bin/qwb-ledger.sh` | F14（perl 侧）、F15、F23 |
+| 3 | herdr 解析层 | `bin/qwb-lib.sh` + 调用方 | F18 |
+| 3 | 测试夹具共享 | `tests/` | F32 |
+| 3 | 已迁票读缓存 | `bin/qwb-herdr.sh`、`bin/qwb-role.sh` | F7、F8 |
+| 最后 | 写入者死亡证明合一 | `bin/qwb-herdr.sh`、`bin/qwb-worktree.sh` | F20 |
+
+每波落地后在新 HEAD 复审，再决定下一波的确切范围。
+
+## 五、需要 Rocky 裁决（不阻塞第 1 波）
+
+1. **F19**：`provider/model` 合写（如 `zai-coding-cn/glm-5.3`）算不算合法的 Pi 固定档位？现在常驻角色认、门禁审核不认。统一成哪一种。
+2. **F22**：`known_family` 模型家族表从账本 writer 的代码里挪到 `workers.sh` 旁的声明——信任锚从代码变成主控可改的配置，是否接受。
+3. **F16**：`qwb-worktree.sh list` 判残留时要不要也查未结义务（现在不查，`state=done` 但 claim 未释放的票会被建议 finish）。
+4. **F14 / F15** 是对齐漂移，会改变边界行为（账本修订门多认 4 个失败关键词；lib 的义务判断多排除 `ci-`）。我的建议是都以较新的那份为准，排在第 3 波，默认执行。
+
+## 第 1 波结果（2026-10-04，main @ 0b9faef，未 push）
+
+执行模型：起初主控误用 glm-5.3-flash，Rocky 叫停后全部改为 Pi 默认（magpie `codex/gpt-6.1-sol` high），由 Sol 把 glm 留下的改动当草稿逐项复核。四份 glm 改动里三份被查出实质问题并修正（值守扫描吞掉目录读取错误；派发脚本两处解析改变了行为；并发测试入口三处收尾不对）。
+
+| 票 | main 上的提交 | 覆盖发现 | 结果 |
+|---|---|---|---|
+| audit-init-forks | `07b0656` | F9 | 一次装机 716ms → 430ms（各 7 次取最小，负载约 3） |
+| audit-watch-ts | `34a7c50` | F27（TS）、F29 | Pi 扩展 397 → 377 行 |
+| audit-wake-hotpath | `d6ca4a3`、`fd446f6` | F3、F4、F27（bash） | 值守一轮扫描 1269ms → 104ms（59 个任务书，各 7 次取最小） |
+| audit-run-simplify | `5a052c6`、`38db42b` | F25（A、B1–B4；B5、B6 经反例证明会改行为，保留旧实现；`start-check` 双调未动） | `qwb-run.sh` 877 → 862 行 |
+| audit-gate-repair | `90fd3f4` | F1、F2（11/12） | 主仓恒红断言修复；11 个协作测试并发接进全门 |
+| audit-test-isolation | `b8d18f9`、`1125c44` | 计划外（Rocky 纠正） | 测试失效关闭、临时目录进仓库内 `.qwb-tmp/` |
+| audit-lint-pipe | `011389b` | 合并全门暴露 | smoke 199 处断言去管道；主仓 lint 输出 262510 → 8661 字节 |
+| audit-collab-flake | `32cb242`、`f55544e`、`0b9faef` | 合并全门暴露 | 测试进程登记与排空；并发跑批不再偶发清理失败 |
+
+收尾全门（主仓真实布局，负载约 2–3）：`bash bin/qwb-test.sh full` 退出码 0，831 PASS / 0 FAIL，SMOKE / REVIEW-IDENTITY / LINT / COLLAB-ALL（11 项）全过，572.27 秒；跑完工作区无新增改动、`.qwb-tmp/` 为空、无残留进程。
+
+单独的 smoke：346.04 秒、795 PASS（开头基线 394.46 秒、791 条；两次负载不同，只能说没有变慢）。全门总时长因多跑 11 个协作测试而从约 390 秒变为约 572 秒。
+
+第 1 波过程中新暴露、不在最初清单里的问题：
+
+- **F35 产品缺陷**：值守退出时 `event_cleanup` 只回收订阅器，订阅器正在进行的 `qwb-ledger.sh read` 子进程成为孤儿并重建侧车锁文件。修复票 `audit-subscribe-reap`。
+- **F36 测试失效开放**：smoke 的假 herdr 只靠 PATH 前置，桩消失后打到真 Herdr（事故见 `tasks/lessons/测试桩失效会打到真Herdr.md`）。已由 audit-test-isolation 修复；顺带发现 smoke 第 13 节的锁释放用例一直在查询真 Herdr。
+- **F37 测试断言随账本内容变脆**：大输出下 `printf | grep -q` 在 `pipefail` 下被 SIGPIPE 误判。已由 audit-lint-pipe 修复。
+- **F34** `collab-land.sh` 确定性的红：诊断票 `audit-collab-land-red`。
+
+验收上的一次疏漏：值守提速与派发简化验收时，协作测试尚未接进全门，主控没有手动补跑，合并全门才暴露并发清理竞态。此后凡改 `bin/` 的票，全门都已包含协作测试。
+
+第 2 波见下节。
+
+## 第 2 波结果（2026-10-04，main @ 703b44a，未 push）
+
+| 票 | main 上的提交 | 覆盖发现 | 结果 |
+|---|---|---|---|
+| audit-status-lint-scan | `098c405`、`ce2d235`、`3ead225` | F5、F6、F30（status） | 点名约 2.4s → 0.9s、lint 约 4.1s → 1.8s（执行者各 7 次取最小）；未结义务规则在 lib 只留一处 |
+| audit-collab-land-red | `a7722dc` | F34 | 根因：合并提交 `c4403be` 引入新的关闭 Space 协议后测试假件未跟上；补假件、断言未动；接进全门（12 项） |
+| audit-socket-path | `734996d`、`7870b65`、`f23cafe`、`ade605c` | F38 | 测试 socket 统一建在 `仓库根/.qwb-tmp/两位十六进制/s`，按字节守卫，超 103 立即报错；仓库根预算 89 字节 |
+| audit-socket-land | `b105ee9` | F38 补漏 | collab-land 的 socket 改走统一夹具 |
+| audit-subscribe-reap | `abe5830`、`703b44a` | F35 | 值守退出时整组回收订阅器的子命令；回归测试旧 bin 10 次红、修复后 10 次绿；正常路径不加 ps |
+
+收尾全门（主仓真实布局）：`bash bin/qwb-test.sh full` 退出码 0，840 PASS / 0 FAIL，SMOKE（末节第 88 节）/ REVIEW-IDENTITY / LINT / COLLAB-ALL（12 项）全过，625.04 秒；跑完工作区无新增改动、`.qwb-tmp/` 为空、无残留进程。
+
+第 2 波新暴露：**F38 测试 socket 路径随仓库路径变长而超过 macOS 的 103 字节上限**（临时目录进仓库后带出），已修。主控裁决不改产品（`bin/qwb-herdr.sh` 要求绝对 socket 路径是安全校验，真实 Herdr 的 socket 在项目外的短路径上）。
+
+仍未处理（按价值排序）：全门提速（F10–F13、F33：smoke 重复装机、子测试串行、真等待）；规则多处实现的收敛（F14、F15、F17、F18、F21、F26、F28）；`qwb-worktree.sh` 简化（F16、F24）；`qwb-ledger.sh` 去重（F23）；已迁票读缓存（F7、F8）；测试夹具共享（F31、F32）；写入者死亡证明合一（F20）；需裁决的 F19、F22。
+
+## 返修任务
+
+执行者：Pi（`pi --approve --model zai-coding-cn/glm-5.3-flash --thinking high`，即工人表里的 `pi-glm-flash-high`）。每张票的细则在各自任务书里（`tasks/2026-10-03-audit-*.md`），这里只列共同约束：
+
+- **布局**：每张票一个隔离副本 `.worktrees/<任务id>`（`git worktree add --detach`，不建分支），工人 Tab 开在主控所在的 Herdr workspace `w14Z`，中文标签。没有走 `qwb-run.sh`：它对项目 worktree 一律另开 Space，与 Rocky 2026-10-03「工人在同 Space 独立 Tab、不另建 Space」的要求冲突；手工派发的事实由主控写进各票的 `working:` 行。
+- **行为不变是硬线**：除任务书明确要求的修正外，任何可观察输出（stdout/stderr 文案、退出码、账本写入、herdr 调用序列）逐字节不变。
+- 工人只在自己的副本里改白名单内文件并提交（detached HEAD），不建分支、不 push、不动主仓根（往主账本追加状态行除外）。
+- 主控验收不采信自述：在工人副本的最终提交上独立跑 `bash bin/qwb-test.sh full`，对照基线 PASS 数与末节标题，再把提交 cherry-pick 到 `main`（只在本地，不 push）。
