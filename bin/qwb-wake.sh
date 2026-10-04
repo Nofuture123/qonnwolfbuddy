@@ -820,7 +820,9 @@ event_cleanup() {
   [[ -z "$EVENT_DIR" ]] || rm -rf "$EVENT_DIR"
 }
 # --once/--dry-run 也会创建 due 文件；复用同一 EXIT 清理，不覆盖订阅器收尾。
+# 宿主消失会关闭 stdout；保留 SIGPIPE 的 141 退出码，同时排空持锁订阅器。
 trap event_cleanup EXIT
+trap 'trap "" INT TERM PIPE; exit 141' PIPE
 trap 'trap "" INT TERM; exit 130' INT
 trap 'trap "" INT TERM; exit 143' TERM
 event_start() {
