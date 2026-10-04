@@ -27,7 +27,8 @@ QWB_GATE_FULL=""                       # 全门：完整检查，合并前跑
 # —— 以下仅为人/AI 阅读，脚本不读 ——
 # 工人能力档：pi-sol-high=常规实现、机械改动、批量小活、纯规划、调研、维护
 #             pi-astra-high→claude-fable-low=复杂架构、跨模块、高风险；claude-fable-low=顾问、复杂规划
-# 独立审核：pi-astra-low；实现者是 astra 时改用 claude-opus-medium，审核者模型须与实现者不同
+# 独立审核：pi-astra-low；审核优先用 GPT 模型；实现者是 astra 时改用 pi-sol-high，审核者模型须与实现者不同
+# claude-opus-medium=备用审核档，默认规则不引用，仅票面明确点名时使用
 # 只有一个候选的类别不可用时停止，由主控报使用者，不自动换模型。
 # 派工前可查 quota-axi；模型判定 = 智力档 × 额度现状（额度只是参考）
 # 硬规矩：工人一律 Herdr 窗口交互式运行（禁 headless）；零通知使用者；只用 Herdr；超时一律毫秒

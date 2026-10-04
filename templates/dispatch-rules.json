@@ -13,7 +13,7 @@
     {"when": "复杂架构：架构设计、核心抽象、跨仓协议", "worker": "architect"},
     {"when": "跨模块改动：一次改动同时穿过多个模块或层", "worker": "cross_module"},
     {"when": "高风险改动：资金、安全、数据删除、生产环境", "worker": "high_risk"},
-    {"when": "独立审核：验证工人产出；实现者是 astra 时改用 claude-opus-medium，审核者模型须与实现者不同", "worker": "review"},
+    {"when": "独立审核：验证工人产出；审核优先用 GPT 模型；实现者是 astra 时改用 pi-sol-high，审核者模型须与实现者不同", "worker": "review"},
     {"when": "顾问、复杂规划：需要顾问判断或复杂规划", "worker": "adviser"},
     {"when": "纯规划、调研：拆解、写规格、不落代码", "worker": "planning"},
     {"when": "常规实现、机械改动、批量小活、维护：单模块内的实现或修复", "worker": "implement"}

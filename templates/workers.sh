@@ -11,6 +11,7 @@ qwb_worker claude herdr claude -- --dangerously-skip-permissions --model claude-
 qwb_worker pi-sol-high herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high
 qwb_worker pi-astra-high herdr pi -- --approve --provider magpie --model codex/gpt-6-astra --thinking high
 qwb_worker pi-astra-low herdr pi -- --approve --provider magpie --model codex/gpt-6-astra --thinking low
+# 备用审核档：默认规则不引用，仅票面明确点名时使用。
 qwb_worker claude-opus-medium herdr claude -- --dangerously-skip-permissions --model claude-opus-5-5 --effort medium
 qwb_worker claude-fable-low herdr claude -- --dangerously-skip-permissions --model claude-fable-5-1 --effort low
 
