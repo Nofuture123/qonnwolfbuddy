@@ -617,6 +617,10 @@ sub field {
   if ($n) { $body =~ s/^\Q$key\E:[^\n]*/$key: $val/m }
   else { $body="$key: $val\n$body" }
 }
+sub child_in_flight {
+  my $id=shift; my $status=$data->{ops}{$id}{status};
+  return $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+}
 sub require_claim {
   my $id=shift; fail('op_id非法') unless id_ok($id);
   if ($data) {
@@ -722,8 +726,7 @@ sub land_ready {
   my $c=gate_context(); my $g=$data->{gate};
   fail('未验收或验收条件已变') unless $g->{verdict} eq 'accepted' && $c->{status} eq 'clean' && @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
   for my $id (keys %{$g->{dispatches}}) {
-    my $status=$data->{ops}{$id}{status};
-    fail('仍有在途审核/返修') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+    fail('仍有在途审核/返修') if child_in_flight($id);
   }
   fail('成立缺陷/安全意见未结') if grep { $_->{history}[-1]{classification}=~/\A(must-fix|unresolved)\z/ } values %{$g->{findings}};
   for my $q (values %{$data->{questions}}) { fail('相关问题未恢复') if $q->{resumed} eq '' }
@@ -1012,8 +1015,7 @@ if ($cmd eq 'land-authorize') {
 } elsif ($cmd eq 'revision-handoff') {
   fail('交接需gate本人claim和待修订请求') unless $gate && @args==2 && string_ok($args[1]) && $args[1] ne '' && $data->{planning}{pending_revision}; require_claim($args[0]);
   for my $child (keys %{$data->{gate}{dispatches}}) {
-    my $status=$data->{ops}{$child}{status};
-    fail('gate子任务在途，不能交出验收标准') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $child && $_->{kind} eq 'done' } @{$data->{events}});
+    fail('gate子任务在途，不能交出验收标准') if child_in_flight($child);
   }
   $data->{planning}{revision_handoff}={spec_rev=>$data->{spec_rev},op_id=>$args[0],owner=>$actor,reason=>$args[1]};
   $data->{claim}=undef; $data->{ops}{$args[0]}{status}='released'; $line="working: revision-handoff op=$args[0] $args[1]"; append_body($line);
@@ -1194,8 +1196,7 @@ if ($cmd eq 'land-authorize') {
     }
     fail('dirty或无独立审核') unless $c->{status} eq 'clean' && @{$g->{reviews}};
     for my $id (keys %{$g->{dispatches}}) {
-      my $status=$data->{ops}{$id}{status};
-      fail('派出的审核/返修仍在途，不能ready') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+      fail('派出的审核/返修仍在途，不能ready') if child_in_flight($id);
     }
     my $r=$g->{reviews}[-1]{review};
     fail('缺当前两轴通过审核') unless $json->encode($r->{context}) eq $json->encode($c) && $r->{standards} eq 'pass' && $r->{spec} eq 'pass';
@@ -1246,8 +1247,7 @@ if ($cmd eq 'land-authorize') {
   fail('只能提交合规新attempt/base') unless id_ok($attempt) && $attempt ne $g->{binding}{attempt} && ($integration || $g->{verdict} eq 'rework' && $base eq $g->{binding}{base});
   fail('不能切到未授权副本') unless $candidate eq $g->{binding}{candidate};
   for my $id (grep { $g->{dispatches}{$_} eq 'rework' } keys %{$g->{dispatches}}) {
-    my $status=$data->{ops}{$id}{status};
-    fail('返修工人尚未交回，不能切candidate') if $status=~/\A(claimed|dispatch)\z/ || ($status eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}});
+    fail('返修工人尚未交回，不能切candidate') if child_in_flight($id);
   }
   $g->{binding}{attempt}=$attempt; $g->{binding}{base}=$base;
   $g->{binding}{head}=capture('git','-C',encode('UTF-8',$candidate),'rev-parse','HEAD');
@@ -1263,7 +1263,7 @@ if ($cmd eq 'land-authorize') {
   fail('返修无成立意见或已触发技术重诊') if $purpose eq 'rework' && $g->{verdict} ne 'rework';
   fail('已有同类在途派工') if grep {
     my $id=$_;
-    $g->{dispatches}{$id} eq $purpose && ($data->{ops}{$id}{status}=~/\A(claimed|dispatch)\z/ || ($data->{ops}{$id}{status} eq 'sent' && !grep { $_->{op_id} eq $id && $_->{kind} eq 'done' } @{$data->{events}}))
+    $g->{dispatches}{$id} eq $purpose && child_in_flight($id)
   } keys %{$g->{dispatches}};
   $g->{dispatches}{$child}=$purpose; $data->{ops}{$child}={owner=>$actor,pane=>'',status=>'claimed'};
   $op=$child; $line="working: gate-dispatch purpose=$purpose acceptance-op=$claim child=$child original-scope"; append_body($line);
