@@ -16,7 +16,7 @@ usage() {
                     main前进拒绝，退出后交隔离候选有界整合并补必要验收。
 
   list                      列出 <项目>/.worktrees/ 下的目录：
-                            「未结项」= 账本中有对应 state ∈ {running,blocked,needs-decision} 的任务书；
+                            「未结项」= 对应任务书状态未结/异常、UTF-8 损坏，或已迁票仍有未结义务；
                             「残留」  = 账本中无对应未结项任务书（建议用 finish 收掉）。
   finish <任务id> <动作>    收尾 <项目>/.worktrees/<任务id>，并往该任务书追加
                             worktree: <动作> branch=<分支> tag=<标签> 记账行：
@@ -82,7 +82,7 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qwb-lib.sh"
 # shellcheck source=/dev/null
 . "$LIB"
 
-# 任务id → 账本中有未结项 state 的任务书（无则返回 1）
+# 精确任务 id → 未结/损坏或仍有持久未结义务的任务书（无则返回 1）
 open_task_for() {
   local f st
   for f in "$LEDGER"/*.md; do
@@ -92,7 +92,11 @@ open_task_for() {
     if ! qwb_ledger_utf8_ok "$f"; then printf '%s' "$f"; return 0; fi
     case "$st" in
       running|blocked|needs-decision) printf '%s' "$f"; return 0 ;;
-      done|verified) ;;
+      done|verified)
+        if [[ -n "$(qwb_task_obligations "$PROJECT_ROOT" "$f")" ]]; then
+          printf '%s' "$f"; return 0
+        fi
+        ;;
       *) printf '%s' "$f"; return 0 ;;
     esac
   done
