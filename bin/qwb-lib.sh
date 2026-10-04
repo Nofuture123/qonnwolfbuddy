@@ -283,6 +283,7 @@ qwb_ledger_scan() {
 # 复用值守的扫描与已迁票义务口径，不写账本，不改变值守判定。
 qwb_ledger_waiting_only() {
   local root="$1" rows row f u8 col st obligations waiting=0
+  local LC_ALL=C # 与值守一致，坏UTF-8字节仍能按needs-decision验形。
   local row_re=$'^[^\t]+\t[01]\t[01]\t[^\t]*$'
   [[ -d "$root/tasks" && -r "$root/tasks" && -x "$root/tasks" ]] || return 1
   # scanner 的旧兼容读错会写 stderr 而非返回非0；合并后按TSV验形拒绝。

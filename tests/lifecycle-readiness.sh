@@ -286,15 +286,19 @@ exit 77
             assert (p / 'qwbuddy/.hook.err').read_bytes() == before[0]
             print('PASS  hook quiet then new progress: immediate rc2/ticket named/new wake recorded')
 
-    p, env = hook_case('bad-utf8', ['running'])
-    bad = p / 'tasks/case-0.md'
-    bad.write_bytes(bad.read_bytes().replace(b'state=running fp=', b'state=needs-decision fp=').replace(
-        hashlib.sha1(b'running\nworking: old').hexdigest().encode(),
-        hashlib.sha1(b'needs-decision\nworking: old').hexdigest().encode()) + b'\xff\n')
-    before = snapshot(p, None)[1:]
-    assert hook_run(p, env) == (0, b'', b'')
-    assert snapshot(p, None)[1:] == before
-    print('PASS  hook quiet damaged UTF-8: same needs-decision classification as wake')
+    for damage in ('body', 'state'):
+        p, env = hook_case('bad-utf8-' + damage, ['running'])
+        env['LC_ALL'] = 'en_US.UTF-8'
+        bad = p / 'tasks/case-0.md'
+        content = bad.read_bytes().replace(b'state=running fp=', b'state=needs-decision fp=').replace(
+            hashlib.sha1(b'running\nworking: old').hexdigest().encode(),
+            hashlib.sha1(b'needs-decision\nworking: old').hexdigest().encode())
+        bad.write_bytes(content + b'\xff\n' if damage == 'body' else content.replace(b'state: running', b'state: \xff'))
+        before = snapshot(p, None)[1:]
+        result = hook_run(p, env)
+        assert result == (0, b'', b''), (damage, result)
+        assert snapshot(p, None)[1:] == before
+        print('PASS  hook quiet damaged UTF-8 ' + damage + ': needs-decision even in UTF-8 locale')
 
     def byte_compare(name, states, configure=None, prepare=None):
         p, env = hook_case(name, states)
