@@ -11,7 +11,10 @@ p=argparse.ArgumentParser(description='Herdr hints, owned Space ordering and foc
 p.add_argument('command',choices=['subscribe','move','close','activity'])
 p.add_argument('--project',required=True); p.add_argument('--task'); p.add_argument('--space')
 p.add_argument('--index',type=int); p.add_argument('--notice'); p.add_argument('--pane'); p.add_argument('--dir')
+p.add_argument('--writer-proof-missing')
 a=p.parse_args(); root=Path(a.project).resolve(); bindir=Path(os.environ['QWB_HERDR_BINDIR'])
+if a.writer_proof_missing is not None and (a.command!='close' or not a.writer_proof_missing.strip()):
+    p.error('--writer-proof-missing 仅 close 支持且原因必须非空')
 
 def require(ok,why):
     if not ok: raise ValueError(why)
@@ -226,6 +229,60 @@ def presentation():
     path=socket_path(); index=a.index
     if a.command=='close':
         lines=re.findall(r'^(?:dispatch|not-sent):.*$',text,re.M); allowed={tab}; attempts={}
+        waived=set()
+        if a.writer_proof_missing is not None:
+            # Independently check every old generation, including absent panes and later launches.
+            launches=set(); bound={}
+            for line in lines:
+                match=re.search(r'\spane=(\S+) dir=(.+)$',line); op=re.search(r'\sop_id=(\S+)',line)
+                require(match and op,'启动代死亡证据缺失；保留Space')
+                require(str(Path(match[2]).resolve())==directory,'启动代目录不符；保留Space')
+                launches.add((match[1],op[1]))
+            for op,pane,raw in re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',text,re.M):
+                evidence=json.loads(raw); key=(pane,op)
+                if isinstance(evidence,dict):
+                    require(len(json.loads(raw,object_pairs_hook=list))==len(evidence),'old launch PID/start unknown')
+                require(key not in bound or bound[key]==evidence,'启动代死亡证据冲突')
+                bound[key]=evidence
+            require(launches.issubset(bound),'启动代死亡证据缺失；保留Space')
+            for (pane,op),evidence in bound.items():
+                unknown=(isinstance(evidence,dict) and set(evidence)=={'activity','proof','conflict'} and
+                         evidence['activity']=='unknown' and evidence['proof']=='unverified' and
+                         isinstance(evidence['conflict'],str) and bool(evidence['conflict'].strip()))
+                if unknown and (pane,op) in launches:
+                    query=subprocess.run(['herdr','pane','get',pane],capture_output=True,text=True,timeout=2)
+                    if query.returncode:
+                        raw=query.stdout if query.stdout.strip() else query.stderr
+                        other=query.stderr if query.stdout.strip() else query.stdout
+                        try: reply=json.loads(raw)
+                        except ValueError: reply={}
+                        require(not other.strip() and isinstance(reply,dict) and isinstance(reply.get('error'),dict) and
+                                reply['error'].get('code')=='pane_not_found','缺PID兑底：pane '+pane+' 查询失败或身份未知')
+                    else:
+                        try: reply=json.loads(query.stdout); info=reply.get('result',{}).get('pane',{})
+                        except (ValueError,AttributeError): info={}; reply={}
+                        require(not query.stderr.strip() and not reply.get('error') and isinstance(info,dict) and
+                                info.get('pane_id')==pane and 'agent' in info,'缺PID兑底：pane '+pane+' 身份未知')
+                        require(info['agent'] is None,'缺PID兑底：pane '+pane+' 仍有agent，保留Space')
+                        observed=activity(pane,directory)
+                        require(observed.get('activity')=='idle' and observed.get('proof')=='foreground-shell' and
+                                observed.get('pane')==pane,'缺PID兑底：pane '+pane+' 前台不是空闲shell或查询未知')
+                    waived.add((pane,op))
+                else: ended(evidence.get('pid'),evidence.get('pid_start'))
+            if waived:
+                probe=subprocess.run(['lsof','-nP','-Fpfan','+D',directory],capture_output=True,text=True,timeout=10)
+                require(probe.returncode in (0,1) and not probe.stderr.strip(),'候选写入者资源探针未知')
+                require(not probe.stdout.strip(),'候选写入者仍持cwd/FD，保留Space')
+                require(probe.returncode==1,'候选写入者资源探针空响应未知')
+            registered_panes={key[0] for key in bound}|{key[0] for key in launches}
+            for record in (root/'qwbuddy/.roles').glob('*.json'):
+                require(not record.is_symlink(),'role record symlink; close ownership unknown')
+                d=json.loads(record.read_text())
+                if d.get('pane') in registered_panes:
+                    require(d.get('root')==str(root) and d.get('version')==1,'role ownership unknown')
+                    candidate=d.get('pending') or d
+                    if candidate.get('attempted',d.get('phase') not in ('prepared','pane-ready')):
+                        ended(candidate.get('pid'),candidate.get('pid_start'))
         current_panes={x.get('pane_id'):x for x in before.get('panes',[]) if x.get('workspace_id')==a.space}
         for line in lines:
             match=re.search(r'\spane=(\S+) dir=(.+)$',line); require(match,'launch receipt identity unknown')
@@ -246,7 +303,8 @@ def presentation():
             require(attempts.get(pane['pane_id'],set()).issubset(by_op),'launch attempt has no matching death evidence; preserve pane')
             # Failed compensation changes transport permission, never native process lifetime.
             # Every bound launch on every closing pane is an obligation, even without a dispatch row.
-            for evidence in by_op.values(): ended(evidence.get('pid'),evidence.get('pid_start'))
+            for op,evidence in by_op.items():
+                if (pane['pane_id'],op) not in waived: ended(evidence.get('pid'),evidence.get('pid_start'))
             for record in (root/'qwbuddy/.roles').glob('*.json'):
                 require(not record.is_symlink(),'role record symlink; close ownership unknown')
                 d=json.loads(record.read_text())

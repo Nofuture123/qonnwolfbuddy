@@ -9,6 +9,215 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# Explicit missing-writer proof: exercise both independent public guards and partial receipts.
+python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
+from contextlib import ExitStack
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
+exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
+UNKNOWN={'activity':'unknown','proof':'unverified','conflict':'native tool identity unknown'}
+FLAG='--writer-proof-missing=人工核对旧启动代已退出'
+proof_stub=STUB.replace('if args[:2] == ["status", "--json"]:', r'''target=os.environ.get('QWB_PROOF_PANE','wTask:p1')
+behavior=os.environ.get('QWB_PROOF_BEHAVIOR','')
+if args[:2]==['pane','get'] and args[2]==target and behavior=='source':
+    out({'pane':dict(pane_id=target,workspace_id='wTask',tab_id='wTask:t2' if target=='wTask:p2' else 'wTask:t1',agent='new-tool',agent_status='idle',foreground_cwd=wt)})
+elif args[:2]==['pane','process-info'] and args[3]==target and behavior in ('source','foreground'):
+    pid=int(os.environ['QWB_PROOF_PID']); out({'process_info':dict(pane_id=target,shell_pid=42,foreground_process_group_id=pid,
+         foreground_processes=[dict(pid=pid,argv0='python3',cwd=wt)])})
+elif args[:2]==['pane','get'] and args[2]==target and behavior in ('query','absent'):
+    err('pane_not_found' if behavior=='absent' else 'io_error')
+elif args[:2]==['pane','get'] and args[2]==target and behavior=='agent':
+    out({'pane':dict(pane_id=target,workspace_id='wTask',tab_id='wTask:t1',agent='pi',agent_status='idle',foreground_cwd=wt)})
+elif args[:2]==['api','snapshot'] and mode=='proof-root-missing' and wt:
+    out({'snapshot':dict(workspaces=[dict(workspace_id='wRoot'),dict(workspace_id='wTask')],tabs=[dict(tab_id='wTask:t2',workspace_id='wTask')],
+        panes=[dict(pane_id='wRoot:p1',workspace_id='wRoot',tab_id='wRoot:t1'),dict(pane_id='wTask:p2',workspace_id='wTask',tab_id='wTask:t2')],
+        focused_workspace_id='wRoot',focused_tab_id='wRoot:t1',focused_pane_id='wRoot:p1')})
+elif args[:2]==['tab','list'] and mode=='proof-root-missing': out({'tabs':[dict(tab_id='wTask:t2')]})
+elif args[:2]==['pane','list'] and mode=='proof-root-missing': out({'panes':[dict(pane_id='wTask:p2',agent_status='idle')]})
+elif args[:2] == ["status", "--json"]:''')
+for mode in ['merged','archive','absent','both-markers','agent','foreground','query','resource','known-live','later-live',
+             'json','duplicate-json','string-pid','conflict','pid-null','not-probe','orphan','remove-partial','branch-partial','both-partial','missing-close-mark','misuse']:
+    with TemporaryDirectory(prefix='proof-') as d, ExitStack() as processes:
+        os.environ['TMPDIR']=d; b=Path(d)
+        repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
+        assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+        state.write_text(str(wt)); log.write_text('')
+        def child_at(directory):
+            child=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                                   cwd=directory,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            processes.callback(lambda owned=child: (owned.terminate() if owned.poll() is None else None, owned.wait(timeout=10), owned.stdin.close(), owned.stdout.close()))
+            assert child.stdout.readline().strip()=='ready'; return child
+        original=child_at(wt)
+        pid_start=call('/bin/ps','-p',str(original.pid),'-o','lstart=',env=env).stdout.strip(); assert pid_start
+        pane='wTask:p2' if mode in ('both-markers','both-partial') else 'wGone:p9' if mode=='absent' else 'wTask:p1'
+        (b/'stub/herdr').write_text(proof_stub)
+        env=env|{'QWB_PROOF_PANE':pane,'QWB_PROOF_PID':str(original.pid)}
+        observed=call('bash',str(ROOT/'bin/qwb-herdr.sh'),'activity','--project',str(repo),'--pane',pane,'--dir',str(wt),env=env|{'QWB_PROOF_BEHAVIOR':'source'})
+        assert observed.returncode==0 and json.loads(observed.stdout)==UNKNOWN,observed.stdout
+        original.communicate('exit\n',timeout=10); assert original.returncode==0
+        raw=json.dumps(UNKNOWN); extra=''
+        if mode=='json': raw='{'
+        if mode=='duplicate-json': raw='{'+'"activity":"unknown",'+json.dumps(UNKNOWN)[1:]
+        if mode=='string-pid': raw=json.dumps(dict(pid=str(original.pid),pid_start=pid_start))
+        if mode=='pid-null': raw=json.dumps(dict(UNKNOWN,pid=None))
+        if mode=='not-probe': raw=json.dumps({'activity':'unknown'})
+        if mode=='conflict': extra='working: worker-activity op=unknown pane='+pane+' evidence='+json.dumps(dict(UNKNOWN,conflict='different unknown'))+'\n'
+        if mode in ('known-live','later-live'):
+            live=child_at(b); start=call('/bin/ps','-p',str(live.pid),'-o','lstart=',env=env).stdout.strip()
+            live_pane=pane if mode=='later-live' else 'wGone:p8'
+            extra+=f'dispatch: op_id=later worker=pi pane={live_pane} dir={wt}\nworking: worker-activity op=later pane={live_pane} evidence='+json.dumps(dict(pid=live.pid,pid_start=start))+'\n'
+        if mode=='resource': child_at(wt)
+        if mode in ('agent','foreground'):
+            live=child_at(b); env=env|{'QWB_PROOF_PID':str(live.pid)}
+        if mode in ('agent','foreground','query','absent'): env=env|{'QWB_PROOF_BEHAVIOR':mode}
+        if mode in ('both-markers','both-partial'): env=env|{'QWB_TEST_MODE':'proof-root-missing'}
+        text=f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'
+        if mode!='orphan': text+=f'dispatch: op_id=unknown worker=pi pane={pane} dir={wt}\n'
+        text+=f'working: worker-activity op=unknown pane={pane} evidence={raw}\n'+extra
+        ticket.write_text(text); before=ticket.read_bytes(); refs=call('git','-C',str(repo),'show-ref',env=env).stdout
+        baseline=b/'baseline-bin'; shutil.copytree(ROOT/'bin',baseline)
+        for name in ['qwb-worktree.sh','qwb-herdr.sh']:
+            (baseline/name).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','6f3a8cc:bin/'+name]))
+        finish=['finish','case','--merged','--project',str(repo)]
+        current=call('bash',str(ROOT/'bin/qwb-worktree.sh'),*finish,env=env)
+        old=call('bash',str(baseline/'qwb-worktree.sh'),*finish,env=env)
+        assert (current.returncode,current.stdout,current.stderr)==(old.returncode,old.stdout,old.stderr),(mode,current.stdout,current.stderr,old.stdout,old.stderr)
+        assert current.returncode!=0 and ticket.read_bytes()==before and wt.is_dir() and state.exists()
+        if mode=='misuse':
+            for args in [['list',FLAG],finish+['--writer-proof-missing'],finish+['--writer-proof-missing='],['land','case',FLAG]]:
+                wrong=call('bash',str(ROOT/'bin/qwb-worktree.sh'),*args,'--project',str(repo),env=env)
+                assert wrong.returncode==2 and ticket.read_bytes()==before and wt.is_dir() and state.exists(),(args,wrong.stderr)
+            plain=call('bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--keep=待裁决','--project',str(repo),env=env)
+            plain_ticket=ticket.read_bytes(); ticket.write_bytes(before)
+            keep=call('bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--keep=待裁决',FLAG,'--project',str(repo),env=env)
+            assert (keep.returncode,keep.stdout,keep.stderr,ticket.read_bytes())==(plain.returncode,plain.stdout,plain.stderr,plain_ticket)
+            assert 'writer-proof-missing' not in ticket.read_text()
+            print('PASS writer-proof misuse: missing/empty/list/land reject; keep bytes identical',flush=True); continue
+        close=['close','--project',str(repo),'--task',str(ticket),'--space','wTask']
+        lower=call('bash',str(ROOT/'bin/qwb-herdr.sh'),*close,env=env)
+        if mode=='absent':
+            assert lower.returncode==0 and not state.exists() and ticket.read_bytes()==before
+            state.write_text(str(wt))
+            old_lower=call('bash',str(baseline/'qwb-herdr.sh'),*close,env=env)
+            assert (lower.returncode,lower.stdout,lower.stderr)==(old_lower.returncode,old_lower.stdout,old_lower.stderr)
+            state.write_text(str(wt))
+        else: assert lower.returncode!=0 and state.exists() and ticket.read_bytes()==before
+        positive=mode in ('merged','archive','absent','both-markers','remove-partial','branch-partial','both-partial','missing-close-mark')
+        lower=call('bash',str(ROOT/'bin/qwb-herdr.sh'),*close,FLAG,env=env)
+        print('WRITER-PROOF close',mode,'rc=',lower.returncode,'stdout=',repr(lower.stdout),'stderr=',repr(lower.stderr),flush=True)
+        if positive:
+            assert lower.returncode==0 and not state.exists(),(mode,lower.stdout,lower.stderr)
+            state.write_text(str(wt))
+        else:
+            assert lower.returncode!=0 and state.exists() and ticket.read_bytes()==before,(mode,lower.stdout,lower.stderr)
+        if mode=='missing-close-mark':
+            mutant=b/'mutant-bin'; shutil.copytree(ROOT/'bin',mutant)
+            source=(mutant/'qwb-worktree.sh').read_text()
+            line='  [[ "$WRITER_PROOF_MISSING_APPLIED" -eq 0 ]] || argv+=("--writer-proof-missing=$WRITER_PROOF_MISSING")'
+            assert source.count(line)==1; (mutant/'qwb-worktree.sh').write_text(source.replace(line,'  : # fixture mutation: omit the close marker'))
+            bad=call('bash',str(mutant/'qwb-worktree.sh'),*finish,FLAG,env=env)
+            assert bad.returncode!=0 and 'old launch PID/start unknown' in bad.stderr and wt.is_dir() and state.exists() and ticket.read_bytes()==before,bad.stderr
+            print('PASS writer-proof missing close marker mutation: upper guard passes, lower still refuses',flush=True); continue
+        if mode in ('remove-partial','branch-partial','both-partial'):
+            target='update-ref -d' if mode=='branch-partial' else 'worktree remove'
+            (b/'stub/git').write_text('#!/usr/bin/env bash\nif [[ "$*" == *"'+target+'"* && ! -e "$QWB_PROOF_FAIL" ]]; then touch "$QWB_PROOF_FAIL"; exit 9; fi\nexec "$QWB_REAL_GIT" "$@"\n')
+            (b/'stub/git').chmod(0o755); env=env|{'QWB_REAL_GIT':shutil.which('git'),'QWB_PROOF_FAIL':str(b/'git-failed')}
+        actions=['--archive'] if mode=='archive' else ['--merged','--archive'] if not positive else ['--merged']
+        for action in actions:
+            cmd=['bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case',action,FLAG,'--project',str(repo)]
+            if mode in ('both-markers','both-partial'): cmd+=['--root-tab-missing']
+            got=call(*cmd,env=env)
+            print('WRITER-PROOF finish',mode,action,'rc=',got.returncode,'stdout=',repr(got.stdout),'stderr=',repr(got.stderr),flush=True)
+            if mode in ('remove-partial','branch-partial','both-partial'):
+                assert got.returncode!=0 and 'writer-proof-missing=1' in ticket.read_text() and 'worktree: partial' in ticket.read_text(),got.stderr
+                assert 'working: writer-proof-missing op=unknown pane='+pane in ticket.read_text()
+                recovery=next(x.split('恢复命令：',1)[1].strip() for x in got.stderr.splitlines() if x.startswith('恢复命令：'))
+                assert '--writer-proof-missing=' in recovery,recovery
+                got=call('bash','-c',recovery,env=env)
+                assert got.returncode==0,(got.stdout,got.stderr)
+                print('PASS writer-proof '+mode+': conditional recovery retains marker and reason',flush=True)
+            elif positive:
+                assert got.returncode==0,(mode,got.stdout,got.stderr)
+            else:
+                assert got.returncode!=0 and ticket.read_bytes()==before and wt.is_dir() and state.exists(),(mode,got.stdout,got.stderr)
+                assert call('git','-C',str(repo),'show-ref',env=env).stdout==refs
+                if mode in ('json','duplicate-json','string-pid','conflict','pid-null','not-probe','orphan'): assert got.stderr==current.stderr,(mode,got.stderr,current.stderr)
+                if mode=='resource': assert '候选写入者仍持cwd/FD' in got.stderr,got.stderr
+                if mode in ('known-live','later-live'): assert '旧启动代仍活或死亡未知' in got.stderr,got.stderr
+        if positive:
+            assert not wt.exists() and not state.exists() and call('git','-C',str(repo),'show-ref','--verify','--quiet','refs/heads/case',env=env).returncode!=0
+            final=next(x for x in reversed(ticket.read_text().splitlines()) if x.startswith('worktree:'))
+            assert final.endswith('writer-proof-missing=1'),final
+            notes=[x for x in ticket.read_text().splitlines() if x.startswith('working: writer-proof-missing ')]
+            assert notes and 'op=unknown pane='+pane in notes[0] and '人工核对旧启动代已退出' in notes[0] and 'lsof-clean' in notes[0] and 'none' in notes[0],notes
+            if mode in ('both-markers','both-partial'): assert 'root-tab-missing=1 writer-proof-missing=1' in final,final
+        print('PASS writer-proof '+mode+': '+('explicit proof closes and records' if positive else 'both guards refuse without side effects'),flush=True)
+PY
+# Default byte contract: identical private paths, Git snapshot, subprocess identities and external logs.
+python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
+from contextlib import ExitStack
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
+exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
+# Reuse the explicit suite's native boundary for the existing root-tab-missing condition.
+text=(ROOT/'tests/collab-herdr.sh').read_text()
+probe=text.split('proof_stub=STUB.replace(',1)[1].split("for mode in ['merged'",1)[0]
+exec('proof_stub=STUB.replace('+probe)
+for mode in ['normal','archive','alive','busy','query','close','root-tab','remove-partial','branch-partial']:
+    with TemporaryDirectory(prefix='bytes-') as d, ExitStack() as processes:
+        os.environ['TMPDIR']=d; b=Path(d)
+        repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
+        assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
+        child=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                               cwd=b,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        processes.callback(lambda: (child.terminate() if child.poll() is None else None, child.wait(timeout=10), child.stdin.close(), child.stdout.close()))
+        assert child.stdout.readline().strip()=='ready'
+        start=call('/bin/ps','-p',str(child.pid),'-o','lstart=',env=env).stdout.strip(); assert start
+        if mode!='alive': child.communicate('exit\n',timeout=10); assert child.returncode==0
+        pane='wTask:p2' if mode=='root-tab' else 'wTask:p1'
+        ticket.write_text(f'state: verified\nworktree-space: id=wTask root-tab=wTask:t1 path={wt}\n'+
+                          f'dispatch: op_id=bound worker=pi pane={pane} dir={wt}\nworking: worker-activity op=bound pane={pane} evidence='+
+                          json.dumps(dict(pid=child.pid,pid_start=start))+'\n')
+        state.write_text(str(wt)); log.write_text('')
+        if mode=='root-tab': (b/'stub/herdr').write_text(proof_stub); env=env|{'QWB_TEST_MODE':'proof-root-missing'}
+        if mode in ('busy','query','close'): env=env|{'QWB_TEST_MODE':{'busy':'busy','query':'query-fail','close':'close-fail'}[mode]}
+        real_git=shutil.which('git'); gitlog=b/'git-calls'; failed=b/'git-failed'
+        target='worktree remove' if mode=='remove-partial' else 'update-ref -d' if mode=='branch-partial' else ''
+        (b/'stub/git').write_text('#!/usr/bin/env python3\nimport json,os,subprocess,sys\nfrom pathlib import Path\na=sys.argv[1:]\nwith open(os.environ["QWB_BYTES_GIT_LOG"],"a") as f: f.write(json.dumps(a)+"\\n")\nif os.environ["QWB_BYTES_TARGET"] and os.environ["QWB_BYTES_TARGET"] in " ".join(a) and not Path(os.environ["QWB_BYTES_FAILED"]).exists():\n Path(os.environ["QWB_BYTES_FAILED"]).touch(); sys.exit(9)\nsys.exit(subprocess.run([os.environ["QWB_REAL_GIT"],*a]).returncode)\n')
+        (b/'stub/git').chmod(0o755)
+        env=env|{'QWB_REAL_GIT':real_git,'QWB_BYTES_GIT_LOG':str(gitlog),'QWB_BYTES_TARGET':target,'QWB_BYTES_FAILED':str(failed)}
+        runtime=b/'runtime-bin'; shutil.copytree(ROOT/'bin',runtime)
+        old={name:subprocess.check_output(['git','-C',str(ROOT),'show','6f3a8cc:bin/'+name]) for name in ['qwb-worktree.sh','qwb-herdr.sh']}
+        new={name:(ROOT/'bin'/name).read_bytes() for name in old}
+        snapshot=b/'snapshot'; shutil.copytree(repo,snapshot)
+        results=[]
+        for version in [old,new]:
+            if len(results): shutil.rmtree(repo); shutil.copytree(snapshot,repo)
+            for name,data in version.items(): (runtime/name).write_bytes(data)
+            state.write_text(str(wt)); log.write_text(''); gitlog.write_text(''); failed.unlink(missing_ok=True)
+            command=['bash',str(runtime/'qwb-worktree.sh'),'finish','case','--archive' if mode in ('archive','remove-partial','branch-partial') else '--merged','--project',str(repo)]
+            if mode=='root-tab': command+=['--root-tab-missing']
+            first=call(*command,env=env); runs=[(first.returncode,first.stdout,first.stderr)]
+            if mode in ('remove-partial','branch-partial'):
+                assert first.returncode!=0 and 'worktree: partial' in ticket.read_text()
+                second=call(*command,env=env); assert second.returncode==0,(mode,second.stdout,second.stderr)
+                runs.append((second.returncode,second.stdout,second.stderr))
+            else: assert (first.returncode==0)==(mode in ('normal','archive','root-tab')),(mode,first.stdout,first.stderr)
+            result=dict(runs=runs,ticket=ticket.read_bytes().hex(),git_log=gitlog.read_text(),herdr_log=log.read_text(),
+                        refs=call(real_git,'-C',str(repo),'show-ref',env=env).stdout,worktree_exists=wt.exists(),space_exists=state.exists(),
+                        git_status=call(real_git,'-C',str(repo),'status','--short',env=env).stdout)
+            results.append(result)
+        assert results[0]==results[1],(mode,results)
+        print('PASS writer-proof default byte equivalence '+mode+': stdout/stderr/rc/ticket/git/herdr/refs/layout identical',flush=True)
+PY
+if [[ "${1:-}" == writer-proof-missing || "${1:-}" == writer-proof-equivalence ]]; then exit 0; fi
+
 # Multiple tool processes bind only their matching foreground group leader.
 python3 -B - "$ROOT" <<'PY'
 from process_fixture import TemporaryDirectory

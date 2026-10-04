@@ -32,6 +32,11 @@ usage() {
                     全 pane 空闲）仍逐项核对，全部通过才放行，最终 worktree: 行追加
                     root-tab-missing=1 留痕。无该参数时根 tab 缺失仍拒绝。与 --keep 同传
                     时不报错也不留痕（行为与单独 --keep 一致）。
+    --writer-proof-missing=<原因>  仅 --merged|--archive 的显式兑底，原因必填非空：
+                    只认探针写下的身份未知且无 PID；该 pane 须已不存在或退回空闲 shell，
+                    其余各代 PID 须已死且 lsof 无候选 cwd/FD。最终及 partial 行追加
+                    writer-proof-missing=1，并另记主控 working 行说明 op、pane、原因与证据。
+                    不带参数照旧拒绝；与 --keep 同传不报错、不留痕；land 不接受。
   --merged / --archive 先检查 worktree 有无未提交改动/未跟踪文件：有则拒绝（不做 --force，
   先提交或清理再来）；git status 本身失败也拒绝，不当干净放行。且每个删除动作前都复核
   worktree 实际 HEAD 仍是开头读到的那个提交；已被推进则拒绝（--archive 已打的 tag 保留）。
@@ -57,6 +62,7 @@ esac
 
 PROJECT_ROOT="$(pwd)"; TASK_ID=""; ACTION=""; REASON=""; ROOT_TAB_MISSING=0; ROOT_TAB_MISSING_APPLIED=0
 LAND_OP=""; AUTH_REF=""
+WRITER_PROOF_MISSING=""; WRITER_PROOF_MISSING_APPLIED=0; WRITER_PROOF_MISSING_FACTS=""; WRITER_PROOF_MISSING_NOTED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
@@ -67,6 +73,11 @@ while [[ $# -gt 0 ]]; do
     --keep) ACTION="keep"; shift ;;
     --keep=*) ACTION="keep"; REASON="${1#--keep=}"; shift ;;
     --root-tab-missing) ROOT_TAB_MISSING=1; shift ;;
+    --writer-proof-missing=*)
+      [[ "$CMD" == finish ]] || { echo "错误：未知参数 $1（仅 finish 的 --merged|--archive 支持）" >&2; usage >&2; exit 2; }
+      WRITER_PROOF_MISSING="${1#--writer-proof-missing=}"
+      [[ -n "${WRITER_PROOF_MISSING//[[:space:]]/}" ]] || { echo '错误：--writer-proof-missing 必须给出非空原因' >&2; exit 2; }
+      shift ;;
     -*) echo "错误：未知参数 $1" >&2; usage >&2; exit 2 ;;
     *) if [[ -z "$TASK_ID" ]]; then TASK_ID="$1"; else echo "错误：多余参数 $1" >&2; exit 2; fi; shift ;;
   esac
@@ -158,6 +169,8 @@ fi
 # finish
 [[ -n "$TASK_ID" ]] || { echo "错误：finish 需要 <任务id>" >&2; usage >&2; exit 2; }
 [[ -n "$ACTION" ]] || { echo "错误：finish 需要动作 --merged|--archive|--keep[=原因]" >&2; exit 2; }
+[[ -z "$WRITER_PROOF_MISSING" || ( -z "$LAND_OP" && -z "$AUTH_REF" ) ]] \
+  || { echo '拒绝：land收尾不接受 --writer-proof-missing' >&2; exit 2; }
 case "$TASK_ID" in
   .|..|*/*|*\\*) echo "错误：任务 id 必须是单个目录名，不得含路径分隔符：${TASK_ID}" >&2; exit 2 ;;
 esac
@@ -221,11 +234,14 @@ land_writers_stopped() {
 # shell/null只是端点前置条件；所有删树调用再核本票真实资源及历史死亡义务。
 writers_stopped() {
   [[ "$ACTION" != keep ]] || return 0
-  python3 -B - "$TASK_FILE" "$WT_DIR" "${1:-}" <<'PY'
+  local facts
+  facts="$(python3 -B - "$TASK_FILE" "$WT_DIR" "${1:-}" "$WRITER_PROOF_MISSING" "$(dirname "$LIB")" "$LAND_PROOF" <<'PY'
 import json, re, subprocess, sys
 from pathlib import Path
 try:
-    task, directory, rows=sys.argv[1:]
+    task, directory, rows=sys.argv[1:4]
+    options=sys.argv[4:]; override=bool(options and options[0] and not options[2])
+    missing=[]; checked=0
     def require(ok,why):
         if not ok: raise ValueError(why)
     # 保守拒绝任何候选cwd/打开文件（包括只读FD）；只读误拒可等实际退出再恢复。
@@ -244,6 +260,8 @@ try:
     for op,pane,raw in re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',text,re.M):
         # 同op收据必须始终指向同一代，不能用后来的死PID遮掉旧活代。
         evidence=json.loads(raw); key=(pane,op)
+        if override and isinstance(evidence,dict):
+            require(len(json.loads(raw,object_pairs_hook=list))==len(evidence),'旧启动代PID/start未知')
         require(key not in bound or bound[key]==evidence,'启动代死亡证据冲突')
         bound[key]=evidence
     def ended(evidence):
@@ -256,7 +274,38 @@ try:
                 '旧启动代仍活或死亡未知')
     for pane,ops in attempts.items():
         require(all((pane,op) in bound for op in ops),'启动代死亡证据缺失；保留候选')
-    for evidence in bound.values(): ended(evidence)
+    for (pane,op),evidence in bound.items():
+        unknown=(isinstance(evidence,dict) and set(evidence)=={'activity','proof','conflict'} and
+                 evidence['activity']=='unknown' and evidence['proof']=='unverified' and
+                 isinstance(evidence['conflict'],str) and bool(evidence['conflict'].strip()))
+        if override and unknown and op in attempts.get(pane,set()):
+            # Reuse the existing native activity adapter for the foreground-shell proof.
+            pane_query=subprocess.run(['herdr','pane','get',pane],capture_output=True,text=True,timeout=2)
+            if pane_query.returncode:
+                raw=pane_query.stdout if pane_query.stdout.strip() else pane_query.stderr
+                other=pane_query.stderr if pane_query.stdout.strip() else pane_query.stdout
+                try: reply=json.loads(raw)
+                except ValueError: reply={}
+                require(not other.strip() and isinstance(reply,dict) and isinstance(reply.get('error'),dict) and
+                        reply['error'].get('code')=='pane_not_found','缺PID兑底：pane '+pane+' 查询失败或身份未知')
+                proof='pane-not-found'
+            else:
+                try: reply=json.loads(pane_query.stdout); info=reply.get('result',{}).get('pane',{})
+                except (ValueError,AttributeError): info={}; reply={}
+                require(not pane_query.stderr.strip() and not reply.get('error') and isinstance(info,dict) and
+                        info.get('pane_id')==pane and 'agent' in info,'缺PID兑底：pane '+pane+' 身份未知')
+                require(info['agent'] is None,'缺PID兑底：pane '+pane+' 仍有agent，保留成果')
+                observed=subprocess.run(['bash',str(Path(options[1])/'qwb-herdr.sh'),'activity','--project',str(Path(task).parent.parent),
+                                         '--pane',pane,'--dir',directory],capture_output=True,text=True,timeout=10)
+                try: observation=json.loads(observed.stdout)
+                except ValueError: observation={}
+                require(observed.returncode==0 and not observed.stderr.strip() and observation.get('activity')=='idle' and
+                        observation.get('proof')=='foreground-shell' and observation.get('pane')==pane,
+                        '缺PID兑底：pane '+pane+' 前台不是空闲shell或查询未知')
+                proof='foreground-shell'
+            missing.append(dict(op=op,pane=pane,pane_proof=proof))
+        else:
+            ended(evidence); checked+=1
     panes=set(attempts)|{key[0] for key in bound}|{r.split('\t')[0] for r in rows.splitlines()}
     for record in (Path(task).parent.parent/'qwbuddy/.roles').glob('*.json'):
         require(not record.is_symlink(),'角色退出身份未知')
@@ -265,9 +314,34 @@ try:
             require(d.get('version')==1 and d.get('root')==str(Path(task).parent.parent),'角色归属未知')
             candidate=d.get('pending') or d
             if candidate.get('attempted',d.get('phase') not in ('prepared','pane-ready')): ended(candidate)
+    if missing:
+        print(json.dumps(dict(generations=missing,known_generations_ended=checked,
+                              resource_proof='lsof-clean' if Path(directory).is_dir() else 'directory-absent; partial-OID-required')))
 except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as e:
     print('拒绝：'+str(e),file=sys.stderr); sys.exit(1)
 PY
+)" || return 1
+  if [[ -n "$facts" ]]; then
+    WRITER_PROOF_MISSING_APPLIED=1
+    WRITER_PROOF_MISSING_FACTS="$facts"
+  fi
+}
+
+# No note is written until all guards and the Space close have succeeded.
+note_writer_proof_missing() {
+  [[ "$WRITER_PROOF_MISSING_APPLIED" -eq 1 && "$WRITER_PROOF_MISSING_NOTED" -eq 0 ]] || return 0
+  local notes note
+  notes="$(python3 -B - "$WRITER_PROOF_MISSING" "$WRITER_PROOF_MISSING_FACTS" <<'PY'
+import json,sys
+reason,facts=sys.argv[1:]; facts=json.loads(facts)
+for generation in facts['generations']:
+    print('working: writer-proof-missing op='+generation['op']+' pane='+generation['pane']+
+          ' reason='+json.dumps(reason,ensure_ascii=False)+' evidence='+json.dumps(dict(generation,resource_proof=facts['resource_proof'],
+          known_generations_ended=facts['known_generations_ended'],later_live_generation='none'),ensure_ascii=False))
+PY
+)" || return 1
+  while IFS= read -r note; do qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "$note" >/dev/null || return 1; done <<< "$notes"
+  WRITER_PROOF_MISSING_NOTED=1
 }
 
 WT_DIR="$WT_BASE/$TASK_ID"
@@ -305,10 +379,11 @@ if [[ ! -d "$WT_DIR" ]]; then
     fi
   fi
   partial="$(grep '^worktree:' "$TASK_FILE" | tail -1 || true)"
-  if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})( root-tab-missing=1)?$ ]]; then
+  if [[ ! "$partial" =~ ^worktree:\ partial\ action=(merged|archive)\ branch=([^[:space:]]+)\ tag=([^[:space:]]+)\ stage=branch-delete\ space=([^[:space:]]+)\ oid=([0-9a-f]{40,64})( root-tab-missing=1)?( writer-proof-missing=1)?$ ]]; then
     echo "错误：worktree 不存在且没有可续做的 branch-delete 记录：${WT_DIR}" >&2; exit 1
   fi
-  partial_rtm=""; [[ "$partial" == *" root-tab-missing=1" ]] && partial_rtm=" root-tab-missing=1"
+  partial_rtm=""; [[ "$partial" == *" root-tab-missing=1"* ]] && partial_rtm=" root-tab-missing=1"
+  partial_wpm=""; [[ "$partial" == *" writer-proof-missing=1" ]] && partial_wpm=" writer-proof-missing=1"
   [[ "${BASH_REMATCH[1]}" == "$ACTION" ]] \
     || { echo "拒绝：续做动作与 partial 记录不符" >&2; exit 1; }
   BRANCH="${BASH_REMATCH[2]}"; TAG="${BASH_REMATCH[3]}"; HEAD_OID="${BASH_REMATCH[5]}"
@@ -330,10 +405,11 @@ if [[ ! -d "$WT_DIR" ]]; then
     || printf '%s\n' "$listing" | grep -Fxq "branch refs/heads/$BRANCH"; then
     echo "拒绝：目标目录或分支仍被 worktree 检出" >&2; exit 1
   fi
+  note_writer_proof_missing || exit 1
   git -C "$PROJECT_ROOT" update-ref -d "refs/heads/$BRANCH" "$HEAD_OID" \
     || { echo "错误：按 partial OID 续删分支失败，原记录保留" >&2; exit 1; }
   cleanup_branch_config
-  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: ${ACTION} branch=${BRANCH} tag=${TAG}${partial_rtm}" >/dev/null \
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: ${ACTION} branch=${BRANCH} tag=${TAG}${partial_rtm}${partial_wpm}" >/dev/null \
     || { echo "错误：分支已删但最终记账失败，请手工核对：$TASK_FILE" >&2; exit 1; }
   [[ -z "$FINISH_OP" ]] || qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" release "$FINISH_OP" >/dev/null
   echo "已续做：按 partial OID ${HEAD_OID} 删除分支 ${BRANCH}，并记账 worktree: ${ACTION}"
@@ -435,7 +511,8 @@ SPACE_ID=""
 partial_fail() {
   local stage="$1" recovery="" script_path
   partial_rtm=""; [[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && partial_rtm=" root-tab-missing=1"
-  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: partial action=${ACTION} branch=${BRANCH:-detached} tag=${TAG:--} stage=${stage} space=${SPACE_ID:--} oid=${HEAD_OID}${partial_rtm}" >/dev/null \
+  partial_wpm=""; [[ "$WRITER_PROOF_MISSING_APPLIED" -eq 1 ]] && partial_wpm=" writer-proof-missing=1"
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "worktree: partial action=${ACTION} branch=${BRANCH:-detached} tag=${TAG:--} stage=${stage} space=${SPACE_ID:--} oid=${HEAD_OID}${partial_rtm}${partial_wpm}" >/dev/null \
     || echo "警告：部分收尾记录写入失败：$TASK_FILE" >&2
   echo "错误：收尾停在 ${stage}（OID ${HEAD_OID}）；核对 Git worktree/分支与 Herdr Space 后再恢复" >&2
   if [[ "$stage" == "branch-delete" && "$DETACHED" -eq 0 ]]; then
@@ -456,6 +533,9 @@ partial_fail() {
         "$WT_DIR" "$HEAD_OID" "$script_path" "$TASK_ID" "$PROJECT_ROOT"
     fi
   fi
+  if [[ -n "$recovery" && "$WRITER_PROOF_MISSING_APPLIED" -eq 1 ]]; then
+    printf -v recovery '%s %q' "$recovery" "--writer-proof-missing=$WRITER_PROOF_MISSING"
+  fi
   [[ -z "$recovery" ]] || echo "恢复命令：${recovery}" >&2
   exit 1
 }
@@ -473,7 +553,7 @@ delete_finished_branch() {
 # Git 前置检查先于任何 Space 关闭；只关闭本票登记且没有活动写入者的 Space。
 prepare_space_close() {
   local record root_tab record_path last_dispatch dispatch_path task_pane pane_out pane_meta worker_tab
-  local tabs_out tab_ids tab_id panes_out pane_rows pane_id state proc
+  local tabs_out tab_ids tab_id panes_out pane_rows pane_id state proc pane_rc absent
   writers_stopped || return 1
   SPACE_ID="$(qwb_worktree_space "$PROJECT_ROOT" "$WT_DIR")" || return 1
   [[ -n "$SPACE_ID" ]] || return 0
@@ -493,15 +573,27 @@ prepare_space_close() {
     dispatch_path="$(cd "${last_dispatch##* dir=}" 2>/dev/null && pwd -P)" || dispatch_path=""
     [[ -n "$task_pane" && "$dispatch_path" == "$WT_PHYS" ]] \
       || { echo "拒绝：任务派发 pane/目录身份不符" >&2; return 1; }
-    pane_out="$(herdr pane get "$task_pane" 2>&1)" \
-      || { echo "拒绝：工人 pane 无法查询：$pane_out" >&2; return 1; }
-    pane_meta="$(printf '%s' "$pane_out" | perl -MJSON::PP=decode_json -0777 -e '
-      my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{pane};
-      exit 1 unless ref $p eq "HASH";
-      printf "%s\t%s",$p->{workspace_id},$p->{tab_id} if $p->{workspace_id} && $p->{tab_id};' || true)"
-    [[ "${pane_meta%%$'\t'*}" == "$SPACE_ID" && "$pane_meta" == *$'\t'* ]] \
-      || { echo "拒绝：工人 pane 不在本票 Space" >&2; return 1; }
-    worker_tab="${pane_meta#*$'\t'}"
+    pane_rc=0
+    pane_out="$(herdr pane get "$task_pane" 2>&1)" || pane_rc=$?
+    if [[ "$pane_rc" -ne 0 ]]; then
+      absent=1
+      if [[ "$WRITER_PROOF_MISSING_APPLIED" -eq 1 ]]; then
+        printf '%s' "$pane_out" | perl -MJSON::PP -0777 -e 'my $j=decode_json(<STDIN>); exit(($j->{error}{code}//"") eq "pane_not_found" ? 0 : 1);' \
+          && python3 -B - "$WRITER_PROOF_MISSING_FACTS" "$task_pane" <<'PY' && absent=0
+import json,sys
+facts=json.loads(sys.argv[1]); sys.exit(0 if any(x['pane']==sys.argv[2] and x['pane_proof']=='pane-not-found' for x in facts['generations']) else 1)
+PY
+      fi
+      [[ "$absent" -eq 0 ]] || { echo "拒绝：工人 pane 无法查询：$pane_out" >&2; return 1; }
+    else
+      pane_meta="$(printf '%s' "$pane_out" | perl -MJSON::PP=decode_json -0777 -e '
+        my $j=eval{decode_json(<STDIN>)}; my $p=$j->{result}{pane};
+        exit 1 unless ref $p eq "HASH";
+        printf "%s\t%s",$p->{workspace_id},$p->{tab_id} if $p->{workspace_id} && $p->{tab_id};' || true)"
+      [[ "${pane_meta%%$'\t'*}" == "$SPACE_ID" && "$pane_meta" == *$'\t'* ]] \
+        || { echo "拒绝：工人 pane 不在本票 Space" >&2; return 1; }
+      worker_tab="${pane_meta#*$'\t'}"
+    fi
   fi
   tabs_out="$(herdr tab list --workspace "$SPACE_ID" 2>&1)" \
     || { echo "拒绝：Space tab 查询失败：$tabs_out" >&2; return 1; }
@@ -561,7 +653,9 @@ prepare_space_close() {
 close_task_space() {
   [[ -n "$SPACE_ID" ]] || return 0
   local out
-  out="$(bash "$(dirname "$LIB")/qwb-herdr.sh" close --project "$PROJECT_ROOT" --task "$TASK_FILE" --space "$SPACE_ID" 2>&1)" \
+  local argv=(close --project "$PROJECT_ROOT" --task "$TASK_FILE" --space "$SPACE_ID")
+  [[ "$WRITER_PROOF_MISSING_APPLIED" -eq 0 ]] || argv+=("--writer-proof-missing=$WRITER_PROOF_MISSING")
+  out="$(bash "$(dirname "$LIB")/qwb-herdr.sh" "${argv[@]}" 2>&1)" \
     || { echo "拒绝：Herdr Space ${SPACE_ID} 关闭/焦点读回未确认，Git 未动：$out" >&2; return 1; }
   printf '%s\n' "$out"
 }
@@ -595,6 +689,7 @@ case "$ACTION" in
     land_writers_stopped || exit 1
     prepare_space_close || exit 1
     close_task_space || exit 1
+    note_writer_proof_missing || partial_fail writer-proof-note
     check_unchanged || partial_fail head-changed-after-space-close
     writers_stopped || partial_fail writers-not-stopped
     git -C "$PROJECT_ROOT" worktree remove "$WT_DIR" || partial_fail worktree-remove
@@ -629,6 +724,7 @@ case "$ACTION" in
     branch_only_here || exit 1
     prepare_space_close || exit 1
     close_task_space || exit 1
+    note_writer_proof_missing || partial_fail writer-proof-note
     if [[ "$tag_rc" -eq 1 ]]; then
       git -C "$PROJECT_ROOT" tag "$TAG" "$HEAD_OID" || partial_fail tag-create
     fi
@@ -658,10 +754,11 @@ line="worktree: ${ACTION} branch=${BL} tag=${TAG}"
 [[ -n "$REASON" ]] && line="${line} reason=${REASON}"
 # partial（如 worktree-remove 失败）已带留痕、Space 已关后重跑：沿用收据留痕；
 # 防陈旧 partial 污染：收据 oid 必须等于本次实际 HEAD_OID 才认。
-if [[ "$ROOT_TAB_MISSING_APPLIED" -eq 0 ]] && grep -q "^worktree: partial action=${ACTION} .* oid=${HEAD_OID} root-tab-missing=1$" "$TASK_FILE"; then
+if [[ "$ROOT_TAB_MISSING_APPLIED" -eq 0 ]] && grep -q "^worktree: partial action=${ACTION} .* oid=${HEAD_OID} root-tab-missing=1\\( writer-proof-missing=1\\)\{0,1\}$" "$TASK_FILE"; then
   ROOT_TAB_MISSING_APPLIED=1
 fi
 [[ "$ROOT_TAB_MISSING_APPLIED" -eq 1 ]] && line="${line} root-tab-missing=1"
+[[ "$WRITER_PROOF_MISSING_APPLIED" -eq 1 && "$ACTION" != keep ]] && line="${line} writer-proof-missing=1"
 qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "$line" >/dev/null
 [[ -z "$FINISH_OP" ]] || qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" release "$FINISH_OP" >/dev/null
 echo "已记账：$(basename "$TASK_FILE") ← ${line}"

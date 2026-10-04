@@ -110,6 +110,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 
 - **开**：只在派工时开；`<项目>/.worktrees/<任务id>/`，一任务一个，在 Herdr Spaces 中以 worktree 形式显示；开之前先清点——有已完成任务的残留就先收掉。
 - **收·成功**：协作候选验收通过且确获本地授权 → `land <id> --op <本人claim> --auth-ref <明确引用>` 固定OID合入精确本地main并读回 → 原finish核本票写入者已退出（idle/done不等于退出），再关闭本票Space（根tab已缺时显式`--root-tab-missing`且核其余证据）→ 安全删除副本/分支并记账。任意HEAD包含/remote不能证明协作票本地交付；常驻角色不随票退休。
+- **缺工人身份的显式兑底**：仅当派发探针留下身份未知且没有 PID、该 pane 已不存在或退回空闲 shell、其他各代 PID 已死且候选 cwd/FD 资源干净时，主控可用 `finish <id> --merged --writer-proof-missing=具体原因`（归档时将 `--merged` 改为 `--archive`） 收尾。默认仍拒绝；证据损坏或冲突不能兑底。最终与 partial 行标记 `writer-proof-missing=1`，另有 `working:` 行记录 op、pane、原因与当时证据；恢复命令保留参数，根 tab 也缺失时仍须另给 `--root-tab-missing`。`--keep` 忽略此标记，`land` 不接受这条兑底。
 - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Space → `git tag archive/<任务id>` → 安全删除 worktree 与分支 → 记账（写明标签名）。
 - **留·例外**：只允许两种——等使用者裁决的、有冲突待解的；且必须在账本**点名**。
 - 补充：谁派生谁收尾；`git worktree prune` 清元数据残留。
