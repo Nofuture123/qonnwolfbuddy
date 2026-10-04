@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Offline public-entry contract: real temporary Git/MD, fake Herdr CLI + Unix stream.
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
@@ -9,10 +11,11 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [[ "${1:-}" != not-sent ]]; then
 python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+with TemporaryDirectory(prefix='s-') as tmp:
     os.environ["TMPDIR"] = tmp
     b=Path(tmp); p=b/'project'; p.mkdir(); (p/'tasks').mkdir(); (p/'qwbuddy').mkdir()
     subprocess.run(['git','init','-q',str(p)],check=True)
@@ -62,10 +65,11 @@ else: print(json.dumps({'result':{'type':'ok'}}))
     print(f'PASS non-latest registered worker subscribed; delivery latency={latency:.3f}s')
 PY
 python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
 import json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+with TemporaryDirectory(prefix='s-') as tmp:
     os.environ["TMPDIR"] = tmp
     b=Path(tmp); root=b/'repo'; root.mkdir(); (root/'tasks').mkdir()
     def run(*args,env=None):
@@ -228,10 +232,11 @@ else: sys.exit(9)
     print('PASS owned ordering/confirmed close preserve unrelated focus; unknown ownership/long idle tool/live Pi refuse')
 PY
 python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
 import hashlib, json, os, shutil, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(__import__('sys').argv[1])
-with tempfile.TemporaryDirectory(prefix='s-') as tmp:
+with TemporaryDirectory(prefix='s-') as tmp:
     os.environ["TMPDIR"] = tmp
     b=Path(tmp); p=b/'project'; p.mkdir(); (p/'tasks').mkdir(); (p/'qwbuddy').mkdir()
     subprocess.run(['git','init','-q',str(p)],check=True)
@@ -314,6 +319,7 @@ else: print(json.dumps({'result':{'type':'ok'}}))
 PY
 fi
 python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
 import json, os, subprocess, sys, tempfile
 from pathlib import Path
 ROOT=Path(sys.argv[1]).resolve()
@@ -323,7 +329,7 @@ prefix=source.split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
 prefix=prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()')
 exec(prefix)
 for mode in ['live','missing','dead','extra-pane','no-attempt']:
-    with tempfile.TemporaryDirectory(prefix='s-') as d:
+    with TemporaryDirectory(prefix='s-') as d:
         os.environ["TMPDIR"] = d
         repo,ticket,state,log,env=project(Path(d)); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0
@@ -385,7 +391,7 @@ elif args[:2] == ["agent", "prompt"]:
     out({"type": "ok"})
 elif args[:2] == ["status", "--json"]:''')
 for mode in ['reuse','failed-reuse','unknown-start']:
-    with tempfile.TemporaryDirectory(prefix='s-') as d:
+    with TemporaryDirectory(prefix='s-') as d:
         os.environ["TMPDIR"] = d
         b=Path(d); repo,ticket,state,log,env=project(b); wt=repo/'.worktrees/case'
         assert call('git','-C',str(repo),'worktree','add','-qb','case',str(wt),env=env).returncode==0

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Public CLI behavior; private Git, only external Herdr boundary is fake.
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
@@ -9,10 +11,11 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_POSTURE_ROOT="$ROOT"
 python3 -B - <<'PY'
+from process_fixture import TemporaryDirectory
 import fcntl, hashlib, json, os, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_POSTURE_ROOT'])
-with tempfile.TemporaryDirectory(prefix='qwb-posture-') as tmp:
+with TemporaryDirectory(prefix='qwb-posture-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp=Path(tmp).resolve()
     p=tmp/'project'; p.mkdir()

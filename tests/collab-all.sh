@@ -50,7 +50,7 @@ cleanup() { # 退出（含被 INT/TERM 打断）时删临时目录并杀掉仍�
   local p
   if [[ "${#PIDS[@]}" -gt 0 ]]; then
     for p in "${PIDS[@]}"; do
-      if [[ -n "$p" ]]; then kill_tree "$p"; fi
+      if [[ -n "$p" ]]; then kill_tree "$p"; wait "$p" 2>/dev/null || true; fi
     done
   fi
   rm -rf "$TMPD"

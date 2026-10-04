@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # 公开入口 + 私有项目/系统边界替身；绝不触碰真实Herdr。
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_PLANNING_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
+from process_fixture import TemporaryDirectory, register, release
 import contextlib, hashlib, json, os, shutil, signal, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_PLANNING_ROOT'])
 fixture=os.environ.get('QWB_PLANNING_FIXTURE_DIR')
 if fixture:
     fixture=Path(fixture); fixture.mkdir(mode=0o700,parents=True,exist_ok=False)
-manager=contextlib.nullcontext(str(fixture)) if fixture else tempfile.TemporaryDirectory(prefix='qwb-planning-')
+manager=contextlib.nullcontext(str(fixture)) if fixture else TemporaryDirectory(prefix='qwb-planning-')
 with manager as temp:
     os.environ["TMPDIR"] = str(temp)
     temp=Path(temp).resolve(); p=temp/'project'; p.mkdir(); stub=temp/'stub'; stub.mkdir()
@@ -90,6 +93,7 @@ file.write_text(json.dumps(s))
         if diagnostic and script in ('qwb-run.sh','qwb-wake.sh'):
             argv.insert(1,'-x'); child_env['PS4']='+qwb-cli seconds=${SECONDS} pid=$$ line=${LINENO}: '
         process=subprocess.Popen(argv,env=child_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        register(process.pid)
         if diagnostic:
             (diagnostic/(label+'-command.json')).write_text(json.dumps({'argv':argv,'actor':actor,'pid':process.pid,'timeout_seconds':bound,'started_at':started_at},ensure_ascii=False))
             if target:(diagnostic/(label+'-start-processes.txt')).write_text(process_chain(process.pid))
@@ -120,6 +124,7 @@ file.write_text(json.dumps(s))
             if diagnostic:
                 (diagnostic/(label+'.stdout')).write_text(out);(diagnostic/(label+'.stderr')).write_text(err)
             raise AssertionError(f'有界单步超时：{label}；原始子进程码={process.returncode}（测试主动终止，不是公开入口自然退出）')
+        release(process.pid)
         r=subprocess.CompletedProcess(argv,process.returncode,out,err)
         if diagnostic:
             (diagnostic/(label+'.json')).write_text(json.dumps({'actor':actor,'rc':r.returncode,'started_at':started_at,'ended_at':time.time(),'elapsed_seconds':time.monotonic()-started},ensure_ascii=False))

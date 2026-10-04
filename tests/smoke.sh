@@ -16,6 +16,8 @@ chk()  { if "$@" >/dev/null 2>&1; then ok "$*"; else bad "$*"; fi; }
 assert_file() { [[ -f "$1" ]] && ok "存在 $1" || bad "缺文件 $1"; }
 assert_dir()  { [[ -d "$1" ]] && ok "存在 $1" || bad "缺目录 $1"; }
 
+. "$ROOT/tests/process-fixture.sh"
+
 # ROOT_TAB_ONLY_BEGIN：窄入口执行原S4–S10与原公共脚本，不复制断言/替换产品。
 if [[ "${1:-}" == root-tab-missing ]]; then
   python3 -B - "$ROOT/tests/smoke.sh" "$ROOT" <<'PY'
@@ -41,6 +43,9 @@ PY
 fi
 # ROOT_TAB_ONLY_END
 
+qwb_test_scope "$@"
+export TMPDIR="$QWB_TEST_SCOPE_DIR"
+
 echo "== 1. bash -n 语法检查 =="
 for s in "$ROOT"/bin/qwb-*.sh; do chk bash -n "$s"; done
 
@@ -55,7 +60,7 @@ echo "== 3. qwb-init.sh 装进临时假项目 =="
 TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1
 export TMPDIR="$TMP"
 WIREPID=""
-trap '[[ -z "$WIREPID" ]] || { kill "$WIREPID" 2>/dev/null; wait "$WIREPID" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
+trap 'qwb_test_drain && rm -rf "$TMP" || exit 1' EXIT
 # 信任预置会读写 $HOME/.claude.json 与 $HOME/.codex/config.toml：全程用假 HOME，不碰真家目录。
 # seed 一份合法 codex config，让 48 节这类断言 stderr 为空的用例不被「文件不存在」预置警告污染
 mkdir -p "$TMP/home/.codex"; printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$TMP/home/.codex/config.toml"
@@ -357,7 +362,7 @@ fc_ready() {
 fc_finish() {
   wait "$WPID" 2>/dev/null; FC_RC=$?
   fc_stop_watchdog
-  kill -TERM -- "-$WPID" 2>/dev/null || true
+  qwb_test_release "$WPID" || { bad "§12 已登记进程组未能排空"; return 1; }
   if [[ -f "$FCT/watchdog-fired" ]]; then
     bad "§12 看门狗15秒触发（rc=$FC_RC，now=$(cat "$FKN")，sleep=$(wc -l < "$FKS" | tr -d ' ')）"
     cat "$FCT/runtime.log"
@@ -379,7 +384,7 @@ run_wake_fakeclock() { # 调用方以 `VAR=x run_wake_fakeclock` 形式传额外
       HERDR_FAIL="${HERDR_FAIL:-}" HERDR_WAIT_BUMP_MS="${HERDR_WAIT_BUMP_MS:-0}" \
       exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
         bash "$FCT/qwbuddy/bin/qwb-wake.sh" --pane wtest:p9 --interval 1000 ) >"$FCT/runtime.log" 2>&1 &
-  WPID=$!; fc_watchdog
+  WPID=$!; qwb_test_register "$WPID"; fc_watchdog
   if [[ "${1:-$FCT}" == "$FCT" ]]; then fc_ready || true; fi
   fc_finish
 }
@@ -436,7 +441,7 @@ printf '# fc\nstate: running\nimplementation-authorized: explicit fixture scope 
 ( cd "$FCT" && PATH="$FCT/stubbin:$PATH" HERDR_DYN_DIR="$FCT/herdr-dyn" \
     exec perl -MPOSIX=setsid -e 'setsid() >= 0 or die "fixture setsid: $!"; exec @ARGV or die "fixture exec: $!"' \
       bash qwbuddy/bin/qwb-wake.sh --pane wtest:p9 --interval 600 ) >"$FCT/runtime.log" 2>&1 &
-WPID=$!; fc_watchdog
+WPID=$!; qwb_test_register "$WPID"; fc_watchdog
 while ! grep -q 'Herdr subscription established' "$FCT/runtime.log"; do
   if [[ -e "$FCT/watchdog-fired" ]] || ! kill -0 "$WPID" 2>/dev/null; then bad "真时钟订阅握手未就绪"; break; fi
   sleep 0.02

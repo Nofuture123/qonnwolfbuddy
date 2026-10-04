@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 私有临时Git + 系统边界fakeHerdr；不碰现场main/端点。
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
@@ -9,10 +11,11 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'
+from process_fixture import TemporaryDirectory
 import fcntl, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_LAND_ROOT'])
-with tempfile.TemporaryDirectory(prefix='qwb-land-') as tmp:
+with TemporaryDirectory(prefix='qwb-land-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp=Path(tmp).resolve(); p=tmp/'project'; p.mkdir(); stub=tmp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')

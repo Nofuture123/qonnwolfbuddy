@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+from process_fixture import run
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_TMP_ROOT = ROOT / ".qwb-tmp"
@@ -20,7 +21,7 @@ fixture = runpy.run_path(str(ROOT / "tests/r2-cli.py"))["fixture"]
 
 
 def call(*argv, env):
-    return subprocess.run(argv, env=env, capture_output=True)
+    return run(argv, env=env, capture_output=True)
 
 
 def strict_herdr(base):

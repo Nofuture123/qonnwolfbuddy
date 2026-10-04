@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # 真入口+临时Git；仅Herdr/ps/lsof系统边界替身，不调用现场端点。
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
+from process_fixture import TemporaryDirectory
 import hashlib, json, os, shutil, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_GATE_TEST_ROOT'])
-with tempfile.TemporaryDirectory(prefix='qwb-gate-') as tmp:
+with TemporaryDirectory(prefix='qwb-gate-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp=Path(tmp).resolve(); p=tmp/'project'; p.mkdir(); stub=tmp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')

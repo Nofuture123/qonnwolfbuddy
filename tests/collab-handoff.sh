@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # 真实公开入口，唯一临时项目与 fake Herdr；不接触现场会话。
 set -euo pipefail
-export TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
+. "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
+qwb_test_scope "$@"
+export TMPDIR="${QWB_TEST_SCOPE_DIR}"
 mkdir -p "$TMPDIR" || exit 1
 export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1; trap 'qwb_test_drain && rm -rf "$TMP" || exit 1' EXIT
 export TMPDIR="$TMP"
 P="$TMP/project"; mkdir -p "$P/tasks" "$P/qwbuddy/.controller.lock" "$TMP/bin"
 cp -R "$ROOT/bin" "$P/qwbuddy/bin"
@@ -48,6 +50,7 @@ echo 'PASS 跨交付崩溃仍有持久待办'
 python3 - "$P" "$S" "$L" "$ROOT" <<'PY'
 import json,os,subprocess,sys,hashlib,time,signal,re
 from pathlib import Path
+from process_fixture import register, release
 P,S,L,ROOT=sys.argv[1:]; T=P+'/tasks/case.md'
 def call(cmd,*args,actor='test:ctl',rc=0,extra=None):
     p=subprocess.run(cmd+list(args),env={**os.environ,'HERDR_PANE_ID':actor,**(extra or {})},capture_output=True,text=True)
@@ -137,6 +140,7 @@ for task in [T,B]:
     for h in arr:
         for _ in range(3): call(['bash',S,'transport','--project',P,'--task',task,'--event',h['event_id']])
 watch=subprocess.Popen(['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--block','--max-ms','500'],env=os.environ,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+register(watch.pid)
 try:
     time.sleep(.15)
     assert watch.poll() is None, 'first监督owner没有等待'
@@ -147,6 +151,7 @@ try:
     print('PASS 内核单一监督owner，第二适配器拒绝，周期退出后可正常接班')
 finally:
     if watch.poll() is None: os.killpg(watch.pid,signal.SIGTERM); watch.wait(timeout=3)
+    release(watch.pid)
 # 真实进程死亡后的prepared接班：移交同一op，不重发副作用。
 old=subprocess.Popen(['sleep','60']); owner=Path(P+'/qwbuddy/.controller.lock/owner')
 oldactor='pid:'+str(old.pid)
