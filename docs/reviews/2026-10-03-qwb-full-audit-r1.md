@@ -256,8 +256,9 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 - **F42** 第 2 波新增的三个回归脚本没有接进任何门——与 F2 同类，主控验收时未查。已修并加自检。
 - **F43（真机验收抓到）** devin 运行时有两个同名前台进程，`activity()` 的「名字匹配恰好一个」认不出原生进程，派发证据缺 PID，`finish` 永远被拒且无合规出路。假 Herdr 的全部测试都没发现。已修。Pi 与 Claude Code 的进程形态不受影响。
 - **F44** 派发时身份绑不上的票没有任何合规的收尾出路。已加显式兑底；未改成派发时拒绝，因为缺少各工人在真环境下的进程形态数据。
-- **F45（真机演练抓到）** 真 Herdr 0.9.3 对没有 agent 的 pane 不返回 `agent` 键，产品四处要求该键存在且为 null；假 Herdr 一律返回 null。pane 仍在时的 `--writer-proof-missing` 兑底在真机上永远被拒（实测），land 收尾的两处判定同样（读代码得出，未演练）。方向是拒绝不是误删。起点已有。修复票 `audit-finish-real`。[演练记录](2026-10-04-real-herdr-finish-drill.md)
-- **F46（真机演练抓到）** 工人停在自己界面里时，默认 `finish --merged` 必然因「候选写入者仍持cwd/FD」被拒，而拒绝信息与主控说明都不写出路。第 7 轮真机验收里 Claude Code 主控被拒两次，自己读源码摸出「让 devin 退出、把工人 shell 挪出副本」才收尾。实测通用出路是关闭工人 pane。修复票同上。
+- **F45（真机演练抓到）** 真 Herdr 0.9.3 对没有 agent 的 pane 不返回 `agent` 键，产品四处要求该键存在且为 null；假 Herdr 一律返回 null。pane 仍在时的 `--writer-proof-missing` 兑底在真机上永远被拒（实测），land 收尾的两处判定同样（读代码得出，未演练）。方向是拒绝不是误删。起点已有。已修（`audit-finish-real`，`9e86d98`）：键不存在与为 null 同样算没有 agent，其余核对未放松；修复后真机重演通过（pane 仍在的兑底放行），land 两处仍只有假 Herdr 证据。[演练记录](2026-10-04-real-herdr-finish-drill.md)
+- **F46（真机演练抓到）** 工人停在自己界面里时，默认 `finish --merged` 必然因「候选写入者仍持cwd/FD」被拒，而拒绝信息与主控说明都不写出路。第 7 轮真机验收里 Claude Code 主控被拒两次，自己读源码摸出「让 devin 退出、把工人 shell 挪出副本」才收尾。实测通用出路是关闭工人 pane。已修（同上）：拒绝时追加一行提示，列出占着副本的进程与可直接执行的 `herdr pane close`；两份主控说明补了收尾前先让工人退出的做法；真机重演通过。
+- **F47** `tests/process-entry-cleanup.py`（整份 smoke 被 TERM 后夹具应清空自己的目录）在高负载下会残留空的登记目录而失败：合入 F45/F46 后的 main 在另一工人同时跑整门时 rc=1（843 PASS / 1 FAIL），低负载单跑三次均通过；`47de4b6` 源码的基线在同样负载下也红在这一条。是测试夹具的清理竞态，不涉及运行时。交 `audit-gate-parallel` 收口。
 
 `audit-herdr-parse` 留下的宽严差异（193 组输入中 12 组新旧不一致，均未合并）：11 组在 `bin/qwb-wake.sh` 的 `pane_info`——字段为空、为 `null` 或为数组时它输出空列或把数组引用原样串化，不报错；1 组在值守新建 tab 处——对 `root_pane.pane_id` 不做类型校验，而派发脚本严格校验。没有「该拒绝的没拒绝并导致错误动作」的情形。是否把值守一侧收紧，留待有真 Herdr 畸形应答证据时再定。
 
@@ -273,7 +274,7 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 | 6 | `20ea2cc`（最终 main） | Pi magpie sol high | devin | **通过，rc=0，断言全 PASS**。[记录](2026-10-04-e2e-real-pi-sol-devin.md) |
 | 7 | `47de4b6`（运行代码同 `20ea2cc`，其后只有文档提交） | Claude Code opus high | devin | **通过，rc=0，13 项断言全 PASS**；Stop hook 唤醒 2 次送达、逐轮跳过行 0、收尾后送达 0；主控提示投递到输出 DONE 约 2.5 分钟。其间 `finish --merged` 被拒两次，主控自行摸索出路后成功（见 F46）。[记录](2026-10-04-e2e-real-claude-devin.md) |
 
-已证实：Pi 主控加 devin 工人、Claude Code 主控加 devin 工人这两种组合，在当前源码上无人工介入走完派发、值守唤醒、验收、合入、删副本、关 Space。未证实：Codex 主控（周额度仅剩 19%，未跑）；cmdc 工人（额度不足）；其余工人的原生进程形态；`--writer-proof-missing` 在 pane 仍在时的真机放行（pane 已关的情形已演练通过，pane 仍在的情形被 F45 挡住，待修复后重演）；land 收尾的真机演练；首次信任提示、长时间值守与重启恢复、生产场景试用。
+已证实：Pi 主控加 devin 工人、Claude Code 主控加 devin 工人这两种组合，在当前源码上无人工介入走完派发、值守唤醒、验收、合入、删副本、关 Space；`--writer-proof-missing` 兑底在 pane 已关与 pane 仍在两种情形下的真机放行与拒绝（[演练记录](2026-10-04-real-herdr-finish-drill.md)）。未证实：Codex 主控（周额度仅剩 19%，未跑）；cmdc 工人（额度不足）；其余工人的原生进程形态；land 收尾（已迁协作票）的真机演练；首次信任提示、长时间值守与重启恢复、生产场景试用。
 
 ### 最终实测（main @ 20ea2cc 对比起点 4678ba0，同机、负载约 2–4、新旧背靠背各 7 次取最小）
 

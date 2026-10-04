@@ -18,7 +18,18 @@
 - **F46 默认收尾被「候选写入者仍持cwd/FD」拒绝后，产品不给出路。** 工人停在自己的界面里时进程 cwd 就在副本目录，默认 `finish --merged` 必然被拒（第 1、3 轮 A 步）。拒绝本身符合「idle/done 不等于已停」的设计，但拒绝信息与两份主控说明都没写该怎么办。同日 Claude Code 主控真机验收的会话记录显示：主控被拒两次，自己读源码、给 devin 发 `/exit`、再把工人 shell `cd` 出副本，才收尾成功。验收脚本的断言全过、也确实无人介入，但这靠的是主控模型临场摸索，不是产品指引。
 - 让 devin 退出没有稳定的单一做法：第 1 轮用 `herdr pane run` 发 `/exit`、再间隔 0.4 秒发两次 Ctrl+C，各等 15 秒都没退出，最后是关 pane；第 2 轮间隔 1 秒发两次 Ctrl+C 退回了 shell；Claude 主控那轮是发 `/exit` 后又补了回车才退出。原因没有查。退出方式因工人而异，所以出路选「关闭 pane」而不是「发退出命令」。
 
-修复票：`tasks/2026-10-04-audit-finish-real.md`。
+修复票：`tasks/2026-10-04-audit-finish-real.md`（已合入 main，运行时提交 `9e86d98`）。
+
+## 修复后重演（候选 `0d3d8fe`，其 `bin/` 与合入版本逐字节相同）
+
+| 情形 | 结果 |
+|---|---|
+| 缺证据票，工人还在，带或不带兑底参数 | 拒绝，并多出提示行：占着副本的进程 `PID(命令名)` 与 `herdr pane close w2:p1` |
+| 缺证据票，工人退回 shell、pane 保留、shell 仍在副本目录 | 拒绝并提示（只剩 zsh 占着） |
+| 同上，把 shell `cd` 出副本后带 `--writer-proof-missing` | **放行**，留痕 `pane_proof=foreground-shell`——修复前这一步被拒 |
+| 证据正常，照提示关掉工人 pane 后不带兑底参数 | 放行 |
+
+land 收尾的两处同类判定只有假 Herdr 测试的证据，没有做真机演练。
 
 ## 第 1 轮原始日志
 
@@ -180,4 +191,111 @@ worktree: merged branch=drill tag=-
 BASE=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.tzpdG5
 session stop rc=0
 session delete rc=0
+```
+
+## 修复后重演原始日志
+
+```
+被测提交: 0d3d8fe
+######## 演练 A：缺证据票，工人退回 shell、pane 保留
+session=qwb-drill-1791139308-62876 base=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe
+controller pane=w1:p1 workspace=w1
+lock rc=0
+run rc=0
+已派发：drill → devin（agent=qwb-drill pane=w2:p1 dir=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project/.worktrees/drill）
+Preparing worktree (new branch 'drill')
+--- 派发后账本里的活动证据（真机，修复后应带 PID）:
+working: worker-activity op=87aac313f25a22e4b412a87645539f2d pane=w2:p1 evidence={"activity": "unknown", "proof": "native-pid; CLI idle not verified", "pid": 63839, "pid_start": "Sun Oct  4 20:41:50 2026"}
+worker pane=w2:p1
+改写活动证据行数 1
+--- 起始状态:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project                  b0b305f [main]
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project/.worktrees/drill ab341fa [drill]
+refs/heads/drill
+refs/heads/main
+w1,w2
+=== A. 工人还在时，不带参数收尾（应拒绝）
+rc=1
+拒绝：候选写入者仍持cwd/FD，保留成果
+提示：63704(zsh)、63839(devin)、63842(devin)；确认工人已交付、不再需要它的会话后，关闭本票登记的工人 pane 再重试：herdr pane close w2:p1
+=== B. 工人还在时，带兑底参数收尾（应拒绝：仍有 agent）
+rc=1
+拒绝：候选写入者仍持cwd/FD，保留成果
+提示：63704(zsh)、63839(devin)、63842(devin)；确认工人已交付、不再需要它的会话后，关闭本票登记的工人 pane 再重试：herdr pane close w2:p1
+--- B 之后状态（应与起始相同）:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project                  b0b305f [main]
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project/.worktrees/drill ab341fa [drill]
+refs/heads/drill
+refs/heads/main
+w1,w2
+=== 让工人退出
+退出方式=ctrl+c x2
+worker pane agent=null
+shell=63704 fg_group=63704 procs=63704:zsh
+=== C. 工人已退出，不带参数收尾（应拒绝：旧启动代 PID/start 未知）
+rc=1
+拒绝：候选写入者仍持cwd/FD，保留成果
+提示：63704(zsh)；确认工人已交付、不再需要它的会话后，关闭本票登记的工人 pane 再重试：herdr pane close w2:p1
+--- C 之后状态（应与起始相同）:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project                  b0b305f [main]
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project/.worktrees/drill ab341fa [drill]
+refs/heads/drill
+refs/heads/main
+w1,w2
+=== D. 工人已退出，带兑底参数收尾（应成功）
+rc=1
+拒绝：候选写入者仍持cwd/FD，保留成果
+提示：63704(zsh)；确认工人已交付、不再需要它的会话后，关闭本票登记的工人 pane 再重试：herdr pane close w2:p1
+=== D2. D 被拒：把工人 shell 的 cwd 挪出副本后重试
+rc=0
+      若收尾时该副本仍在被写入，窗口内的新提交会成为未引用对象（dangling），
+      可用 git fsck --lost-found 找回。收尾前提是工人已停止写入。
+已记账：2099-01-01-drill.md ← worktree: merged branch=drill tag=- writer-proof-missing=1
+--- D 之后状态（副本、分支、Space 应已清理）:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe/project b0b305f [main]
+refs/heads/main
+w1
+--- 账本留痕:
+working: writer-proof-missing op=87aac313f25a22e4b412a87645539f2d pane=w2:p1 reason="真机演练" evidence={"op": "87aac313f25a22e4b412a87645539f2d", "pane": "w2:p1", "pane_proof": "foreground-shell", "resource_proof": "lsof-clean", "known_generations_ended": 0, "later_live_generation": "none"}
+worktree: merged branch=drill tag=- writer-proof-missing=1
+BASE=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.kXHuqe
+session stop rc=0
+session delete rc=0
+######## 演练 B：证据正常，关 pane 后直接收尾
+session=qwb-drill-1791139322-65923 base=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz
+controller pane=w1:p1 workspace=w1
+lock rc=0
+run rc=0
+已派发：drill → devin（agent=qwb-drill pane=w2:p1 dir=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz/project/.worktrees/drill）
+Preparing worktree (new branch 'drill')
+--- 派发后账本里的活动证据（真机，修复后应带 PID）:
+working: worker-activity op=4b2e6bb57d3f275456bd50f78d1995a8 pane=w2:p1 evidence={"activity": "unknown", "proof": "native-pid; CLI idle not verified", "pid": 66770, "pid_start": "Sun Oct  4 20:42:03 2026"}
+worker pane=w2:p1
+--- 起始状态:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz/project                  2e1e0e1 [main]
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz/project/.worktrees/drill 3af4d9a [drill]
+refs/heads/drill
+refs/heads/main
+w1,w2
+=== A. 工人还在时，不带参数收尾（应拒绝）
+rc=1
+拒绝：候选写入者仍持cwd/FD，保留成果
+提示：66650(zsh)、66770(devin)、66772(devin)；确认工人已交付、不再需要它的会话后，关闭本票登记的工人 pane 再重试：herdr pane close w2:p1
+=== 让工人退出
+退出方式=pane close
+worker pane agent=closed
+=== C. 工人窗格已关，证据带 PID，不带任何兑底参数收尾（应成功）
+rc=0
+      可用 git fsck --lost-found 找回。收尾前提是工人已停止写入。
+已记账：2099-01-01-drill.md ← worktree: merged branch=drill tag=-
+--- C 之后状态（副本、分支、Space 应已清理）:
+/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz/project 2e1e0e1 [main]
+refs/heads/main
+w1
+--- 账本留痕:
+worktree: merged branch=drill tag=-
+BASE=/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill.SIgYAz
+session stop rc=0
+session delete rc=0
+drills done
 ```
