@@ -77,7 +77,7 @@ trap 'guard_lock --lock-release 2>/dev/null || true' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# 3) 前台阻塞值守：exit 2交回模型；124正常到期只有限接续一次，不能静默丢接班
+# 3) 前台阻塞值守：exit 2交回模型；124正常到期只有限接续一次，等裁决旧票可安静退出
 # shellcheck source=/dev/null
 if [[ -f "$QWB_DIR/config.sh" ]]; then . "$QWB_DIR/config.sh"; fi
 MAX_MS="${QWB_HOOK_MAX_MS:-7200000}"
@@ -91,6 +91,13 @@ if [[ "$hook_rc" -eq 124 ]]; then
   hook_out="$(bash "$QWB_DIR/bin/qwb-wake.sh" --project "$ROOT" --block --max-ms "$MAX_MS" 2>&1)"
   hook_rc=$?
   if [[ "$hook_rc" -eq 124 ]]; then
+    # 只在第二次到期查未结项；失败/未知保持原有门铃，其他路径不增加扫描。
+    if (
+      # shellcheck source=/dev/null
+      . "$QWB_DIR/bin/qwb-lib.sh" && qwb_ledger_waiting_only "$ROOT"
+    ) >/dev/null 2>&1; then
+      exit 0
+    fi
     echo "qwb-hook：连续两周期到期；无健康接班证据，须主控前台核查" >> "$QWB_DIR/.hook.err"
     printf '%s\n' '[qwb-wake] 值守接班未就绪：正常124接续一周期后仍到期；待办未消费，请核查唯一监督入口。' >&2
     exit 2

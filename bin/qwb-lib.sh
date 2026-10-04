@@ -279,6 +279,34 @@ qwb_ledger_scan() {
   ' -- "$@"
 }
 
+# 只读到期判定：未结项全是等裁决的旧票才返回0；扫描/协议不明保留门铃。
+# 复用值守的扫描与已迁票义务口径，不写账本，不改变值守判定。
+qwb_ledger_waiting_only() {
+  local root="$1" rows row f u8 col st obligations waiting=0
+  local row_re=$'^[^\t]+\t[01]\t[01]\t[^\t]*$'
+  [[ -d "$root/tasks" && -r "$root/tasks" && -x "$root/tasks" ]] || return 1
+  # scanner 的旧兼容读错会写 stderr 而非返回非0；合并后按TSV验形拒绝。
+  rows="$(qwb_ledger_scan "$root/tasks"/*.md 2>&1)" || return 1
+  [[ -n "$rows" ]] || return 1
+  while IFS= read -r row; do
+    [[ "$row" =~ $row_re ]] || return 1
+    IFS=$'\t' read -r f u8 col st <<< "$row"
+    [[ "$f" == "$root/tasks/"* && -f "$f" && -r "$f" ]] || return 1
+    if [[ "$u8" == 1 && ( "$st" == 'done' || "$st" == verified ) ]]; then
+      if [[ "$col" == 1 ]]; then
+        obligations="$(qwb_task_obligations "$root" "$f")" || return 1
+        [[ -z "$obligations" ]] || return 1
+      fi
+      continue
+    fi
+    [[ "$col" == 0 ]] || return 1
+    # UTF-8损坏/非法state与open_items一样按needs-decision归类。
+    [[ "$u8" == 0 || "$st" != running ]] || return 1
+    waiting=1
+  done <<< "$rows"
+  [[ "$waiting" == 1 ]]
+}
+
 # 对外摘要只输出合法 UTF-8；先替换坏字节，再按 Unicode 字符截断。
 # LC_ALL=C 仍用于账本解析，不能拿 bash 字节子串直接交给 Herdr。
 qwb_utf8_excerpt() {

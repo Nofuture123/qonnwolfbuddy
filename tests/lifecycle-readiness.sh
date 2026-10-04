@@ -200,6 +200,220 @@ exec /bin/rm "$@"
     assert not hooklock.exists() and '连续两周期' in (qwb / '.hook.err').read_text()
     print('PASS  Claude双124有限接班，无健康证据显式故障')
 
+    # 第二次124：真实短周期、旧基点逐字节对照及受控失败；沿用本文件的进程隔离。
+    baseline_hook = subprocess.run(
+        ['git', '-C', str(repo), 'show', 'd01ddca:bin/qwb-hook-claude-stop.sh'],
+        capture_output=True, check=True).stdout
+    current_hook = (source / 'bin/qwb-hook-claude-stop.sh').read_bytes()
+    clock = project / 'HookClock.pm'
+    frozen_at = subprocess.check_output(['date', '-u', '+%Y-%m-%dT%H:%M:%SZ']).decode().strip()
+    clock.write_text('''package HookClock;
+use POSIX ();
+no warnings 'redefine';
+my $original = \\&POSIX::strftime;
+*POSIX::strftime = sub {
+    return $ENV{HOOK_FROZEN_AT} if $_[0] eq '%Y-%m-%dT%H:%M:%SZ';
+    return $original->(@_);
+};
+1;
+''')
+
+    def hook_case(name, states):
+        p = project / ('hook-' + name)
+        (p / 'tasks').mkdir(parents=True)
+        shutil.copytree(source / 'bin', p / 'qwbuddy/bin')
+        for template in ('TASK.md', 'QWBUDDY.md'):
+            shutil.copy2(source / 'templates' / template, p / 'qwbuddy' / template)
+        shutil.copytree(source / 'templates/roles', p / 'qwbuddy/roles')
+        (p / 'qwbuddy/config.sh').write_text('QWB_HOOK_MAX_MS=200\nQWB_WAKE_INTERVAL_MS=10\nQWB_REWAKE_MS=0\n')
+        # 只冻结本组订阅外部边界，避免接入耗时诊断混入逐字节对照；真实值守/扫描仍运行。
+        (p / 'qwbuddy/bin/qwb-herdr.sh').write_text('''#!/bin/bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --notice ]]; then printf 'fixture-ready\\n' > "$2"; exit 0; fi
+  shift
+done
+exit 77
+''')
+        owner = p / 'qwbuddy/.controller.lock/owner'
+        owner.parent.mkdir(); owner.write_text('fixture wT:p1\n')
+        fakebin = p / 'fakebin'; fakebin.mkdir()
+        (fakebin / 'herdr').write_text('#!/bin/sh\necho "$@" >> "$HOOK_HERDR_LOG"\nexit 77\n')
+        (fakebin / 'lsof').write_text('#!/bin/sh\nexit 1\n')
+        (fakebin / 'date').write_text('#!/bin/sh\nif [ "$1" = -u ]; then echo "$HOOK_FROZEN_AT"; else exec /bin/date "$@"; fi\n')
+        for f in fakebin.iterdir(): f.chmod(0o755)
+        for i, state in enumerate(states):
+            effective = state if state in ('running', 'blocked', 'needs-decision', 'done', 'verified') else 'needs-decision'
+            fingerprint = hashlib.sha1((effective + '\nworking: old').encode()).hexdigest()
+            (p / 'tasks' / f'case-{i}.md').write_text(
+                f'# fixture\nstate: {state}\nworking: old\nwake: {frozen_at} state={effective} fp={fingerprint}\n')
+        (p / 'qwbuddy/.hook.err').write_bytes(b'previous error\n')
+        env = {**os.environ, 'HERDR_PANE_ID': 'wT:p1', 'TMPDIR': str(p),
+               'PATH': str(fakebin) + os.pathsep + os.environ['PATH'],
+               'HOOK_HERDR_LOG': str(p / 'herdr.log'), 'HOOK_FROZEN_AT': frozen_at,
+               'PERL5LIB': str(project), 'PERL5OPT': '-MHookClock'}
+        return p, env
+
+    def hook_run(p, env):
+        # Popen保留PID；本文件已有监督器登记整个进程组，异常时先排空再删临时目录。
+        h = subprocess.Popen(['/bin/bash', str(p / 'qwbuddy/bin/qwb-hook-claude-stop.sh')],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        try:
+            out, err = h.communicate(timeout=15)
+        finally:
+            if h.poll() is None: h.terminate(); h.wait(timeout=3)
+        assert not (p / 'qwbuddy/.hook.lock').exists(), f'{p.name}: hook锁未释放 pid={h.pid}'
+        return h.returncode, out, err
+
+    def snapshot(p, result):
+        return (result, (p / 'qwbuddy/.hook.err').read_bytes(),
+                {f.name: f.read_bytes() if f.is_file() else None for f in (p / 'tasks').iterdir()})
+
+    for name, states in [('decision', ['needs-decision']), ('blocked', ['blocked']),
+                         ('mixed-waiting', ['blocked', 'needs-decision']), ('invalid', ['bogus']),
+                         ('empty-state', ['']), ('closed', ['needs-decision', 'done', 'verified'])]:
+        p, env = hook_case(name, states)
+        before = snapshot(p, None)[1:]
+        result = hook_run(p, env)
+        assert result == (0, b'', b''), (name, result)
+        assert snapshot(p, None)[1:] == before, f'{name}: 安静退出改了账本或错误日志'
+        print('PASS  hook quiet ' + name + ': rc0/empty streams/unchanged errors and tickets/unlocked')
+        if name == 'decision':
+            with (p / 'tasks/case-0.md').open('a') as f: f.write('working: new-fact-after-quiet\n')
+            result = hook_run(p, env)
+            assert result[0] == 2 and result[1] == result[2] and b'case-0' in result[1], result
+            assert b'new-fact-after-quiet' in result[1]
+            assert (p / 'tasks/case-0.md').read_bytes().count(b'wake:') == 2
+            assert (p / 'qwbuddy/.hook.err').read_bytes() == before[0]
+            print('PASS  hook quiet then new progress: immediate rc2/ticket named/new wake recorded')
+
+    p, env = hook_case('bad-utf8', ['running'])
+    bad = p / 'tasks/case-0.md'
+    bad.write_bytes(bad.read_bytes().replace(b'state=running fp=', b'state=needs-decision fp=').replace(
+        hashlib.sha1(b'running\nworking: old').hexdigest().encode(),
+        hashlib.sha1(b'needs-decision\nworking: old').hexdigest().encode()) + b'\xff\n')
+    before = snapshot(p, None)[1:]
+    assert hook_run(p, env) == (0, b'', b'')
+    assert snapshot(p, None)[1:] == before
+    print('PASS  hook quiet damaged UTF-8: same needs-decision classification as wake')
+
+    def byte_compare(name, states, configure=None, prepare=None):
+        p, env = hook_case(name, states)
+        if prepare: prepare(p, env)
+        q = p / 'qwbuddy'; hook = q / 'bin/qwb-hook-claude-stop.sh'
+        initial = {f.name: f.read_bytes() for f in (p / 'tasks').iterdir()}
+        original_lib = (q / 'bin/qwb-lib.sh').read_bytes()
+        results = []
+        for version in (baseline_hook, current_hook):
+            hook.write_bytes(version)
+            (q / 'bin/qwb-lib.sh').write_bytes(original_lib)
+            for f in (p / 'tasks').iterdir():
+                if f.is_dir(): shutil.rmtree(f)
+                else: f.unlink()
+            for name_, content in initial.items(): (p / 'tasks' / name_).write_bytes(content)
+            (q / '.hook.err').write_bytes(b'previous error\n')
+            counter = p / 'cycles'
+            if counter.exists(): counter.unlink()
+            extra = configure(p, env) if configure else {}
+            result = hook_run(p, {**env, **(extra or {})})
+            if (p / 'tasks-saved').exists():
+                (p / 'tasks-saved').rename(p / 'tasks')
+            results.append(snapshot(p, result))
+        assert results[0] == results[1], (p.name, results)
+        print('PASS  hook baseline d01ddca byte equality ' + p.name + ': stdout/stderr/rc/errors/tickets')
+        return p, results[1][0]
+
+    for name, states in [('running', ['running']), ('running-mixed', ['running', 'needs-decision'])]:
+        p, result = byte_compare(name, states)
+        assert result[0] == 2 and result[1] == b'' and '值守接班未就绪'.encode() in result[2]
+        assert '连续两周期到期'.encode() in (p / 'qwbuddy/.hook.err').read_bytes()
+
+    def migrated(p, env):
+        # 真实迁移和持久transport预算耗尽：无到期可投递事件，真实--block两次124。
+        import json
+        t = p / 'tasks/case-0.md'; manifest = p / 'migration.json'
+        manifest.write_text(json.dumps({'task_sha256': hashlib.sha256(t.read_bytes()).hexdigest(),
+            'confirm': {k: 'fixture stopped; no external actions' for k in
+                        ['run', 'wake', 'worktree', 'worker', 'controller', 'old-fds', 'external-actions']}}))
+        def call(script, *args):
+            r = subprocess.run(['/bin/bash', str(p / 'qwbuddy/bin' / script), *args],
+                env=env, capture_output=True, text=True, timeout=15)
+            assert r.returncode == 0, (r.stdout, r.stderr)
+            return r.stdout
+        call('qwb-ledger.sh', 'migrate', '--project', str(p), '--task', str(t), '--', str(manifest))
+        pending = json.loads(call('qwb-send.sh', 'pending', '--project', str(p), '--task', str(t)))
+        assert pending, '已迁夹具缺真实待办'
+        for event in pending:
+            for _ in range(3):
+                call('qwb-send.sh', 'transport', '--project', str(p), '--task', str(t), '--event', event['event_id'])
+        assert json.loads(call('qwb-send.sh', 'pending', '--project', str(p), '--task', str(t),
+                               '--due', '--retry-ms', '10')) == []
+    p, result = byte_compare('migrated', ['needs-decision'], prepare=migrated)
+    assert result[0] == 2
+    p, result = byte_compare('migrated-done-with-obligations', ['done'], prepare=migrated)
+    assert result[0] == 2
+
+    def wake_stub(p, body):
+        (p / 'qwbuddy/bin/qwb-wake.sh').write_text(
+            '#!/bin/bash\nroot="$(cd "$(dirname "$0")/../.." && pwd)"\n'
+            'echo cycle >> "$root/cycles"\n' + body)
+
+    for failure in ('directory', 'scan-error', 'scan-diagnostic', 'unparseable'):
+        def inject(p, env, failure=failure):
+            if failure == 'directory':
+                second = 'mv "$root/tasks" "$root/tasks-saved"\n'
+            else:
+                definition = {'scan-error': 'qwb_ledger_scan() { return 7; }',
+                              'scan-diagnostic': 'qwb_ledger_scan() { echo "scan read error" >&2; return 0; }',
+                              'unparseable': 'qwb_ledger_scan() { echo "invalid scan"; }'}[failure]
+                second = "printf '%s\\n' '" + definition + "' >> \"$root/qwbuddy/bin/qwb-lib.sh\"\n"
+            wake_stub(p, 'if [[ $(wc -l < "$root/cycles") -eq 2 ]]; then\n' + second + 'fi\nexit 124\n')
+        p, result = byte_compare('failure-' + failure, ['needs-decision'], inject)
+        assert result[0] == 2 and len((p / 'cycles').read_text().splitlines()) == 2
+    # scanner原有读错返回0：一张可读旧票加一个.md目录，不能静默忽略读失败。
+    def unreadable(p, env):
+        (p / 'tasks/unreadable.md').mkdir()
+        wake_stub(p, 'exit 124\n')
+    p, result = byte_compare('unreadable-file', ['needs-decision'], unreadable)
+    assert result[0] == 2
+
+    p, result = byte_compare('empty', [])
+    assert result == (0, b'', b'')
+    def new_fact(p, env):
+        with (p / 'tasks/case-0.md').open('a') as f: f.write('working: new fact\n')
+    p, result = byte_compare('new-progress', ['needs-decision'], new_fact)
+    assert result[0] == 2 and result[1] == result[2]
+    def not_owner(p, env): return {'HERDR_PANE_ID': 'other'}
+    p, result = byte_compare('non-owner', ['needs-decision'], not_owner)
+    assert result == (0, b'', b'')
+    def occupied(p, env):
+        d = p / 'qwbuddy/.hook.lock'; d.mkdir()
+        (d / 'pid').write_text(str(os.getpid()) + '\n'); (d / 'token').write_text('held\n')
+        # 外部活锁必须保留；hook_run仅对自己持有的锁要求释放。
+        return {}
+    # 单飞在既有竞争测试覆盖；这里逐字节比对活锁且不套用释放自有锁断言。
+    p, env = hook_case('occupied', ['needs-decision']); occupied(p, env)
+    snapshots = []
+    for version in (baseline_hook, current_hook):
+        (p / 'qwbuddy/bin/qwb-hook-claude-stop.sh').write_bytes(version)
+        r = subprocess.run(['/bin/bash', str(p / 'qwbuddy/bin/qwb-hook-claude-stop.sh')],
+            stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=3)
+        assert (p / 'qwbuddy/.hook.lock/pid').read_text() == str(os.getpid()) + '\n'
+        snapshots.append(snapshot(p, (r.returncode, r.stdout, r.stderr)))
+    assert snapshots[0] == snapshots[1] and snapshots[1][0] == (0, b'', b'')
+    print('PASS  hook baseline d01ddca byte equality occupied lock: external owner preserved')
+    def abnormal(p, env): wake_stub(p, 'echo actual-error >&2\nexit 7\n')
+    p, result = byte_compare('abnormal', ['needs-decision'], abnormal)
+    assert result == (0, b'', b'') and b'rc=7' in (p / 'qwbuddy/.hook.err').read_bytes()
+    def second_progress(p, env):
+        wake_stub(p, '''if [[ $(wc -l < "$root/cycles") -eq 1 ]]; then exit 124; fi
+printf 'working: second-cycle progress\\n' >> "$root/tasks/case-0.md"
+exec /bin/bash "$root/qwbuddy/bin/qwb-wake-real.sh" "$@"
+''')
+        shutil.copy2(source / 'bin/qwb-wake.sh', p / 'qwbuddy/bin/qwb-wake-real.sh')
+    p, result = byte_compare('second-cycle-progress', ['needs-decision'], second_progress)
+    assert result[0] == 2 and b'second-cycle progress' in result[1]
+    assert len((p / 'cycles').read_text().splitlines()) == 2
+
     # 假 Herdr：主控在 A，项目值守在 B。三次 ensure 验证创建、复用、失活重启。
     import json
     shutil.copy2(Path(os.environ.get("QWB_LIFECYCLE_CROSS_WAKE", source / "bin" / "qwb-wake.sh")), stub)
