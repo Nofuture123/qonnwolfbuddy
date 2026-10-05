@@ -75,6 +75,8 @@ elif args[:2] == ['pane', 'process-info']:
     result = {'process_info': {'pane_id': args[-1], 'shell_pid': 42,
               'foreground_process_group_id': 42,
               'foreground_processes': [{'pid': 42, 'argv0': 'bash'}]}}
+elif args[:2] == ['agent', 'wait']:
+    result = {'type': 'agent_info', 'agent': {'agent_status': 'working'}}
 elif args[:2] in (['agent', 'start'], ['agent', 'prompt']):
     result = {'type': 'ok'}
 else:
@@ -110,7 +112,7 @@ print(json.dumps({'result': result}))
             assert [cmd[:2] for cmd in commands] == [
                 ['agent', 'get'], ['workspace', 'list'], ['tab', 'create'],
                 ['agent', 'start'], ['pane', 'get'], ['pane', 'process-info'],
-                ['agent', 'prompt']], commands
+                ['agent', 'prompt'], ['agent', 'wait']], commands
         print('PASS', name)
 
     check_dispatch('valid large block dispatches', block, 0)

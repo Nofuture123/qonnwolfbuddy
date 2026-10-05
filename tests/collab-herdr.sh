@@ -371,7 +371,8 @@ elif args[:2] == ["status", "--json"]:''')
     op=next(x.split('=',1)[1] for x in receipt.split() if x.startswith('op_id='))
     bound=next(x for x in lines if x.startswith('working: worker-activity op='+op+' pane=wTask:p1 evidence='))
     proof=json.loads(bound.split(' evidence=',1)[1]); assert (proof['pid'],proof['pid_start'])==(leader.pid,stamp),proof
-    prompted=json.loads(log.read_text().splitlines()[-1]); assert prompted[0]=='prompt-ticket' and bound in prompted[1],prompted
+    prompts=[row for row in map(json.loads,log.read_text().splitlines()) if row[0]=='prompt-ticket']
+    assert len(prompts)==1 and bound in prompts[0][1],prompts
     active.unlink()
     finish=['bash',str(ROOT/'bin/qwb-worktree.sh'),'finish','case','--merged','--project',str(repo)]
     alive=call(*finish,env=env); assert alive.returncode!=0 and wt.is_dir() and state.exists() and '候选写入者仍持cwd/FD' in alive.stderr,alive.stderr
