@@ -15,13 +15,13 @@ export HOME="$T/home" PATH="$T/fakebin:$PATH"
 unset TYPESAFE_API_KEY
 printf '# brief\n' > "$T/project/brief.md"
 cat > "$T/project/qwbuddy/dispatch-rules.json" <<'JSON'
-{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}
+{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}
 JSON
 cat > "$T/fakebin/curl" <<'SH'
 #!/usr/bin/env bash
 echo call >> "$FAKE_LOG"
 if [ -n "${FAKE_CHANGE_RULES:-}" ]; then
-  printf '%s\n' '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"ghost"}}' > "$FAKE_CHANGE_RULES"
+  printf '%s\n' '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"ghost"}}' > "$FAKE_CHANGE_RULES"
 fi
 out=''
 while (($#)); do
@@ -38,7 +38,7 @@ cat > "$FAKE_RESPONSE" <<'JSON'
 JSON
 dispatch() { bash "$ROOT/bin/qwb-dispatch.sh" "$T/project/brief.md" --project "$T/project" --json; }
 TYPESAFE_API_KEY=fake-key dispatch > "$T/out" 2> "$T/err"
-jq -e '.status == "clear" and .worker == "codex" and .default_worker == "pi"' "$T/out" >/dev/null
+jq -e '.status == "clear" and .worker == "claude" and .default_worker == "pi"' "$T/out" >/dev/null
 echo 'PASS JSON clear'
 # 06 R1/R2: actual public requests, literal expected bytes; no parser-internal assertions.
 QWB_ROUTING_TEST_ROOT="$ROOT" QWB_ROUTING_TEST_PROJECT="$T/project" python3 -B - <<'PY'
@@ -126,8 +126,8 @@ bad_shape_cli() {
 }
 : > "$T/project/qwbuddy/dispatch-rules.json"
 bad_shape_cli empty
-printf '%s\n' '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}' \
-  '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}' \
+printf '%s\n' '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}' \
+  '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}' \
   > "$T/project/qwbuddy/dispatch-rules.json"
 bad_shape_cli two_objects
 
@@ -152,11 +152,11 @@ exec /usr/bin/grep "$@"
 SH
 chmod +x "$T/fakebin/grep"
 cat > "$T/project/qwbuddy/config.sh" <<'SH'
-QWB_WORKERS='codex pi'
+QWB_WORKERS='claude pi'
 QWB_WORKSPACE='wtest'
 SH
 cat > "$T/project/qwbuddy/workers.sh" <<'SH'
-qwb_worker codex herdr
+qwb_worker claude herdr
 qwb_worker pi herdr
 SH
 cat > "$T/fakebin/herdr" <<'SH'
@@ -167,7 +167,7 @@ case "$1 $2" in
   'agent get') if [[ -n "${FAKE_REUSE_AGENT:-}" ]]; then cat "$FAKE_REUSE_AGENT"; exit 0; fi; echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1;;
   'pane get') cat "$FAKE_REUSE_PANE";;
   'pane process-info') jq -cn --arg dir "$FAKE_REUSE_DIR" --argjson pid "$FAKE_REUSE_PID" \
-    '{result:{process_info:{pane_id:"ptest",shell_pid:42,foreground_process_group_id:$pid,foreground_processes:[{pid:$pid,argv0:"codex",cwd:$dir}]}}}';;
+    '{result:{process_info:{pane_id:"ptest",shell_pid:42,foreground_process_group_id:$pid,foreground_processes:[{pid:$pid,argv0:"claude",cwd:$dir}]}}}';;
   'workspace list') echo '{"result":{"workspaces":[{"workspace_id":"wtest","focused":true}]}}';;
   'tab create') echo '{"result":{"root_pane":{"pane_id":"ptest","tab_id":"ttest"}}}';;
   'agent start'|'agent prompt') echo '{"result":{}}';;
@@ -195,13 +195,13 @@ MD
 }
 run() { (cd "$T/project" && bash qwbuddy/bin/qwb-run.sh --task "$1" --worker "$2" --here) > "$T/out" 2> "$T/err"; }
 worker() { sed -n 's/^dispatch:.* worker=\([^ ]*\).*/\1/p' "$T/project/tasks/2099-01-01-$1.md" | tail -1; }
-reset_rule() { printf '%s\n' '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"; }
+reset_rule() { printf '%s\n' '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"; }
 reset_rule
 # A regular fake key is present; explicit dispatch must call neither the router nor env_get.
 printf 'TYPESAFE_API_KEY=fake-routing-key\n' > "$T/project/.env"
 task explicit
-run explicit codex
-test "$(worker explicit)" = codex
+run explicit claude
+test "$(worker explicit)" = claude
 test ! -e "$FAKE_DISPATCH_LOG"
 test ! -e "$ROUTE_ENV_LOG"
 test ! -e "$FAKE_LOG"
@@ -209,14 +209,14 @@ echo 'PASS explicit worker skips router and routing credentials'
 
 task envkey
 run envkey auto
-test "$(worker envkey)" = codex
+test "$(worker envkey)" = claude
 test "$(wc -l < "$FAKE_DISPATCH_LOG")" -eq 1
 test "$(wc -l < "$ROUTE_ENV_LOG")" -eq 1
 rm "$T/project/.env"
 echo 'PASS env read probe reaches auto path'
 task clear
 TYPESAFE_API_KEY=fake-key run clear auto
-test "$(worker clear)" = codex
+test "$(worker clear)" = claude
 test "$(wc -l < "$FAKE_DISPATCH_LOG")" -eq 2
 echo 'PASS auto clear'
 task off
@@ -255,8 +255,8 @@ reject_unchanged emptyrules 2 '配置错误'
 test ! -e "$FAKE_LOG"
 echo 'PASS auto empty rules before side effects'
 task tworules
-printf '%s\n' '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}' \
-  '{"rules":[{"when":"build","worker":"codex"}],"default":{"worker":"pi"}}' \
+printf '%s\n' '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}' \
+  '{"rules":[{"when":"build","worker":"claude"}],"default":{"worker":"pi"}}' \
   > "$T/project/qwbuddy/dispatch-rules.json"
 rm -f "$FAKE_LOG"
 reject_unchanged tworules 2 '配置错误'
@@ -267,7 +267,7 @@ task malformed
 cp "$T/project/qwbuddy/bin/qwb-dispatch.sh" "$T/dispatch.save"
 cat > "$T/project/qwbuddy/bin/qwb-dispatch.sh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' '{"status":"clear","worker":"codex","default_worker":"pi"}' '{"status":"error","default_worker":"pi"}'
+printf '%s\n' '{"status":"clear","worker":"claude","default_worker":"pi"}' '{"status":"error","default_worker":"pi"}'
 SH
 reject_unchanged malformed 2 '结构化结果非法'
 cp "$T/dispatch.save" "$T/project/qwbuddy/bin/qwb-dispatch.sh"
@@ -275,7 +275,7 @@ echo 'PASS auto rejects multiple JSON values'
 task missingstatus
 cat > "$T/project/qwbuddy/bin/qwb-dispatch.sh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' '{"worker":"codex","default_worker":"pi"}'
+printf '%s\n' '{"worker":"claude","default_worker":"pi"}'
 SH
 reject_unchanged missingstatus 2 '结构化结果非法'
 cp "$T/dispatch.save" "$T/project/qwbuddy/bin/qwb-dispatch.sh"
@@ -296,7 +296,7 @@ TYPESAFE_API_KEY=fake-key reject_unchanged ghost 1 '合法工人'
 echo 'PASS auto unknown worker before side effects'
 
 # Named agent identity is distinct from the Herdr harness; argv remains an array.
-printf "QWB_WORKERS='codex pi sol-high fable-high'\n" >> "$T/project/qwbuddy/config.sh"
+printf "QWB_WORKERS='claude pi sol-high fable-high'\n" >> "$T/project/qwbuddy/config.sh"
 cat >> "$T/project/qwbuddy/workers.sh" <<'SH'
 qwb_worker sol-high herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high --example 'a b' ''
 qwb_worker fable-high herdr claude -- --model claude-fable-5 --effort high
@@ -348,7 +348,7 @@ test "$(shasum "$T/project/tasks/2099-01-01-named.md")" = "$before"
 ! grep -q 'agent prompt\|agent start' "$HERDR_LOG"
 echo 'PASS named agent refuses a different runtime harness'
 jq '.result.pane.agent="codex"' "$FAKE_REUSE_PANE" > "$T/next" && mv "$T/next" "$FAKE_REUSE_PANE"
-printf "QWB_WORKERS='codex pi sol-high fable-high sol-medium'\n" >> "$T/project/qwbuddy/config.sh"
+printf "QWB_WORKERS='claude pi sol-high fable-high sol-medium'\n" >> "$T/project/qwbuddy/config.sh"
 printf 'qwb_worker sol-medium herdr codex -- --model gpt-6-sol -c model_reasoning_effort=medium\n' >> "$T/project/qwbuddy/workers.sh"
 : > "$HERDR_LOG"
 if run named sol-medium; then echo 'FAIL different named triplet reused' >&2; exit 1; fi
@@ -367,12 +367,13 @@ cp "$T/project/qwbuddy/workers.sh" "$T/installed-workers"
 bash "$ROOT/bin/qwb-init.sh" "$T/project" > "$T/init-again.out"
 cmp -s "$T/installed-workers" "$T/project/qwbuddy/workers.sh"
 echo 'PASS named template installation is idempotent'
-for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
-            'claude-fable-high claude claude-fable-5 high' \
-            'pi-glm-high pi glm-5.3 high' \
+for spec in 'pi pi codex/gpt-6.1-sol high' \
+            'claude claude claude-opus-5-5 medium' \
             'pi-sol-high pi codex/gpt-6.1-sol high' \
-            'devin devin swe-2-high swe-2-high' \
-            'omp-gemini omp google-antigravity/gemini-3.1-pro high'; do
+            'pi-astra-high pi codex/gpt-6-astra high' \
+            'pi-astra-low pi codex/gpt-6-astra low' \
+            'claude-opus-medium claude claude-opus-5-5 medium' \
+            'claude-fable-low claude claude-fable-5-1 low'; do
   read -r agent harness model effort <<< "$spec"
   id="template-$agent"
   task "$id"
@@ -382,13 +383,71 @@ for spec in 'codex-sol-high codex gpt-6-sol model_reasoning_effort=high' \
     [.[] | select(.[0:2] == ["agent","start"])] | last |
     .[3:5] == ["--kind",$harness] and
     ([.[] | select(. == "--")] | length) == 1 and
-    (index($model) != null) and (index($effort) != null)' "$HERDR_LOG.jsonl" >/dev/null
+    (index("--model")) as $m | $m != null and .[$m+1] == $model and
+    (index(if $harness == "pi" then "--thinking" else "--effort" end)) as $e |
+    $e != null and .[$e+1] == $effort and
+    (if $harness == "pi" then (index("--provider")) as $p |
+      $p != null and .[$p+1] == "magpie" and index("--approve") != null
+     else index("--dangerously-skip-permissions") != null end)' "$HERDR_LOG.jsonl" >/dev/null
   if [[ "$harness" == claude ]]; then
     jq -se --arg root "$(cd "$T/project" && pwd -P)" '
       [.[] | select(.[0:2] == ["agent","start"])] | last |
       (index("--add-dir")) as $i | $i != null and .[$i+1] == $root' "$HERDR_LOG.jsonl" >/dev/null
   fi
-  echo "PASS installed $agent uses $harness and fixed model/effort"
+  echo "PASS installed $agent uses $harness and fixed provider/model/effort/permissions"
+done
+# Actual template rules are validated through the public auto-dispatch path.
+cp "$ROOT/templates/dispatch-rules.json" "$T/project/qwbuddy/dispatch-rules.json"
+cp "$T/project/qwbuddy/dispatch-rules.json" "$T/roster-rules.json"
+jq -e '.agents.review == ["pi-astra-low"] and
+  (.rules[] | select(.worker == "review") | .when | contains("astra 时改用 pi-sol-high")) and
+  ([.agents[][]] | index("claude-opus-medium") | not)' "$T/roster-rules.json" >/dev/null
+roster_response() {
+  jq -n --arg choice "$1" --slurpfile rules "$T/roster-rules.json" '
+    ($rules[0].rules | to_entries | map("rule_" + ((.key + 1) | tostring)) + ["default"]) as $keys |
+    {model:"fake",answers:{rule:{choice:$choice,confidence:0.9,
+      probabilities:(reduce $keys[] as $k ({}; .[$k] = (if $k == $choice then 0.9 else 0.1 / ($keys | length - 1) end)))}}}' > "$FAKE_RESPONSE"
+}
+for mapping in 'default pi-sol-high' 'rule_1 pi-astra-high' 'rule_4 pi-astra-low' 'rule_5 claude-fable-low'; do
+  read -r choice expected <<< "$mapping"
+  roster_response "$choice"
+  id="roster-$choice"
+  task "$id"
+  TYPESAFE_API_KEY=fake-key run "$id" auto
+  test "$(worker "$id")" = "$expected"
+  echo "PASS roster auto $choice selects $expected"
+done
+jq '.agents_disabled=["pi-astra-high"]' "$T/roster-rules.json" > "$T/project/qwbuddy/dispatch-rules.json"
+roster_response rule_1
+task roster-fallback
+TYPESAFE_API_KEY=fake-key run roster-fallback auto
+test "$(worker roster-fallback)" = claude-fable-low
+echo 'PASS roster disabled architect falls through to Fable low'
+jq '.agents_disabled=["pi-sol-high"]' "$T/roster-rules.json" > "$T/project/qwbuddy/dispatch-rules.json"
+roster_response default
+task roster-disabled
+TYPESAFE_API_KEY=fake-key reject_unchanged roster-disabled 2 '全部候选不可用'
+echo 'PASS roster singleton disabled refuses without side effects'
+cp "$T/roster-rules.json" "$T/project/qwbuddy/dispatch-rules.json"
+printf '%s\n' '{"schemaVersion":6,"providers":[{"provider":"pi","accountKey":"magpie","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$T/roster-quota.json"
+cat > "$T/fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == '--json --no-credential-refresh' ]] || exit 2
+cat "$QUOTA_AXI_SNAPSHOT"
+SH
+chmod +x "$T/fakebin/quota-axi"
+task roster-quota
+QUOTA_AXI_SNAPSHOT="$T/roster-quota.json" TYPESAFE_API_KEY=fake-key reject_unchanged roster-quota 2 'quota weekly 0%'
+echo 'PASS roster singleton exhausted refuses without side effects'
+for removed in codex devin; do
+  task "removed-$removed"
+  before="$(shasum "$T/project/tasks/2099-01-01-removed-$removed.md")"
+  : > "$HERDR_LOG"
+  if run "removed-$removed" "$removed"; then echo "FAIL removed $removed dispatched" >&2; exit 1; fi
+  grep -q '合法工人' "$T/err"
+  test "$(shasum "$T/project/tasks/2099-01-01-removed-$removed.md")" = "$before"
+  test ! -s "$HERDR_LOG"
+  echo "PASS roster removed $removed refuses without side effects"
 done
 
 # 冻结06第四场景：仅意图/规格/必要约束外发；技术模糊不用用户决策，权限缺口不default扩权。
@@ -405,7 +464,7 @@ cat >> "$T/project/tasks/2099-01-01-narrow.md" <<'MD'
 working: SECRET-HISTORY-SENTINEL
 延续历史：CONTINUATION-SENTINEL
 MD
-jq '.answers.rule.confidence=0.4 | .answers.rule.probabilities={rule_1:0.4,default:0.6}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
+jq '.answers.rule.choice="rule_1" | .answers.rule.confidence=0.4 | .answers.rule.probabilities={rule_1:0.4,default:0.6}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"
 cp "$T/project/qwbuddy/workers.sh" "$T/pinned-before"
 TYPESAFE_API_KEY=fake-key run narrow auto
 test "$(worker narrow)" = pi
@@ -413,7 +472,7 @@ cmp -s "$T/pinned-before" "$T/project/qwbuddy/workers.sh"
 jq -e '.state.task.brief | contains("原话：修复接口") and contains("只改api.sh") and contains("没有联网部署授权") and (contains("SENTINEL") | not) and (contains("dispatch:") | not) and (contains("qwb-collab-") | not)' "$FAKE_REQUEST" >/dev/null
 echo 'PASS user_路由模糊不扩权：窄输入无累计日志，技术ambiguous默认继续，指定模型/effort配置不变'
 # 同一低置信度候选若缺权限，不得落默认；clear也不能越权。
-printf '%s\n' '{"rules":[{"when":"deploy","worker":"codex","requires":["deploy"]}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"
+printf '%s\n' '{"rules":[{"when":"deploy","worker":"claude","requires":["deploy"]}],"default":{"worker":"pi"}}' > "$T/project/qwbuddy/dispatch-rules.json"
 for confidence in 0.4 0.9; do
   task permission-gap
   jq --argjson confidence "$confidence" '.answers.rule.confidence=$confidence | .answers.rule.probabilities={rule_1:$confidence,default:(1-$confidence)}' "$FAKE_RESPONSE" > "$T/next" && mv "$T/next" "$FAKE_RESPONSE"

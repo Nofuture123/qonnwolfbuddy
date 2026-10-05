@@ -288,14 +288,14 @@ print('Thu Oct  1 00:00:00 2099')
     # 模板真实角色入口与门禁入口核对同一档位；固定模型ID的斜杠保留。
     workers.write_text((root/'templates/workers.sh').read_text())
     config=p/'qwbuddy/config.sh'
-    config.write_text(config.read_text()+"\nQWB_WORKERS='pi-sol-high pi-glm-high'\n")
-    # 只取需要的两名工人，家族声明全部保留；其他工人不在此夹具QWB_WORKERS内。
-    workers.write_text('\n'.join(line for line in workers.read_text().splitlines() if not line.startswith('qwb_worker ') or line.split()[1] in ('pi-sol-high','pi-glm-high'))+'\n')
-    for worker,provider,model in [('pi-sol-high','magpie','codex/gpt-6.1-sol'),('pi-glm-high','zai-coding-cn','glm-5.3')]:
+    config.write_text(config.read_text()+"\nQWB_WORKERS='pi-sol-high pi-astra-high pi-astra-low'\n")
+    # 只取需要的三名Pi工人，家族声明全部保留；其他工人不在此夹具QWB_WORKERS内。
+    workers.write_text('\n'.join(line for line in workers.read_text().splitlines() if not line.startswith('qwb_worker ') or line.split()[1] in ('pi-sol-high','pi-astra-high','pi-astra-low'))+'\n')
+    for worker,provider,model,effort in [('pi-sol-high','magpie','codex/gpt-6.1-sol','high'),('pi-astra-high','magpie','codex/gpt-6-astra','high'),('pi-astra-low','magpie','codex/gpt-6-astra','low')]:
         got=call('qwb-role.sh','start','--actor',worker,'--role','门禁','--worker',worker,'--dir',str(p))
-        assert (got['provider'],got['model'],got['effort'],got['actual_model'])==(provider,model,'high',provider+'/'+model),got
+        assert (got['provider'],got['model'],got['effort'],got['actual_model'])==(provider,model,effort,provider+'/'+model),got
         gate=subprocess.run(['/bin/bash','-c','. "$1"; qwb_gate_profile "$2" "$3"','test',str(root/'bin/qwb-lib.sh'),str(p),worker],env=env,capture_output=True,text=True)
-        assert gate.returncode==0 and json.loads(gate.stdout)==dict(provider=provider,model=model,effort='high'),gate.stderr
+        assert gate.returncode==0 and json.loads(gate.stdout)==dict(provider=provider,model=model,effort=effort),gate.stderr
         call('qwb-control.sh','exit','--actor',worker,'--expect-gen','1')
         call('qwb-role.sh','retire','--actor',worker,'--expect-gen','1')
         print('PASS 模板'+worker+'真实角色start与gate_profile均匹配provider/model/effort')

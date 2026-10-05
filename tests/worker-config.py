@@ -98,6 +98,26 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
     check(p.returncode == 0, f"init failed: {p.stderr}")
     config = project / "qwbuddy/config.sh"
     workers = project / "qwbuddy/workers.sh"
+    expected_roster = "pi claude pi-sol-high pi-astra-high pi-astra-low claude-opus-medium claude-fable-low"
+    p = call(["bash", "-c", 'source "$1"; printf "%s" "$QWB_WORKERS"', "fixture", str(config)], env)
+    check(p.returncode == 0 and p.stdout == expected_roster, "new installation worker roster differs")
+    declarations = [line.split() for line in workers.read_text().splitlines() if line.startswith("qwb_worker ")]
+    check([line[1] for line in declarations] == expected_roster.split()
+          and all(line[2:5] in (["herdr", "pi", "--"], ["herdr", "claude", "--"]) for line in declarations),
+          "new installation has a removed harness or malformed declaration")
+    check(all("--provider magpie" in " ".join(line) for line in declarations if line[3] == "pi"),
+          "new Pi profile is not routed through magpie")
+    families = [line for line in workers.read_text().splitlines() if line.startswith("qwb_family ")]
+    check(families == ["qwb_family magpie/codex/gpt-6.1-sol gpt", "qwb_family magpie/codex/gpt-6-astra gpt",
+                       "qwb_family anthropic/claude-opus-5-5 claude", "qwb_family anthropic/claude-fable-5-1 claude"],
+          "new installation family keys differ")
+    import re
+    for doc in project.rglob("*.md"):
+        content = doc.read_text().replace("codex/gpt-6.1-sol", "Sol").replace("codex/gpt-6-astra", "Astra")
+        check(not re.search(r"\b(?:codex|devin|omp|cmdc)\b", content, re.I), f"removed tool in installed guide: {doc}")
+    check(json.loads((project / "qwbuddy/dispatch-rules.json").read_text()) ==
+          json.loads((ROOT / "templates/dispatch-rules.json").read_text()), "new install routing differs")
+    print("PASS new installation has seven workers, two tools, Magpie Pi, four family keys and current guides/rules")
     ticket = project / "tasks/2099-01-01-config.md"
     config.write_text(config.read_text() + '\nQWB_WORKERS="pi cmd"\nQWB_AGENT_START_MS=300\n')
 
@@ -113,6 +133,32 @@ Path(os.environ["QWB_STUB_ARGV"]).write_text(json.dumps(sys.argv[1:]))
         if here:
             args.append("--here")
         return call(args, env)
+
+    # Older installed declarations and routing survive ordinary upgrade byte for byte.
+    rules = project / "qwbuddy/dispatch-rules.json"
+    legacy_conf = config.read_bytes()
+    config.write_text('QWB_WORKERS="codex devin"\nQWB_AGENT_START_MS=300\n')
+    workers.write_text("qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox\n"
+                       "qwb_worker devin herdr --permission-mode dangerous --respect-workspace-trust false --model swe-2-high\n")
+    rules.write_text('{"rules":[{"when":"legacy","worker":"codex"}],"default":{"worker":"devin"}}\n')
+    legacy_bytes = [path.read_bytes() for path in (config, workers, rules)]
+    legacy_argv = {}
+    for name in ("codex", "devin"):
+        reset()
+        p = run(name)
+        check(p.returncode == 0, f"legacy before upgrade failed: {p.stderr}")
+        legacy_argv[name] = [json.loads(x) for x in log.read_text().splitlines()
+                             if json.loads(x)[:2] == ["agent", "start"]]
+    p = call(["bash", str(ROOT / "bin/qwb-init.sh"), str(project)], env)
+    check(p.returncode == 0 and legacy_bytes == [path.read_bytes() for path in (config, workers, rules)],
+          "ordinary upgrade overwrote legacy worker config or routing")
+    for name in ("codex", "devin"):
+        reset()
+        p = run(name)
+        starts = [json.loads(x) for x in log.read_text().splitlines() if json.loads(x)[:2] == ["agent", "start"]]
+        check(p.returncode == 0 and starts == legacy_argv[name], f"legacy {name} upgrade changed start argv")
+    config.write_bytes(legacy_conf)
+    print("PASS legacy codex/devin workers and dispatch rules survive upgrade with identical start argv")
 
     literal = "$(touch " + str(marker) + ")"
     workers.write_text("qwb_worker pi herdr 'space value' '' '" + literal + "'\n"

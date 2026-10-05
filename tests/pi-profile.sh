@@ -54,7 +54,7 @@ print(json.dumps({'result':r}))
     config.write_text(config.read_text()+"\nQWB_GATE_FAST='true'\nQWB_GATE_FULL='true'\n")
     assert 'LINT PASS' in run(['/bin/bash',p/'qwbuddy/bin/qwb-lint.sh','--project',p]).stdout
     registry=run(['/bin/bash','-c','. "$1"; . "$2"; qwb_load_workers "$3"; printf "%s\\n" "${QWB_CONFIG_NAMES[@]}"','test',p/'qwbuddy/bin/qwb-lib.sh',config,p]).stdout.splitlines()
-    assert 'pi-sol-high' in registry and len(registry)==10 and not any('/' in w for w in registry),registry
+    assert 'pi-sol-high' in registry and len(registry)==7 and not any('/' in w for w in registry),registry
     task=p/'tasks/2099-profile.md'
     body='# profile\nstate: blocked\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 20\n\n## 1. 验收场景\n### user_正常\nGiven 工人配置\nWhen 派发\nThen 参数保真\n### user_失败\nGiven 未知\nWhen 核对\nThen 拒绝\n'
     task.write_text(body);log.write_text('')
@@ -68,6 +68,20 @@ print(json.dumps({'result':r}))
     dispatch=json.loads(run(['/bin/bash',p/'qwbuddy/bin/qwb-dispatch.sh',task,'--project',p,'--json']).stdout)
     assert dispatch['default_worker']=='pi-sol-high' and log.read_bytes()==before,dispatch
     print('PASS 新装sol唯一声明/QWB_WORKERS、真实run逐项argv、lint与dispatch候选清单均通过且家族不充当工人')
+    for key,wanted in [('magpie/codex/gpt-6.1-sol','gpt'),('magpie/codex/gpt-6-astra','gpt'),('anthropic/claude-opus-5-5','claude'),('anthropic/claude-fable-5-1','claude')]:
+        assert lib('qwb_model_family',p,key).stdout.strip()==wanted
+    assert sum(line.startswith('qwb_family ') for line in workers.read_text().splitlines())==4
+    # 旧多渠道quota/family兼容夹具自行声明，不依赖新模板带GLM或其他工具。
+    config.write_text(config.read_text()+"\nQWB_WORKERS=\"$QWB_WORKERS pi-glm-high\"\n")
+    workers.write_text(workers.read_text()+'qwb_worker pi-glm-high herdr pi -- --approve --provider zai-coding-cn --model glm-5.3 --thinking high\n'
+                       'qwb_family zai-coding-cn/glm-5.3 glm\n'
+                       'qwb_family anthropic/claude-fable-5 claude\n'
+                       'qwb_family openai-codex/gpt-6-sol gpt\n'
+                       'qwb_family google-antigravity/gemini-3.1-pro gemini\n'
+                       'qwb_family devin/swe-2-high swe\n'
+                       'qwb_family openai-codex/gpt-6.1-sol gpt\n'
+                       'qwb_family openai-codex/gpt-6-astra gpt\n'
+                       'qwb_family anthropic/claude-opus-4-6 claude\n')
     # 真dispatch额度核对：两种显式渠道都不能从model首段/默认账户取宽松余量。
     quota=tmp/'quota.json';quota_calls=tmp/'quota-curl-calls'
     (stub/'quota-axi').write_text("#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\nprint(Path(os.environ['PROFILE_QUOTA']).read_text())\n")
@@ -98,11 +112,11 @@ print('200',end='')
         assert lib('qwb_model_family',p,key).stdout.strip()==wanted
     key='magpie/'+'codex/'+'gpt-6.1-sol'
     for extra in ['', 'qwb_family '+key+' gpt\nqwb_family '+key+' gpt\n','qwb_family '+key+' pi\n','qwb_family '+key+' unknown\n','qwb_family '+key+' bogus\n','qwb_family '+key+' gpt extra\n']:
-        workers.write_bytes(original.split(b'qwb_family ')[0]+extra.encode())
+        workers.write_bytes(b''.join(line for line in original.splitlines(keepends=True) if not line.startswith(b'qwb_family '))+extra.encode())
         assert lib('qwb_model_family',p,key).stdout.strip()=='unknown',extra
         run(['/bin/bash','-c','. "$1"; . "$2"; qwb_load_workers "$3"','test',root/'bin/qwb-lib.sh',config,p])
     workers.write_bytes(original)
-    print('PASS 模板每个具名模型与原三项家族来自完整键声明；缺失/重复/非法/多参数均unknown，普通加载不拒绝')
+    print('PASS 模板四个模型与显式旧兼容家族来自完整键声明；缺失/重复/非法/多参数均unknown，普通加载不拒绝')
 
     # 真起点安装再升级；只读git archive获取旧安装器依赖，所有文件仍在本scope。
     baseline=tmp/'baseline';baseline.mkdir()

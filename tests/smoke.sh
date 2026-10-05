@@ -90,8 +90,23 @@ cp -R "$TMP/qwbuddy" "$TMP/tasks" "$TMP/.claude" "$TMP/.pi" \
   "$TMP/.gitignore" "$TMP/AGENTS.md" "$TMP/CLAUDE.md" "$GOLDEN/" \
   && python3 -B "$ROOT/tests/smoke-install.py" snapshot "$GOLDEN" "$GOLDEN_MANIFEST" \
   || bad "黄金安装快照准备失败"
+# Compatibility fixtures declare the removed tools themselves; the golden installation stays untouched.
+LEGACY_WORKERS="$TMP/legacy-workers.sh"
+cat > "$LEGACY_WORKERS" <<'SH'
+qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox
+qwb_worker pi herdr --approve
+qwb_worker claude herdr --dangerously-skip-permissions
+qwb_worker devin herdr devin -- --permission-mode dangerous --respect-workspace-trust false --model swe-2-high
+qwb_worker omp herdr --auto-approve
+SH
+legacy_install() {
+  printf '\nQWB_WORKERS="codex pi claude devin omp"\n' >> "$1/qwbuddy/config.sh"
+  cp "$LEGACY_WORKERS" "$1/qwbuddy/workers.sh"
+}
+legacy_install "$TMP"
 clone_install() {
-  python3 -B "$ROOT/tests/smoke-install.py" copy "$GOLDEN" "$TMP" "$1"
+  python3 -B "$ROOT/tests/smoke-install.py" copy "$GOLDEN" "$TMP" "$1" || return
+  legacy_install "$1"
 }
 
 
@@ -119,8 +134,17 @@ jev_roles_smoke() (
   JR="$TMP/jev-roles"
   mkdir -p "$JR/qwbuddy" "$JR/bin" "$JR/tasks"
   cp "$ROOT/templates/config.sh" "$JR/qwbuddy/config.sh"
-  printf 'QWB_WORKERS="$QWB_WORKERS sol sol-herdr"\n' >> "$JR/qwbuddy/config.sh"
+  printf 'QWB_WORKERS="$QWB_WORKERS codex devin omp codex-sol-high claude-fable-high pi-glm-high omp-gemini sol sol-herdr"\n' >> "$JR/qwbuddy/config.sh"
   cp "$ROOT/templates/workers.sh" "$JR/qwbuddy/workers.sh"
+  cat >> "$JR/qwbuddy/workers.sh" <<'SH'
+qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox
+qwb_worker devin herdr --model swe-2-high
+qwb_worker omp herdr --auto-approve
+qwb_worker codex-sol-high herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high
+qwb_worker claude-fable-high herdr claude -- --model claude-fable-5-1 --effort high
+qwb_worker pi-glm-high herdr pi -- --provider zai-coding-cn --model glm-5.3 --thinking high
+qwb_worker omp-gemini herdr omp -- --model google-antigravity/gemini-3.1-pro --thinking high
+SH
   printf 'qwb_worker sol pane-run codex --model gpt-6-sol -c model_reasoning_effort=medium\nqwb_worker sol-herdr herdr codex -- --model gpt-6-sol -c model_reasoning_effort=high\n' >> "$JR/qwbuddy/workers.sh"
   cat > "$JR/bin/quota-axi" <<'SH'
 #!/usr/bin/env bash
@@ -201,10 +225,9 @@ PY
   [[ -s "$JR/port" ]] || { bad "JEV 假 server 未就绪"; exit 1; }
   JR_BASE="http://127.0.0.1:$(cat "$JR/port")"
   # 旧名 fixture 保留旧格式回归；下方另验实际具名模板，不把旧名放回产品模板。
-  jq '.agents |= with_entries(.value |= map(
-    if . == "codex-sol-high" then "codex" elif . == "claude-fable-high" then "claude"
-    elif . == "pi-glm-high" then "pi" elif . == "omp-gemini" then "omp" else . end))' \
-    "$ROOT/templates/dispatch-rules.json" > "$JR/legacy-rules.json"
+  cat > "$JR/legacy-rules.json" <<'JSON'
+{"agents":{"architect":["codex","claude","pi"],"cross_module":["codex","claude","pi"],"high_risk":["codex","pi"],"planning":["pi","codex"],"implement":["pi","codex","devin","omp"]},"agents_disabled":[],"rules":[{"when":"复杂架构：架构设计、核心抽象、跨仓协议","worker":"architect"},{"when":"跨模块改动：一次改动同时穿过多个模块或层","worker":"cross_module"},{"when":"高风险改动：资金、安全、数据删除、生产环境","worker":"high_risk"},{"when":"纯规划：拆解、写规格、调研、不落代码","worker":"planning"},{"when":"常规实现：单模块内的实现、修复、机械改动","worker":"implement"}],"default":{"worker":"implement"}}
+JSON
   jr_reset() { cp "$JR/legacy-rules.json" "$JR/qwbuddy/dispatch-rules.json"; }
   jr_edit() {
     jq "$1" "$JR/qwbuddy/dispatch-rules.json" > "$JR/edited.json" &&
@@ -306,13 +329,16 @@ PY
   cp "$ROOT/templates/dispatch-rules.json" "$JR/qwbuddy/dispatch-rules.json"
   printf '{"schemaVersion":5,"providers":[]}' > "$JR/quota.json"
   jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "codex-sol-high" and .role == "cross_module" and .default_worker == "pi-glm-high"' <<<"$JR_OUT" >/dev/null; } \
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "pi-astra-high" and .role == "cross_module" and .default_worker == "pi-sol-high"' <<<"$JR_OUT" >/dev/null; } \
     && ok "JEV 实际模板按具名 agent 路由" || bad "JEV 模板退化为 harness 名"
-  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"pi","accountKey":"magpie","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
+  # 此额度夹具给default一个独立可用工人，避免共用magpie lane的Sol默认先耗尽。
+  jr_edit '.agents.implement = ["claude"]'
   jr_run --json
-  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "claude-fable-high"' <<<"$JR_OUT" >/dev/null; } \
+  { [[ "$JR_RC" -eq 0 ]] && jq -e '.worker == "claude-fable-low"' <<<"$JR_OUT" >/dev/null; } \
     && ok "JEV 具名 agent 用显式 harness+model 绑定 quota" || bad "JEV 把 agent 名当 quota provider"
   jr_reset
+  printf '%s' '{"schemaVersion":6,"providers":[{"provider":"codex","accountKey":"codex-home","windows":[{"kind":"weekly","percentRemaining":0}]}]}' > "$JR/quota.json"
   jr_edit '.agents.cross_module = ["sol-herdr", "claude"]'
   jr_run --json
   jq -e '.worker == "claude"' <<<"$JR_OUT" >/dev/null \
@@ -520,7 +546,7 @@ echo "== 4. qwb-status.sh 对空账本 =="
 ( cd "$TMP" && bash qwbuddy/bin/qwb-status.sh ) >/dev/null && ok "status 空账本退出 0" || bad "status 空账本非 0"
 
 echo "== 5. config.sh 可被 source 且值正确（G3）=="
-if ( . "$TMP/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "codex pi claude devin omp codex-sol-high claude-fable-high pi-glm-high pi-sol-high omp-gemini" && -z "${QWB_WORKER_LAUNCH:-}" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
+if ( . "$GOLDEN/qwbuddy/config.sh"; [[ "$QWB_WORKERS" == "pi claude pi-sol-high pi-astra-high pi-astra-low claude-opus-medium claude-fable-low" && -z "${QWB_WORKER_LAUNCH:-}" && -z "$QWB_WORKSPACE" && "$QWB_AGENT_START_MS" == "30000" && "$QWB_WAKE_INTERVAL_MS" == "120000" ]] ); then
   ok "config.sh source 后启动方式默认空、QWB_WORKSPACE 默认未声明且既有配置值正确"
 else
   bad "config.sh source 失败或配置值不对"
@@ -957,7 +983,7 @@ echo "== 17. R1：qwb-worktree.sh 端到端（临时 git 项目）=="
 GP="$TMP/gitp"
 mkdir -p "$GP/tasks" "$GP/.worktrees" "$GP/qwbuddy"
 cp "$TMP/qwbuddy/config.sh" "$GP/qwbuddy/config.sh"
-cp "$ROOT/templates/workers.sh" "$GP/qwbuddy/workers.sh"
+cp "$TMP/qwbuddy/workers.sh" "$GP/qwbuddy/workers.sh"
 git -C "$GP" init -q
 git -C "$GP" -c user.email=t@t.t -c user.name=t commit -qm init --allow-empty
 WTB="$TMP/qwbuddy/bin/qwb-worktree.sh"
@@ -1315,22 +1341,22 @@ ad_argv() { # $1=workers.sh $2=工人名 → 该工人声明的启动方式与�
     # shellcheck source=/dev/null
     . "$1" )
 }
-ad_expect=$'herdr\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions'
-# S1 新装：claude 行 argv 恰为 --add-dir <物理路径> + 模板权限参数；其余非 Claude 行与模板字节一致；两条 Claude 行各有一处 --add-dir
+ad_expect=$'herdr\nclaude\n--\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions\n--model\nclaude-opus-5-5\n--effort\nmedium'
+# S1 新装：三条新式 Claude 行各注入一次目录授权，其余工人行与模板字节一致。
 { [[ "$(ad_argv "$AD/qwbuddy/workers.sh" claude)" == "$ad_expect" ]] \
    && grep -q '^写入：qwbuddy/workers.sh claude 行加 --add-dir ' "$TMP/ad-init.out" \
-   && [[ "$(grep -c -- '--add-dir' "$AD/qwbuddy/workers.sh")" == "2" ]]; } \
-  && ok "S1 新装 workers.sh：旧式和具名 Claude 行各注入一次 --add-dir" \
+   && [[ "$(grep -c -- '--add-dir' "$AD/qwbuddy/workers.sh")" == "3" ]]; } \
+  && ok "S1 新装 workers.sh：三条新式 Claude 行各注入一次 --add-dir" \
   || { bad "S1 新装 claude 行不对："; grep claude "$AD/qwbuddy/workers.sh"; cat "$TMP/ad-init.out"; }
 ad_same=1
-for w in codex pi devin omp codex-sol-high pi-glm-high pi-sol-high omp-gemini; do
+for w in pi pi-sol-high pi-astra-high pi-astra-low; do
   grep -qxF "$(grep "^qwb_worker $w " "$ROOT/templates/workers.sh")" "$AD/qwbuddy/workers.sh" || ad_same=0
 done
-{ [[ "$ad_same" -eq 1 ]] && [[ "$(grep -c '^qwb_worker ' "$AD/qwbuddy/workers.sh")" == "10" ]] \
-   && [[ "$(grep -vE '^qwb_worker (claude|claude-fable-high) ' "$AD/qwbuddy/workers.sh")" == "$(grep -vE '^qwb_worker (claude|claude-fable-high) ' "$ROOT/templates/workers.sh")" ]]; } \
+{ [[ "$ad_same" -eq 1 ]] && [[ "$(grep -c '^qwb_worker ' "$AD/qwbuddy/workers.sh")" == "7" ]] \
+   && [[ "$(grep -vE '^qwb_worker (claude|claude-opus-medium|claude-fable-low) ' "$AD/qwbuddy/workers.sh")" == "$(grep -vE '^qwb_worker (claude|claude-opus-medium|claude-fable-low) ' "$ROOT/templates/workers.sh")" ]]; } \
   && ok "S1 其余工人行与模板字节一致（只有 claude 行不同）" \
   || bad "S1 非 claude 行被改动"
-{ [[ "$(ad_argv "$AD/qwbuddy/workers.sh" claude-fable-high)" == $'herdr\nclaude\n--\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions\n--model\nclaude-fable-5\n--effort\nhigh' ]]; } \
+{ [[ "$(ad_argv "$AD/qwbuddy/workers.sh" claude-fable-low)" == $'herdr\nclaude\n--\n--add-dir\n'"$AD_P"$'\n--dangerously-skip-permissions\n--model\nclaude-fable-5-1\n--effort\nlow' ]]; } \
   && ok "具名 Claude 行：harness/分隔符保留，目录授权插入 argv 内" \
   || bad "具名 Claude 安装授权位置错误"
 # 对照：模板本身不带 --add-dir（值是装机时算的，不是写死在模板里）
@@ -1402,29 +1428,29 @@ EOF
 ad_run() { ( cd "$1" && shift && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:ad HERDR_WORKSPACE_ID=wtestW bash qwbuddy/bin/qwb-run.sh "$@" ); }
 ad_task "$AD" adtask; rm -rf "$AD/qwbuddy/.controller.lock"; : > "$STUBLOG"
 out="$(ad_run "$AD" --task adtask --worker claude --here 2>&1)"; rc=$?
-ad_json_tail() { # $1=项目根物理路径 → stub JSON 行的 argv 末 4 项恰为 ["--","--add-dir",P,"--dangerously-skip-permissions"]（P 单元素），且 -- 恰一个
+ad_json_tail() { # $1=物理项目根；argv末8项含目录授权、权限及固定model/effort，且--恰一个
   grep '^{.*"cmd":"agent start"' "$STUBLOG" | perl -MJSON::PP=decode_json -e '
     my $p = shift @ARGV; my @lines = <STDIN>; exit 1 unless @lines == 1;
-    my $a = decode_json($lines[0])->{argv}; exit 1 unless @$a >= 4;
-    my @tail = @$a[-4 .. -1];
+    my $a = decode_json($lines[0])->{argv}; exit 1 unless @$a >= 8;
+    my @tail = @$a[-8 .. -1];
     my $dashes = grep { $_ eq "--" } @$a;
-    exit(($tail[0] eq "--" && $tail[1] eq "--add-dir" && $tail[2] eq $p && $tail[3] eq "--dangerously-skip-permissions" && $dashes == 1) ? 0 : 1)' "$1"
+    exit(($tail[0] eq "--" && $tail[1] eq "--add-dir" && $tail[2] eq $p && $tail[3] eq "--dangerously-skip-permissions" && $tail[4] eq "--model" && $tail[5] eq "claude-opus-5-5" && $tail[6] eq "--effort" && $tail[7] eq "medium" && $dashes == 1) ? 0 : 1)' "$1"
 }
 { [[ "$rc" -eq 0 ]] \
-   && grep -qxF "herdr agent start qwb-adtask --kind claude --pane w93:p7 --timeout 300 -- --add-dir ${AD_P} --dangerously-skip-permissions" "$STUBLOG" \
+   && grep -qxF "herdr agent start qwb-adtask --kind claude --pane w93:p7 --timeout 300 -- --add-dir ${AD_P} --dangerously-skip-permissions --model claude-opus-5-5 --effort medium" "$STUBLOG" \
    && [[ "$(grep -c '^herdr agent start' "$STUBLOG")" == "1" ]] \
    && ad_json_tail "$AD_P"; } \
-  && ok "S3 派发：JSON argv 以 [\"--\",\"--add-dir\",P,\"--dangerously-skip-permissions\"] 结尾，P 单元素、-- 恰一个" \
+  && ok "S3 派发：JSON argv 尾部目录授权、权限、型号与档位精确一致，P 单元素、-- 恰一个" \
   || { bad "S3 透传不对（rc=${rc}）"; printf '%s\n' "$out"; grep 'agent start' "$STUBLOG"; }
 
 # S4 路径含空格：--add-dir 值是一个 Bash 实参（不裂开、不丢引号），派发照常透传
 ADS="$TMP/my project"; mkdir -p "$ADS"
 bash "$ROOT/bin/qwb-init.sh" "$ADS" >/dev/null 2>&1 || bad "S4 含空格路径 init 失败"
 ADS_P="$(cd "$ADS" && pwd -P)"
-{ [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude)" == $'herdr\n--add-dir\n'"$ADS_P"$'\n--dangerously-skip-permissions' ]] \
-   && [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude | wc -l | tr -d ' ')" == "4" ]] \
+{ [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude)" == $'herdr\nclaude\n--\n--add-dir\n'"$ADS_P"$'\n--dangerously-skip-permissions\n--model\nclaude-opus-5-5\n--effort\nmedium' ]] \
+   && [[ "$(ad_argv "$ADS/qwbuddy/workers.sh" claude | wc -l | tr -d ' ')" == "10" ]] \
    && [[ "$ADS_P" == *" "* ]]; } \
-  && ok "S4 含空格项目根：--add-dir 值为一个实参、恰 4 项 argv" \
+  && ok "S4 含空格项目根：--add-dir 值为一个实参、恰 10 项新式 argv" \
   || { bad "S4 含空格路径实参裂开或丢失："; grep claude "$ADS/qwbuddy/workers.sh"; }
 printf '%s\n' 'QWB_GATE_FAST="true"' 'QWB_GATE_FULL="true"' 'QWB_AGENT_START_MS=300' >> "$ADS/qwbuddy/config.sh"
 ad_task "$ADS" adspace; : > "$STUBLOG"
@@ -1436,7 +1462,7 @@ out="$(ad_run "$ADS" --task adspace --worker claude --here 2>&1)"; rc=$?
 ADQ="$TMP/it's proj"; mkdir -p "$ADQ"
 bash "$ROOT/bin/qwb-init.sh" "$ADQ" >/dev/null 2>&1 || bad "S4b 含单引号路径 init 失败"
 ADQ_P="$(cd "$ADQ" && pwd -P)"
-{ [[ "$(ad_argv "$ADQ/qwbuddy/workers.sh" claude)" == $'herdr\n--add-dir\n'"$ADQ_P"$'\n--dangerously-skip-permissions' ]] \
+{ [[ "$(ad_argv "$ADQ/qwbuddy/workers.sh" claude)" == $'herdr\nclaude\n--\n--add-dir\n'"$ADQ_P"$'\n--dangerously-skip-permissions\n--model\nclaude-opus-5-5\n--effort\nmedium' ]] \
    && grep -q -- "--add-dir '.*it'\\\\''s proj' " "$ADQ/qwbuddy/workers.sh" \
    && bash -n "$ADQ/qwbuddy/workers.sh"; } \
   && ok "S4b 含单引号项目根：workers.sh 用 '\\'' 转义、bash -n 过、解析回原路径为一个实参" \
@@ -3870,21 +3896,21 @@ out="$(mp_run --task mpfine --worker codex --here 2>&1)"; rc=$?
 
 # 51g 模板默认值：可被 source 与 bash -n 接受、被 lint 认作活键，且真派发时按工人生效
 mp_task mptmpl
-# 本组是旧工人表兼容夹具；具名三元组由 optional-routing/§86 单独验证。
-grep -vE '^qwb_worker (codex-sol-high|claude-fable-high|pi-glm-high|pi-sol-high|omp-gemini) ' "$ROOT/templates/workers.sh" > "$MPX/qwbuddy/workers.sh"
-printf '%s\n' 'qwb_worker cmd herdr' >> "$MPX/qwbuddy/workers.sh"
+cp "$ROOT/templates/workers.sh" "$MPX/qwbuddy/workers.sh"
+cp "$ROOT/templates/config.sh" "$MPX/qwbuddy/config.sh"
+printf 'QWB_AGENT_START_MS=300\n' >> "$MPX/qwbuddy/config.sh"
 bash -n "$ROOT/templates/config.sh" && bash -n "$ROOT/templates/workers.sh" \
   && ok "bash -n config.sh / workers.sh 退出 0" || bad "工人配置模板语法错误"
-if grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$ROOT/templates/workers.sh" \
-  && grep -qxF 'qwb_worker claude herdr --dangerously-skip-permissions' "$ROOT/templates/workers.sh" \
-  && grep -qxF 'qwb_worker devin herdr devin -- --permission-mode dangerous --respect-workspace-trust false --model swe-2-high' "$ROOT/templates/workers.sh" \
-  && grep -qxF 'qwb_worker omp herdr --auto-approve' "$ROOT/templates/workers.sh" \
-  && grep -qxF 'qwb_worker pi herdr --approve' "$ROOT/templates/workers.sh"; then
-  ok "模板默认参数与票 §0 一致（保留旧名兼容，devin 固定模型与信任参数）"
+if grep -qxF 'qwb_worker pi herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker claude herdr claude -- --dangerously-skip-permissions --model claude-opus-5-5 --effort medium' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker pi-astra-high herdr pi -- --approve --provider magpie --model codex/gpt-6-astra --thinking high' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker pi-astra-low herdr pi -- --approve --provider magpie --model codex/gpt-6-astra --thinking low' "$ROOT/templates/workers.sh" \
+  && grep -qxF 'qwb_worker claude-fable-low herdr claude -- --dangerously-skip-permissions --model claude-fable-5-1 --effort low' "$ROOT/templates/workers.sh"; then
+  ok "模板默认参数与harness-roster工人表一致"
 else
   bad "模板默认参数与票不符"
 fi
-grep -qxF 'qwb_worker codex herdr --dangerously-bypass-approvals-and-sandbox' "$TMP/qwbuddy/workers.sh" \
+grep -qxF 'qwb_worker pi herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high' "$GOLDEN/qwbuddy/workers.sh" \
   && ok "qwb-init 装出的 workers.sh 带默认权限参数" || bad "安装的 workers.sh 缺默认参数"
 # The repository has not changed since §25; preserve its output and status.
 lintout="$ROOT_LINT_OUT"; rc=$ROOT_LINT_RC
@@ -3893,11 +3919,12 @@ lintout="$ROOT_LINT_OUT"; rc=$ROOT_LINT_RC
   && ok "lint 过且「config 无死键」PASS" \
   || { bad "lint 未过或无死键检查 PASS（rc=${rc}）"; printf '%s\n' "$lintout"; }
 mp_pre
-out="$(mp_run --task mptmpl --worker codex --here 2>&1)"; rc=$?
+out="$(mp_run --task mptmpl --worker pi --here 2>&1)"; rc=$?
 { [[ "$rc" -eq 0 ]] \
-   && grep -qxF 'herdr agent start qwb-mptmpl --kind codex --pane w93:p7 --timeout 300 -- --dangerously-bypass-approvals-and-sandbox' "$STUBLOG"; } \
-  && ok "用模板默认值真派发：codex 拿到自己的最高权限参数（rc=${rc}）" \
+   && grep -qxF 'herdr agent start qwb-mptmpl --kind pi --pane w93:p7 --timeout 300 -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high' "$STUBLOG"; } \
+  && ok "用模板默认值假派发：pi 拿到模型、档位与最高权限参数（rc=${rc}）" \
   || { bad "模板默认值派发不对（rc=${rc}）"; printf '%s\n' "$out"; grep '^herdr agent start' "$STUBLOG"; }
+printf 'QWB_WORKERS="codex claude devin omp pi cmd"\n' >> "$MPX/qwbuddy/config.sh"
 echo "== 52. 派发前预置目录信任（trust-preseed）=="
 # 场景（票 §1）：claude 写 ~/.claude.json（保留原有项目、幂等）｜codex 追加 ~/.codex/config.toml
 # 块（原内容不变、不重复追加）｜.claude.json 非法 → stderr 一行警告、文件不动、派发照常 rc=0。
@@ -3981,7 +4008,7 @@ for nm in $dargs; do
   for w in $dworkers; do [[ "$nm" == "$w" ]] && { inself=1; break; }; done
   [[ "$inself" -eq 1 ]] || miss="${miss} ${nm}"
 done
-{ [[ -n "$dworkers" && -z "$miss" && "$(printf '%s' "$dworkers" | wc -w | tr -d ' ')" == "10" ]]; } \
+{ [[ -n "$dworkers" && -z "$miss" && "$(printf '%s' "$dworkers" | wc -w | tr -d ' ')" == "7" ]]; } \
   && ok "默认 workers.sh 的每个工人都在 QWB_WORKERS 且声明唯一" \
   || bad "默认 workers.sh 含未知或重复工人:${miss}"
 
