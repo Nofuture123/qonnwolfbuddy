@@ -309,6 +309,38 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 `qonnwolf-sites`（原 9-27 版）、`qonnwolfmcp`、`video_analysis/class-video-analysis`（原 9-24 版）三个项目用 `bash bin/qwb-init.sh <项目>` 升级。先在本仓库临时目录里对三份安装文件的拷贝试装，确认新版能读旧式 `qwb_worker 名字 herdr 参数…` 声明后再动真项目。结果：三个项目的 15 个运行脚本与母本逐字节相同（安装器自身不装进项目）；`config.sh`、`brief-include.md`、`dispatch-rules.json` 未动；`workers.sh` 只给 claude 行加了 `--add-dir 项目根`；Pi 扩展更新，旧文件留为 `qwb-watch.ts.bak`；`qwb-status.sh` 三处 rc=0；`qwb-lint.sh` 在 sites 与 class-video-analysis 通过，在 qonnwolfmcp 有 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动），升级前的旧版 lint 同样报这一条。改动均未提交，留给各项目自己审。新增的 `pi-sol-high` 等具名工人与 `qwb_family` 声明不会自动出现在已有的 `workers.sh` 里。升级后没有在这三个项目里实际派过票。
 
+### 工具与角色调整（2026-10-05，main @ 4bdd2fd）
+
+Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 magpie）；独立审核「模型不一样即可」，不再要求换家族；角色定为主控（Claude Code opus 5.5 medium）、副主控（Claude Code opus 5.5 或 Pi astra low）、工人（Pi sol high，复杂架构 astra high 或 fable low）、门控（Pi astra low，工人是 astra 时用 sol high）、顾问（fable 或 astra high）。副主控即现有「规划」常驻职责，门控即「门禁」常驻职责，这两条路仍未在真机上跑过。
+
+本波四张票（均由 Pi magpie `codex/gpt-6.1-sol` high 执行，主控独立验收后 cherry-pick）：
+
+| 票 | 提交 | 内容 |
+|---|---|---|
+| `harness-roster` | `6cd9bbb`…`2183765` | 新装工人表只剩七个（Claude Code 与 Pi），派工规则按上述档位；说明与真机验收脚本去掉 Codex、devin、cmdc 入口 |
+| `review-model-rule` | `9929c85`、`deea7cd` | lint 第 8 节与 `gate-review` 改为「模型不同、会话不同」：取最后一个 `/` 后的型号、忽略大小写比较，同型号换渠道或换档位算同一模型；`family` 降为可选附记；原 Sol→Astra 批准不再是放行条件，也不能放行同模型 |
+| `wake-tighten` | `acbdbd4`、`4bdd2fd` | 未迁 running 票、工人未丢失、末行是 `working:` 时不叫醒；兜底时钟取票文件修改时间与最近 `wake:` 时间戳中较晚者 |
+| `runtime-ignore` | `f360ed7`、`3b99fe3`、`1dc4760` | 安装器忽略规则由 9 条补到 27 条；真机验收预置票补授权票头，新增「收尾后工作区干净且历史无票锁文件」断言 |
+
+合并后 main @ `4bdd2fd`：`bash bin/qwb-test.sh full` rc=0，859 PASS / 0 FAIL，429 秒（主控独立跑，同时在跑一轮真机验收）。
+
+本波真机验收（Herdr 0.9.3、Pi 1.0.2、Claude Code 2.1.289）：
+
+| 轮 | 候选 | 主控 | 工人 | 结果 |
+|---|---|---|---|---|
+| 8 | `2183765` | Claude Code opus 5.5 medium | Pi sol high | **通过，13 项断言全 PASS**，约 2.5 分钟。首次派发被拒一次（F50）；主控被进度行白叫醒三次（F51）；主控 `git add tasks` 误提交票锁文件后自行撤下（F49）。[记录](2026-10-05-e2e-real-claude-pi.md) |
+| 9 | `2183765` | Pi sol high | Claude Code opus 5.5 medium | 流程走通（派发、验收、合入、收尾一次成功），`host_wake` 一项断言失败：主控在处理一次进度行叫醒时工人恰好交付，没有出现「被完成行叫醒」（F51）。未在修复后重跑。[记录](2026-10-05-e2e-real-pi-claude-hostwake-fail.md) |
+| 10 | `4bdd2fd` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**。首次派发未被拒；工人三条进度行均未叫醒主控；收尾后工作区干净。派发后提示词停在 Pi 输入框未提交，主控被 30 秒兜底叫醒后补回车（F52）。[记录](2026-10-05-e2e-real-claude-pi-r2.md) |
+
+本波发现：
+
+- **F49（真机抓到，已修）** 票锁文件 `tasks/<票>.md.qwb-lock`、`qwbuddy/.supervisor.guard`、`qwbuddy/.roles/` 等运行态路径不在安装器的忽略规则里；qonnwolf-sites 与 qonnwolfmcp 的 `git status` 里都挂着未跟踪的守卫文件。
+- **F50（真机抓到，已修）** 真机验收预置票缺 `implementation-authorized:` 与 `dispatch-budget:`，主控首次派发必被拒一次。
+- **F51（已修）** 进度行叫醒：qonnwolf-sites 与 qonnwolfmcp 历史账本 95 张票 904 次叫醒，57.0% 发生在末行为 `working:` 时，17.1% 为时间兜底重叫，15.6% 为 `done:`，7.7% 为尚无状态行，2.6% 为 `blocked:` 或 `needs-decision:`。
+- **F52（真机抓到，在修）** `herdr` 启动方式在 `herdr agent prompt` 之后不确认工人开工；当天约七次 Pi 启动里两次提示词停在输入框未提交，派工脚本仍报「已派发」。`pane-run` 启动方式原有确认与补回车。票 `prompt-submit`。
+- **F53（未修）** `tests/subscribe-reap.py` 要求 2 秒内观察到事件，高负载下五次重采样都会超时而使全门 rc=1；当天两个工人各因此多跑一轮全门，单独复跑均通过。
+- 未修的小项：工人与主控在未迁旧票上都会先试 `qwb-ledger.sh append` 被拒（rc=25）再改用直接追加；`templates/roles/主控.md` 与 `bin/qwb-run.sh` 发给审核者的提示里仍有「同family」字样；派工规则的顾问档只配了 fable 一个候选。
+
 ### 未做与遗留
 
 - **F7、F8** 已迁票读缓存：没有项目在用已迁票，属提前优化，未做。
@@ -318,7 +350,8 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 - **F21** state 五值与状态行前缀的字面量仍散落多处。
 - 第 88 节（订阅回收测试）单节约 29 秒，是 smoke 现在最慢的一节。
 - `bin/qwb-wake.sh` 可见值守启动探测里的裸 `sleep 0.5` ×6（约 3 秒真等待）未动。
-- 已装过本工具的项目需要重跑安装才能拿到这些修复；旧项目的 `workers.sh` 没有 `qwb_family` 声明，走到判家族的路径时会被拒并提示补哪一行。
+- 已装过本工具的项目需要重跑安装才能拿到这些修复；三个已装项目的 `workers.sh`、`config.sh`、`dispatch-rules.json` 仍是旧工人表（含 codex），安装器不覆盖，需手工换成新表。
+- 副主控（规划）与门控（门禁）常驻职责未在真机上跑过；常驻职责只支持 Pi，Claude Code 当副主控需改 `bin/qwb-role.sh`、`bin/qwb-lib.sh`、`bin/qwb-herdr.sh`。
 
 ## 返修任务
 
