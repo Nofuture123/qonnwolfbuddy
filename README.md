@@ -4,6 +4,8 @@
 
 Q-Wolf Buddy coordinates coding agents within a repository. Markdown task ledgers record requirements and progress, Git worktrees isolate worker changes, and Herdr provides visible agent sessions. The controller dispatches work, checks results independently, arranges review, and decides whether to land changes.
 
+Five roles: controller, deputy controller (`规划`), worker (`执行者`), gatekeeper (`门禁`, coordinating review and tests), and adviser (`顾问`, consulted for major planning decisions). For the standing-role flow from intake through landing, read the installed `qwbuddy/roles/常驻流程.md` ([source](templates/roles/常驻流程.md)).
+
 ## Capabilities and limits
 
 - `qwb-run.sh` checks Given/When/Then acceptance scenarios, records their fingerprint, and dispatches a worker into a task worktree by default.

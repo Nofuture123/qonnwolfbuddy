@@ -6,7 +6,7 @@
     "planning": ["pi-sol-high"],
     "implement": ["pi-sol-high"],
     "review": ["pi-astra-low"],
-    "adviser": ["claude-fable-low"]
+    "adviser": ["claude-fable-low", "pi-astra-high"]
   },
   "agents_disabled": [],
   "rules": [

@@ -16,7 +16,7 @@ cd "$ROOT" || exit 1
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 TMPBASE="$ROOT/.qwb-tmp"
 
-# 默认 15 项：每项显式指定解释器和脚本，不用 glob；新增文件须有入口或具名豁免。
+# 默认 16 项：每项显式指定解释器和脚本，不用 glob；新增文件须有入口或具名豁免。
 # collab-land.sh 覆盖本地 land 与收尾恢复，三个 Python 回归覆盖进程夹具、TERM 清理与 socket 路径。
 DEFAULT_TESTS=(
   'bash tests/collab-ci-diagnostics.sh'
@@ -28,6 +28,7 @@ DEFAULT_TESTS=(
   'bash tests/collab-planning.sh'
   'bash tests/collab-posture.sh'
   'bash tests/collab-roles.sh'
+  'bash tests/roles-walkthrough.sh'
   'bash tests/collab-test-policy.sh'
   'bash tests/lint-scenario-stream.sh'
   'bash tests/path-canonicalization.sh'

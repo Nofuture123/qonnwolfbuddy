@@ -216,6 +216,10 @@ for doc in "${guide_docs[@]}"; do
 done
 atomic_copy "$TPL/TASK.md" "$ROOT/qwbuddy/TASK.md"
 for src in "$TPL"/roles/*.md; do atomic_copy "$src" "$ROOT/qwbuddy/roles/${src##*/}"; done
+# 旧角色名不再安装；保留已有文件（包括定制内容），由项目主人对照新文件合并。
+if [[ -e "$ROOT/qwbuddy/roles/咨询师.md" || -L "$ROOT/qwbuddy/roles/咨询师.md" ]]; then
+  echo "保留：qwbuddy/roles/咨询师.md 未改动；新入口为 顾问.md，请对照合并定制内容后自行归档旧文件"
+fi
 
 # config.sh 可能被主控填过 QWB_CONTROLLER_PANE——已存在就不覆盖；只检测到旧版配置时提示手动迁移
 OLD_CONF_NAME="config.json"

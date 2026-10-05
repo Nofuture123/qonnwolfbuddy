@@ -4,6 +4,8 @@
 
 Q-Wolf Buddy 是仓库内的 AI 编程协作流程：Markdown 主账本记录需求与进度，Git worktree 隔离工人改动，Herdr 提供可见的 Agent 会话。主控负责派工、独立验收、安排审核和决定落地。
 
+五个角色为主控、副主控（`规划`）、工人（`执行者`）、门控（`门禁`，统筹审核与测试）和顾问（重大规划问题按需咨询）。走常驻职责链时，按安装后的 `qwbuddy/roles/常驻流程.md` 完成需求登记至落地收尾（[源文档](templates/roles/常驻流程.md)）。
+
 ## 能力与边界
 
 - `qwb-run.sh` 检查 Given/When/Then 验收场景并记录指纹，默认把工人派到任务 worktree。

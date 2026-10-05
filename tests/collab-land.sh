@@ -145,6 +145,10 @@ exec "$LAND_REAL_MV" "$@"
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))
         assert (r.returncode==0)==ok,(r.returncode,r.stdout,r.stderr)
         return r
+    if os.environ['QWB_LAND_CASE']=='walkthrough':
+        # Reuse the registered process/socket fixture; execute the installed documentation.
+        exec(compile((ROOT/'tests/roles-walkthrough.py').read_text(), 'tests/roles-walkthrough.py', 'exec'))
+        raise SystemExit(0)
     call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',p)
     def ledger(verb,t,*args,**kw):return call('qwb-ledger.sh',verb,'--task',t,'--',*args,**kw)
     def read(t):

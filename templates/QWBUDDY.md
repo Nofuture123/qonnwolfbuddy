@@ -25,6 +25,24 @@
 
 含义：**别把状态只留在你脑子里**。任何重要结论都必须落进账本，否则你死了就丢了。
 
+## 2a. 五角色与入口
+
+| 角色 | 职责与汇报 | 入口与说明 |
+|---|---|---|
+| 主控 | 向使用者负责；授予范围、接成果、决定落地与收尾 | `qwb-lock.sh`、`qwb-send.sh`、`qwb-ledger.sh plan-assign/gate-assign/land-authorize`、`qwb-worktree.sh land`；[主控](roles/主控.md) |
+| 副主控 | 主控直属下属；在授权内开票、维护规格和依赖、派工；结果回主控 | `qwb-role.sh --role 规划`、`qwb-ledger.sh new/plan-revision/revise`、`qwb-run.sh`；[规划](roles/规划.md) |
+| 工人 | 即执行者；在副本实现并提交，向主账本报告；由监督按阶段交主控或门控 | `qwb-run.sh` 启动、`qwb-ledger.sh append` 回报；[执行者](roles/执行者.md) |
+| 门控 | 合并审核、门禁和测试验收职责；组织不同模型独立审核及原范围返修，结论与 claim 交还主控 | `qwb-role.sh --role 门禁`、`qwb-test.sh`、`qwb-ledger.sh gate-*`；[门禁](roles/门禁.md) |
+| 顾问 | 原咨询角色；仅在重大规划问题上按需给建议，向咨询者汇报；建议不等于授权或验收 | 按需 `qwb-run.sh` 派具名工人；[顾问](roles/顾问.md) |
+
+`规划`、`门禁`、`测试体系`、`CI` 是现有脚本职责标识，保持原值。审核者是门控组织的独立工人，维护者是工人的按需工作方式，不另加顶层角色。测试体系和 CI 专项入口仍按需使用。
+
+当前模板工人表：Pi 均为 `magpie` provider；`pi`/`pi-sol-high` 为 `codex/gpt-6.1-sol` high，`pi-astra-high` 为 `codex/gpt-6-astra` high，`pi-astra-low` 为同型号 low。Claude `claude`/`claude-opus-medium` 为 `claude-opus-5-5` medium，`claude-fable-low` 为 `claude-fable-5-1` low。`dispatch-rules.json` 的规划/常规实现用 Sol high；复杂架构、跨模块、高风险依次候选 Astra high、Fable low；审核默认 Astra low（实现者是 Astra 时改用 Sol high）；顾问依次候选 Fable low、Astra high。独立审核始终要求模型不同、原生会话不同，渠道和档位差异不算不同模型。
+
+主控宿主为 Claude Code 或 Pi；常驻副主控、门控只支持已验证的 Pi 控制，必须显式选具名工人，角色本身没有自动模型默认值。本流程选两者为 `pi-sol-high`，不启用 fast/priority。已装项目以保留的 `workers.sh`、`dispatch-rules.json` 为准，升级不覆盖定制候选。
+
+**首次登记需求、授权常驻职责、修订规格、门控交还或落地时，读 [常驻流程](roles/常驻流程.md)**：包含完整命令和 JSON、每步结果、唤醒交接及账本提交时机。总说明只保留入口，流程正文随 roles 通配安装并由离线测试原样提取执行。
+
 ## 3. 账本规矩
 
 - `tasks/` 是**唯一真相**。任务书 `tasks/YYYY-MM-DD-<主题>.md`，头部必须有 `state: <值>` 字段行。
@@ -66,7 +84,7 @@ working:  spec-resolved: <impl|spec>；<逐项回应与证据；改票位置，�
 
 先升级全部调用者和模板，逐一确认 run、wake、worktree、worker、controller 停写，关闭旧写FD并对账外部动作；主控取得锁后写JSON确认文件：`task_sha256` 为原票SHA256，`confirm` 的 `run/wake/worktree/worker/controller/old-fds/external-actions` 各值为真实证据字符串。用 `qwb-ledger.sh migrate --project <根> --task <票> -- <确认文件>` 只切这一票。writer核原字节、全部接线和本机 lsof 写FD；缺项/未知拒绝，不强停工人，不自动迁历史票。保存的 `.qwb-original` 原字节与永久 `.qwb-lock` sidecar 不可删/换inode；项目需把两类运行态文件加入忽略规则（不提交票内锁）。
 
-claim跨长工具保留，短flock只包读/检查/发布；中断不自动清claim。主控死亡后先经 `qwb-lock.sh acquire` 合法取锁，用reader核对原op和外部动作，保存JSON证据（`task_sha256/op_id/previous_owner/reconciled`），再运行 `qwb-ledger.sh recover-claim --project <根> --task <票> --expect <rev> -- <原op_id> <证据文件>`；旧owner活/未知、版本或原字节不符均拒绝。接管只移交原claim/op，不删历史、不自动release，随后按核实结果显式补偿或释放。失败派发用op_id读最新票补偿，不复用旧FD/offset。发布失败保留此前完整票；停止新动作，用新reader对账并移交单主控，不能删claim后交旧binary。历史独立tab值守需现主控运行 `--ensure` 登记本代owner和pane；writer核原生调用进程/目标，仅开放wake-check/wake，不能借值守写state/spec/claim或普通回报。换主控登记失效；未授权的once非零且不投递，持续循环等待主控登记后重试。所有角色权限为同UID防误用，不是OS沙箱；本票不启用多角色。
+claim跨长工具保留，短flock只包读/检查/发布；中断不自动清claim。主控死亡后先经 `qwb-lock.sh acquire` 合法取锁，用reader核对原op和外部动作，保存JSON证据（`task_sha256/op_id/previous_owner/reconciled`），再运行 `qwb-ledger.sh recover-claim --project <根> --task <票> --expect <rev> -- <原op_id> <证据文件>`；旧owner活/未知、版本或原字节不符均拒绝。接管只移交原claim/op，不删历史、不自动release，随后按核实结果显式补偿或释放。失败派发用op_id读最新票补偿，不复用旧FD/offset。发布失败保留此前完整票；停止新动作，用新reader对账并移交单主控，不能删claim后交旧binary。历史独立tab值守需现主控运行 `--ensure` 登记本代owner和pane；writer核原生调用进程/目标，仅开放wake-check/wake，不能借值守写state/spec/claim或普通回报。换主控登记失效；未授权的once非零且不投递，持续循环等待主控登记后重试。所有角色权限为同UID防误用，不是OS沙箱；迁移本身不授予常驻角色权限。
 
 问题 `question <key> <内容>` 打开后，主控凭真实答复证据写 `answer` 再写 `resume`；普通 working/done 不清问题。`qwb-status.sh --metrics` 输出原始事件时间；旧缺项为 unknown，不补造done时间。
 
@@ -88,14 +106,14 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 
 ## 5. 验货门
 
-- **不采信工人自述**。验收由你独立跑**项目自己的检查命令**（typecheck / test / lint 等）。
+- **不采信工人自述**。验收由主控独立跑**项目自己的检查命令**（typecheck / test / lint 等）；已明确授权门控的票，由门控独立跑同标准的门并组织审核，主控核验精确候选及收据后决定落地。
 - `qwb-test.sh --report <新文件>` 是可选的配置门执行记录；核对报告的项目目录、配置键、运行前后 HEAD、工作区与退出码，再对照本票场景和实际验收对象。仓库 HEAD 不能代替安装包或线上版本身份；真实 UI、安装包、人工步骤另附实际证据，未跑的场景保留待验收。
 - 收到审核意见时，按 `roles/审核者.md`「意见与复审」及 `roles/主控.md` 核对证据、形成返修清单；记录每条原意见、分类、裁定依据和最终要求。成立的必须修复项未闭环或正确性／安全意见仍未决时不放行；偏好建议不阻断，不成立意见须有反证。未决争议复用下方疑点处置流程，不新增 `state:` 值。
 - 把「跑了什么、结果、结论」写进账本任务书留痕——权力下放 + 可审计。
 - 通过 → 已迁协作票只记 accepted verdict；确获本地落地授权后经 land→读回→finish，清理义务完成才由writer置 verified。未迁旧票仍按旧收尾约定；不通过 → 返工或记错题（`tasks/lessons/`）。
 - **你可自干小活**（改动一行这类、无独立验收价值的），同样留一行「怎么验证的」。
 - **先处置疑点再派发**：票上有未决 `spec-defect:` 疑点时 `qwb-run.sh` 会拒绝派发（`qwb-status.sh` 也会标出「规格疑点未处理」，后续普通日志遮不住）。你逐项核对后写 `working: spec-resolved: <impl|spec>；…` 处置；无法裁决就保留未决。处置**不要求必须开审核窗口**——只有实质分歧、缺可验证反例、或疑点被驳回后带新证据复发时，才按需审票（见 `roles/审核者.md` 的「审票」节）。
-- **改场景走显式修订**：改验收场景必须用 `qwb-run.sh --revise-scenarios=<原因>`（留 `scenarios-revised:` 记录、更新指纹），不得无痕改；`qwb-lint.sh` 对无修订记录的场景差异仍然 FAIL。`spec-resolved:` 不授权绕过指纹检查；`--accept-new-scenarios` 只管「缺基线」那一种情况，不与修订混用。
+- **改场景走显式修订**：带规划授权的票由主控在来源票 send 修订请求，副主控按 [常驻流程](roles/常驻流程.md) 执行 `plan-revision` + CAS `revise`，主控再按需 `plan-authorize`；其他已迁票由主控持版本 `revise-scenarios`；未迁旧票用 `qwb-run.sh --revise-scenarios=<原因>` 留痕更新指纹。不得无痕改；`qwb-lint.sh` 对无修订记录的场景差异仍然 FAIL。`spec-resolved:` 不授权绕过指纹检查；`--accept-new-scenarios` 只管缺基线，不与修订混用。
 
 ## 6. 测试纪律——先场景后代码与 CI 效率
 
@@ -109,7 +127,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 ## 7. worktree 四步规范
 
 - **开**：只在派工时开；`<项目>/.worktrees/<任务id>/`，一任务一个，在 Herdr Spaces 中以 worktree 形式显示；开之前先清点——有已完成任务的残留就先收掉。
-- **收·成功**：协作候选验收通过且确获本地授权 → `land <id> --op <本人claim> --auth-ref <明确引用>` 固定OID合入精确本地main并读回 → 原finish核本票写入者已退出（idle/done不等于退出），再关闭本票Space（根tab已缺时显式`--root-tab-missing`且核其余证据）→ 安全删除副本/分支并记账。任意HEAD包含/remote不能证明协作票本地交付；常驻角色不随票退休。收尾前工人必须已经退出，且没有进程占着副本目录；agent 显示 idle 或 done 不算退出。验收通过、确认无需保留工人会话后，用 `herdr pane close 工人pane` 关闭工人 pane 是不依赖具体 CLI 的通用做法；被拒时照 `提示：` 行处理。
+- **收·成功**：协作候选验收通过且确获本地授权 → 主控先保存本票实现与审核工人的原生会话路径和结论，用 `herdr pane close 工人pane` 逐个关闭工人窗口并核实原进程已退、无进程占用副本目录 → `land <id> --op <本人claim> --auth-ref <明确引用>` 固定 OID 合入精确本地 main 并读回 → 原 finish 核写入者已退出，再关闭本票 Space（根 tab 已缺时显式 `--root-tab-missing` 且核其余证据）→ 安全删除副本/分支并记账。idle/done 不等于退出；任意 HEAD 包含/remote 不能证明协作票本地交付。常驻副主控和门控不随票关闭；被拒时照 `提示：` 行处理。
 - **缺工人身份的显式兑底**：仅当派发探针留下身份未知且没有 PID、该 pane 已不存在或退回空闲 shell、其他各代 PID 已死且候选 cwd/FD 资源干净时，主控可用 `finish <id> --merged --writer-proof-missing=具体原因`（归档时将 `--merged` 改为 `--archive`） 收尾。默认仍拒绝；证据损坏或冲突不能兑底。最终与 partial 行标记 `writer-proof-missing=1`，另有 `working:` 行记录 op、pane、原因与当时证据；恢复命令保留参数，根 tab 也缺失时仍须另给 `--root-tab-missing`。`--keep` 忽略此标记，`land` 不接受这条兑底。
 - **收·废弃**：先提交到该分支 → 核对并关闭本票空闲 Space → `git tag archive/<任务id>` → 安全删除 worktree 与分支 → 记账（写明标签名）。
 - **留·例外**：只允许两种——等使用者裁决的、有冲突待解的；且必须在账本**点名**。
@@ -124,7 +142,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 
 ## 8. 身份切换
 
-- 角色文件在 `qwbuddy/roles/`：`主控.md` / `审核者.md` / `执行者.md` / `咨询师.md` / `维护者.md`。
+- 五角色见 §2a；角色说明在 `qwbuddy/roles/`：`主控.md`、`规划.md`（副主控）、`执行者.md`（工人）、`门禁.md`（门控）、`顾问.md`。`审核者.md`、`维护者.md` 是专项工作方式。升级保留旧咨询角色文件及定制字节并提示人工对照新顾问文件；完成对照后由项目主人归档旧文件。
 - **按需维护**：阶段收尾或具体遗留值得集中处理时，主控限定已合入基线、范围与预算后派发维护任务；执行者此时读 `roles/维护者.md`。维护走独立小改动和原有审核，不给每个功能 PR 加 garden 放行门。
 - 功能交付必需的代码、测试与说明同步仍在原功能票完成，不推迟给后续维护。
 - 使用者说「切到<角色>」→ 读该角色文件 → **明确声明当前身份**，产出物标注角色。
@@ -148,7 +166,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 
 ## 10. 硬规矩（不可违反）
 
-1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是叫醒主控（herdr 打字 / Stop hook exit 2 / checkpoint 退出码）。
+1. **零通知使用者**：不许任何面向人的推送（钉钉、桌面通知、弹窗、邮件）。唯一「叫人」动作是经唯一值守叫醒主控或已授权常驻职责（herdr 打字 / Stop hook exit 2 / checkpoint 退出码）。
 2. 无独立队列/ACK平台、无数据库、无 cron——账本承担这些职责。允许票内受限持久claim、op/decision收据与处理确认，不新增外部平台。「无守护进程」的边界：**由主控进程拥有、随主控死**的值守子进程（Claude Code Stop hook 的 `--block`、可见 tab 里的值守循环）不算守护进程；仍然禁止 cron / launchd / systemd / 独立 nohup 进程。
 3. 只用 Herdr，不用 tmux / zellij / orca / cmux。
 4. 超时一律**毫秒**（30 分钟写 `1800000`，不写 `30m`）。

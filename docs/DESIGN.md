@@ -146,7 +146,7 @@ qwbuddy/roles/
 ├── 主控.md     立场：派发与验收；禁止：自己写实现（小活除外）
 ├── 审核者.md   立场：只挑错、不提方案；禁止：改代码
 ├── 执行者.md   立场：只干票内的事；禁止：扩大范围、改白名单外文件
-├── 咨询师.md   立场：只给判断和建议；禁止：派活、改代码
+├── 顾问.md   立场：只给判断和建议；禁止：派活、改代码
 └── 维护者.md   立场：按主控限定的批次修复已合入内容；继承执行者边界
 ```
 
@@ -212,7 +212,7 @@ JEV 自动路由在有 key 时每次读取一次 `quota-axi --json`，兼容 sch
 └── qwbuddy/
     ├── QWBUDDY.md       主控总说明书
     ├── TASK.md          任务书模板（含验收场景块：Given/When/Then + 至少一条失败路径）
-    ├── roles/           主控 / 审核者 / 执行者 / 咨询师
+    ├── roles/           主控 / 审核者 / 执行者 / 顾问
     ├── config.sh        工人表 + 派工规则 + 超时 + 快门/全门（bash 可直接 source，唯一来源）
     └── bin/
         ├── qwb-init.sh      **母本仓专用**：装进新项目（幂等；不复制自身到目标项目）
@@ -295,7 +295,7 @@ JEV 自动路由在有 key 时每次读取一次 `quota-axi --json`，兼容 sch
 ## 13. 待实现清单（MVP 已完成 ✅）
 
 - [x] `templates/QWBUDDY.md`——主控总说明书（含开局点名、状态行规矩、验收留痕、MVP 边界）
-- [x] `templates/roles/{主控,审核者,执行者,咨询师}.md`
+- [x] `templates/roles/{主控,审核者,执行者,顾问}.md`
 - [x] `templates/config.sh`——工人表 + 派工规则 + 超时（毫秒；bash source 的单一来源，**不用 JSON**）
 - [x] `templates/agents-hook.md` / `claude-hook.md`——进门钩子片段
 - [x] `bin/qwb-init.sh`——装进新项目

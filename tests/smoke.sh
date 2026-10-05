@@ -111,7 +111,7 @@ clone_install() {
 
 
 assert_file "$TMP/qwbuddy/QWBUDDY.md"
-for r in 主控 审核者 执行者 咨询师; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
+for r in 主控 审核者 执行者 顾问 常驻流程; do assert_file "$TMP/qwbuddy/roles/$r.md"; done
 assert_file "$TMP/qwbuddy/config.sh"
 for s in run wake status lock worktree test lint lib; do assert_file "$TMP/qwbuddy/bin/qwb-$s.sh"; done
 # M5：qwb-init.sh 是母本仓专用安装器，不得复制进目标项目
