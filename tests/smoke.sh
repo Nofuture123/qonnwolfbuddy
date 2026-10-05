@@ -582,6 +582,17 @@ cat > "$STUB/herdr" <<EOF
 #!/usr/bin/env bash
 echo "herdr \$*" >> "$STUBLOG"
 fix() { sed '/^#/d' "\${HERDR_FIXDIR:-$FIXDIR}/\$1"; }
+pane_meta() {
+  local count held=0
+  count="\$(awk '/^herdr (agent prompt|pane run) /{n++} END{print n+0}' "$STUBLOG")"
+  if [[ -n "\${HERDR_PROMPT_HOLD_FILE:-}" && ! -e "\$HERDR_PROMPT_HOLD_FILE" ]]; then held=1; count=0; fi
+  jq --argjson count "\$count" --argjson held "\$held" '
+    if (.result.pane | type)=="object" then
+      .result.pane.agent_status //= "idle" |
+      .result.pane.state_change_seq=((.result.pane.state_change_seq // 185)+\$count) |
+      if \$held==1 then .result.pane.agent_status="idle" else . end
+    else . end'
+}
 # 动态片场：pane 级应答按 pane id 逐测试布置（HERDR_DYN_DIR，默认 \$TMP/herdr-dyn）
 DYNH="\${HERDR_DYN_DIR:-$TMP/herdr-dyn}"; mkdir -p "\$DYNH" 2>/dev/null
 san() { printf '%s' "\$1" | tr -cd 'a-zA-Z0-9'; }
@@ -590,6 +601,9 @@ case "\${1:-} \${2:-}" in
   "status --json") jq -cn --arg socket "\$HERDR_TEST_SOCKET" --arg session "\${HERDR_SESSION:-}" '{server:{socket:\$socket,session:\$session}}' ;;
   "api snapshot") "\$0" workspace list | python3 -B "$FIXDIR/snapshot.py" "\$DYNH" ;;
   "pane run")   if [[ "\${HERDR_FAIL:-}" == *run* ]]; then fix pane-run-error.json >&2; exit 1; fi
+                if [[ ! -e "\$DYNH/get-\$(san "\$3").json" && ! -e "\$DYNH/get-\$(san "\$3").err" ]]; then
+                  jq -cn --arg pane "\$3" '{result:{pane:{pane_id:\$pane,agent_status:"idle",state_change_seq:185}}}' > "\$DYNH/get-\$(san "\$3").json"
+                fi
                 # 模拟真实效果：往 shell pane 跑 qwb-wake.sh → 之后 process-info 呈现值守进程
                 # （含 --pane 目标实参；QWB_STUB_NOPROC=1 抑制写入，模拟投递后进程始终起不来）
                 if [[ "\${4:-}" == *qwb-wake.sh* && "\${QWB_STUB_NOPROC:-}" != "1" ]]; then
@@ -602,7 +616,7 @@ case "\${1:-} \${2:-}" in
                     | sed '/^#/d' > "\$DYNH/proc-\$(san "\$3").json" 2>/dev/null || true
                 fi
                 fix pane-run.json ;;
-  "pane send-keys") fix pane-run.json ;;
+  "pane send-keys") [[ -z "\${HERDR_PROMPT_HOLD_FILE:-}" ]] || : > "\$HERDR_PROMPT_HOLD_FILE"; fix pane-run.json ;;
   "pane list")  if [[ "\${QWB_STUB_SLOW_LIST:-}" == "1" ]]; then
                   sleep 8 & slowpid=\$!
                   printf '%s %s\\n' "\$slowpid" "\$\$" > "\${QWB_STUB_SLOW_PID_FILE:?}"
@@ -635,9 +649,10 @@ case "\${1:-} \${2:-}" in
                 perl -MJSON::PP=encode_json -e 'my (\$id,\$already)=@ARGV;
                   print encode_json({result=>{already_open=>(\$already eq "true" ? JSON::PP::true : JSON::PP::false),
                     workspace=>{workspace_id=>\$id},root_pane=>{tab_id=>"\$id:t1",pane_id=>"\$id:p1"}}}),"\n";' "\$id" "\$already" ;;
-  "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json";
+  "pane get")   if [[ -f "\$DYNH/get-\$(san "\${3:-}").json" ]]; then pane_json="\$(sed '/^#/d' "\$DYNH/get-\$(san "\${3:-}").json")";
                 elif [[ -f "\$DYNH/get-\$(san "\${3:-}").err" ]]; then cat "\$DYNH/get-\$(san "\${3:-}").err" >&2; exit 1;
-                else failjson pane_not_found "pane \${3:-} not found"; fi ;;
+                else failjson pane_not_found "pane \${3:-} not found"; fi
+                printf '%s\n' "\$pane_json" | pane_meta ;;
   "pane process-info") pp="\${4:-\${3:-}}"
                 if [[ -f "\$DYNH/proc-\$(san "\$pp").json" ]]; then sed '/^#/d' "\$DYNH/proc-\$(san "\$pp").json";
                 elif [[ -f "\$DYNH/proc-\$(san "\$pp").err" ]]; then cat "\$DYNH/proc-\$(san "\$pp").err" >&2; exit 1;
@@ -645,10 +660,7 @@ case "\${1:-} \${2:-}" in
   "pane read")  if [[ "\${HERDR_READ_TRUST:-}" == "1" ]]; then cat "\${HERDR_FIXDIR:-$FIXDIR}/pane-read-trust.txt";
                 elif [[ -f "\$DYNH/read-\$(san "\${3:-}").txt" ]]; then cat "\$DYNH/read-\$(san "\${3:-}").txt";
                 else cat "\${HERDR_FIXDIR:-$FIXDIR}/pane-read-shell.txt" 2>/dev/null || fix agent-wait.json; fi ;;
-  "agent wait") if [[ -n "\${HERDR_WAIT_FAIL_ONCE_FILE:-}" && ! -e "\$HERDR_WAIT_FAIL_ONCE_FILE" ]]; then
-                  : > "\$HERDR_WAIT_FAIL_ONCE_FILE"; fix agent-wait-timeout.json >&2; exit 1
-                fi
-                if [[ "\${HERDR_FAIL:-}" == *wait* ]]; then fix agent-wait-timeout.json >&2; exit 1; fi
+  "agent wait") if [[ "\${HERDR_FAIL:-}" == *wait* ]]; then fix agent-wait-timeout.json >&2; exit 1; fi
                 if [[ -n "\${QWB_FAKE_NOW_FILE:-}" && "\${HERDR_WAIT_BUMP_MS:-0}" -gt 0 ]]; then
                   echo \$(( \$(cat "\$QWB_FAKE_NOW_FILE") + \${HERDR_WAIT_BUMP_MS} )) > "\$QWB_FAKE_NOW_FILE"
                 fi
@@ -671,6 +683,15 @@ case "\${1:-} \${2:-}" in
   "tab close")  if [[ "\${HERDR_FAIL:-}" == *tabclose* ]]; then failjson io_error "mocked tab close failure"; fi
                 printf '{"id":"cli:tab:close","result":{"type":"ok"}}\n' ;;
   "agent start") if [[ "\${HERDR_FAIL:-}" == *start* ]]; then fix agent-start-name-taken.json >&2; exit 1; fi
+                for ((i=3;i<\$#;i++)); do
+                  if [[ "\${!i}" == --pane ]]; then
+                    j=\$((i+1)); started_pane="\${!j}"
+                    if [[ ! -e "\$DYNH/get-\$(san "\$started_pane").json" && ! -e "\$DYNH/get-\$(san "\$started_pane").err" ]]; then
+                      jq -cn --arg pane "\$started_pane" '{result:{pane:{pane_id:\$pane,agent_status:"idle",state_change_seq:185}}}' > "\$DYNH/get-\$(san "\$started_pane").json"
+                    fi
+                    break
+                  fi
+                done
                 # 逐项 JSON 记录（\$* 行丢参数边界；含空格/引号的实参只能在这里实证是单元素）
                 perl -MJSON::PP=encode_json -e 'print encode_json({cmd => "agent start", argv => [@ARGV]}), "\n"' -- "\${@:3}" >> "$STUBLOG"
                 fix agent-start.json ;;
@@ -2048,6 +2069,7 @@ case "\${1:-} \${2:-}" in
   "agent get")    fix agent-get-error.json >&2; exit 1 ;;   # 无同名工人：本节只走新开 tab 路径
   "agent start")  printf 'done: worker-appended-at-start\n' >> "$F2T"; fix agent-start.json ;;
   "agent prompt") fix agent-prompt.json ;;
+  "pane get") printf '{"result":{"pane":{"agent_status":"working","state_change_seq":185}}}\n' ;;
   *)              fix pane-run.json ;;
 esac
 exit 0
@@ -3132,7 +3154,7 @@ chmod +x "$TMP/launch-now.sh" "$TMP/launch-sleep.sh"
 printf '%s\n' 'qwb_worker codex herdr' 'qwb_worker cmd pane-run cmd' 'qwb_worker zcode herdr' > "$LM/qwbuddy/workers.sh"
 mk_launch_task paneok
 : > "$STUBLOG"; echo 0 > "$TMP/herdr-agent-get.count"; echo 0 > "$LMNOW"; : > "$LMSLEEP"
-out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_WAIT_FAIL_ONCE_FILE="$LM/wait-once" HERDR_AGENT_GET_FAILS=2 \
+out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_PROMPT_HOLD_FILE="$LM/prompt-hold" HERDR_AGENT_GET_FAILS=2 \
   HERDR_AGENT_GET_COUNT_FILE="$TMP/herdr-agent-get.count" QWB_NOW_MS_CMD="$TMP/launch-now.sh" \
   QWB_SLEEP_CMD="$TMP/launch-sleep.sh" bash qwbuddy/bin/qwb-run.sh --task paneok --worker cmd --here --name qwb-disp 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "pane-run 检测延迟后派发成功" || { bad "pane-run 成功路径 rc=${rc}"; printf '%s\n' "$out"; }
@@ -3142,7 +3164,8 @@ calls="$(cat "$STUBLOG")"
    && grep -q 'agent rename w93:p7 qwb-disp' "$STUBLOG" \
    && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-paneok.md" "$STUBLOG" \
    && grep -q '写完状态行再收工' "$STUBLOG" \
-   && [[ "$(grep -c 'agent wait w93:p7 --until working --until done --until blocked --timeout 5000' "$STUBLOG" || true)" -eq 2 ]] \
+   && [[ "$(grep -c '^herdr pane get w93:p7$' "$STUBLOG" || true)" -ge 3 ]] \
+   && ! grep -q '^herdr agent wait' "$STUBLOG" \
    && [[ "$(grep -c 'pane send-keys w93:p7 enter' "$STUBLOG" || true)" -eq 1 ]] \
    && ! grep -q 'agent start' "$STUBLOG" && ! grep -q 'agent prompt' "$STUBLOG"; } \
   && ok "pane-run 直打后无状态转换会补 Enter，且不走 agent start/prompt" \
@@ -3205,7 +3228,8 @@ out="$(cd "$LM" && PATH="$STUB:$PATH" HERDR_PANE_ID=wtest:lm HERDR_AGENT_GET_FAI
 [[ "$rc" -eq 0 ]] && ok "含空格的 zcode pane-run 派发成功" || { bad "zcode 空格命令 rc=${rc}"; printf '%s\n' "$out"; }
 { grep -qxF "herdr pane run w93:p7 'zcode' 'tui'" "$STUBLOG" \
    && grep -q "pane run w93:p7 你是本任务的执行者。唯一规格来源：$LM/tasks/2099-02-01-zspace.md" "$STUBLOG" \
-   && grep -q 'agent wait w93:p7 --until working --until done --until blocked --timeout 5000' "$STUBLOG" \
+   && grep -q '^herdr pane get w93:p7$' "$STUBLOG" \
+   && ! grep -q '^herdr agent wait' "$STUBLOG" \
    && ! grep -q 'pane send-keys w93:p7 enter' "$STUBLOG" \
    && ! grep -q 'agent start' "$STUBLOG" && ! grep -q 'agent prompt' "$STUBLOG"; } \
   && ok "zcode pane-run 保留整条命令并在状态已转换时不补 Enter" \
@@ -4849,8 +4873,8 @@ echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(<"$TMP/runtime-readiness.log")"; runtime_rc=1
 [[ ! -f "$TMP/runtime-readiness.rc" ]] || read -r runtime_rc < "$TMP/runtime-readiness.rc"
 if [[ "$runtime_rc" -eq 0 ]] && grep -q 'RUNTIME READINESS PASS' <<<"$runtime_out" &&
-  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 28 ]]; then
-  ok "锁竞争/生命周期、投递失败、提示词提交确认与身份拒绝定向测试 28 项通过"
+  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 37 ]]; then
+  ok "锁竞争/生命周期、投递失败、提示词提交确认与身份拒绝定向测试 37 项通过"
 else
   bad "运行时定向测试失败（rc=$runtime_rc)"
   printf '%s\n' "$runtime_out"

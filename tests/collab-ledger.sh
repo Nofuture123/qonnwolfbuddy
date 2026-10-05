@@ -31,7 +31,6 @@ case "$1 $2" in
   'agent get') printf '{"error":{"code":"agent_not_found"}}\n'; exit 1 ;;
   'tab create') printf '{"result":{"root_pane":{"pane_id":"test:worker","tab_id":"test:tab"}}}\n' ;;
   'agent start') printf '{"result":{"type":"agent_started"}}\n' ;;
-  'agent wait') printf '{"result":{"type":"agent_info","agent":{"agent_status":"working"}}}\n' ;;
   'agent prompt')
     if [[ "${TEST_FAIL_PROMPT:-0}" == 1 ]]; then
       HERDR_PANE_ID=test:worker bash "$TEST_ROOT/bin/qwb-ledger.sh" append --project "$TEST_PROJECT" --task "$TEST_TASK" --event-id worker-during-prompt -- 'working: 在失败投递前真实回报'
@@ -55,7 +54,8 @@ case "$1 $2" in
       esac
       exit 1
     fi
-    printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","workspace_id":"test","cwd":"%s"}}}\n' "$3" "$TEST_PROJECT" ;;
+    seq=$((185 + $(grep -c '^agent prompt ' "$TEST_LOG" || true)))
+    printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","agent_status":"idle","state_change_seq":%s,"workspace_id":"test","cwd":"%s"}}}\n' "$3" "$seq" "$TEST_PROJECT" ;;
   'pane list') printf '{"result":{"panes":[{"pane_id":"test:watch","workspace_id":"test"}]}}\n' ;;
   'pane process-info')
     [[ "${TEST_UNKNOWN_WATCH:-0}" != 1 ]] || exit 1

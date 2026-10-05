@@ -205,7 +205,7 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
-# agent wait uses milliseconds; allow startup/TUI to submit before sending a fallback Enter.
+# Allow startup/TUI submission; each bounded polling attempt uses this millisecond budget.
 PROMPT_SUBMIT_WAIT_MS=5000
 WORKER_ARGV=(); PANE_COMMAND=""
 for i in "${!QWB_CONFIG_NAMES[@]}"; do
@@ -780,14 +780,48 @@ record_worker_activity() {
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: worker-activity op=$RUN_OP pane=$PANE evidence=$observation" >/dev/null
 }
 
+read_prompt_state() {
+  local meta
+  deliver "herdr pane get（提交确认）" herdr pane get "$PANE"
+  meta="$(printf '%s' "$DELIVER_OUT" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
+    my $j=eval{decode_json(<STDIN>)};
+    exit 1 unless ref $j eq "HASH" && !exists $j->{error} && ref $j->{result} eq "HASH";
+    my $p=$j->{result}{pane}; exit 1 unless ref $p eq "HASH";
+    my ($status,$seq)=@$p{qw(agent_status state_change_seq)};
+    exit 1 unless defined $status && !ref $status && $status =~ /\A(?:idle|working|done|blocked|unknown)\z/;
+    exit 1 unless defined $seq && !ref $seq && encode_json($seq) =~ /\A[0-9]+\z/;
+    printf "%s\t%s",$status,$seq;' || true)"
+  [[ -n "$meta" ]] || delivery_failed "提示词状态校验" 1 \
+    "herdr pane get ${PANE} 应答不合契约：agent_status或数值state_change_seq缺失/非法，拒绝派发；${DELIVER_OUT}"
+  IFS=$'\t' read -r PROMPT_STATUS PROMPT_SEQ <<< "$meta"
+}
+
+wait_prompt_started() {
+  local before="$1" started elapsed left
+  started="$(now_ms)"
+  while :; do
+    elapsed=$(( $(now_ms) - started ))
+    (( elapsed < PROMPT_SUBMIT_WAIT_MS )) || return 1
+    read_prompt_state
+    elapsed=$(( $(now_ms) - started ))
+    (( elapsed < PROMPT_SUBMIT_WAIT_MS )) || return 1
+    # Old done/blocked cannot confirm a new prompt unless its native sequence changed.
+    [[ "$PROMPT_STATUS" == working || "$PROMPT_SEQ" != "$before" ]] && return 0
+    left=$(( PROMPT_SUBMIT_WAIT_MS - elapsed ))
+    (( left > 0 )) || return 1
+    (( left > 100 )) && left=100
+    sleep_ms "$left"
+  done
+}
+
 confirm_prompt_submitted() {
-  if herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout "$PROMPT_SUBMIT_WAIT_MS" >/dev/null 2>&1; then
+  if wait_prompt_started "$PROMPT_BEFORE_SEQ"; then
     return 0
   fi
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append \
     "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) prompt-submit-enter op=$RUN_OP pane=$PANE" >/dev/null
   deliver "herdr pane send-keys" herdr pane send-keys "$PANE" enter
-  if ! herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout "$PROMPT_SUBMIT_WAIT_MS" >/dev/null 2>&1; then
+  if ! wait_prompt_started "$PROMPT_BEFORE_SEQ"; then
     delivery_failed "提示词提交确认" 1 \
       "提示词已投递但工人未开工（补回车后仍超时 ${PROMPT_SUBMIT_WAIT_MS}ms），pane=${PANE}；排查：herdr pane read ${PANE} --source visible；herdr pane process-info --pane ${PANE}；herdr agent get ${PANE}"
   fi
@@ -798,6 +832,8 @@ case "$LAUNCH_MODE" in
     if [[ -n "$REUSE_PANE" ]]; then
       record_worker_activity
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
+      read_prompt_state
+      PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
       deliver "herdr agent prompt" herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
       printf '%s\n' "$DELIVER_OUT"
       confirm_prompt_submitted
@@ -805,6 +841,8 @@ case "$LAUNCH_MODE" in
       deliver "herdr agent start" qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}"
       printf '%s\n' "$DELIVER_OUT"
       record_worker_activity
+      read_prompt_state
+      PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
       deliver "herdr agent prompt" herdr agent prompt "$NAME" "$PROMPT"
       printf '%s\n' "$DELIVER_OUT"
       confirm_prompt_submitted
@@ -824,6 +862,8 @@ case "$LAUNCH_MODE" in
     done
     record_worker_activity
     deliver "herdr agent rename" herdr agent rename "$PANE" "$NAME"
+    read_prompt_state
+    PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
     deliver "herdr pane run（提示词）" herdr pane run "$PANE" "$PROMPT"
     printf '%s\n' "$DELIVER_OUT"
     confirm_prompt_submitted

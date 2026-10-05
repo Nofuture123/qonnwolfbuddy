@@ -51,6 +51,16 @@ mode = os.environ.get("QWB_TEST_MODE", "")
 with log.open("a") as f: f.write(json.dumps(args) + "\n")
 wt = state.read_text() if state.exists() else ""
 def out(result): print(json.dumps({"result": result}))
+# Keep the literal output hook above for native-proof variants; add the real state fields at the wire boundary.
+wire_out = out
+def out(result):
+    pane = result.get("pane")
+    if isinstance(pane, dict):
+        pane.setdefault("agent_status", "idle")
+        pane["state_change_seq"] = 185 + sum(
+            isinstance(row, list) and row[:2] in (["agent", "prompt"], ["pane", "run"])
+            for row in map(json.loads, log.read_text().splitlines()))
+    wire_out(result)
 def err(code):
     print(json.dumps({"error": {"code": code}}), file=sys.stderr)
     sys.exit(1)

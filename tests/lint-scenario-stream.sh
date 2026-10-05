@@ -70,13 +70,12 @@ if args[:2] == ['workspace', 'list']:
 elif args[:2] == ['tab', 'create']:
     result = {'root_pane': {'pane_id': 'fixture-worker', 'tab_id': 'fixture-tab'}}
 elif args[:2] == ['pane', 'get']:
-    result = {'pane': {'pane_id': args[2]}}
+    seq = 185 + sum(json.loads(row)[:2] == ['agent', 'prompt'] for row in open(os.environ['STREAM_HERDR_LOG']))
+    result = {'pane': {'pane_id': args[2], 'agent_status': 'idle', 'state_change_seq': seq}}
 elif args[:2] == ['pane', 'process-info']:
     result = {'process_info': {'pane_id': args[-1], 'shell_pid': 42,
               'foreground_process_group_id': 42,
               'foreground_processes': [{'pid': 42, 'argv0': 'bash'}]}}
-elif args[:2] == ['agent', 'wait']:
-    result = {'type': 'agent_info', 'agent': {'agent_status': 'working'}}
 elif args[:2] in (['agent', 'start'], ['agent', 'prompt']):
     result = {'type': 'ok'}
 else:
@@ -112,7 +111,7 @@ print(json.dumps({'result': result}))
             assert [cmd[:2] for cmd in commands] == [
                 ['agent', 'get'], ['workspace', 'list'], ['tab', 'create'],
                 ['agent', 'start'], ['pane', 'get'], ['pane', 'process-info'],
-                ['agent', 'prompt'], ['agent', 'wait']], commands
+                ['pane', 'get'], ['agent', 'prompt'], ['pane', 'get']], commands
         print('PASS', name)
 
     check_dispatch('valid large block dispatches', block, 0)

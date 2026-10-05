@@ -23,6 +23,7 @@ if a[:2]==['workspace','list']:r={'workspaces':[]}
 elif a[:2]==['agent','get']:
  print(json.dumps({'error':{'code':'agent_not_found'}}),file=sys.stderr);sys.exit(1)
 elif a[:2]==['tab','create']:r={'root_pane':{'pane_id':'test:p7','tab_id':'test:t7'}}
+elif a[:2]==['pane','get']:r={'pane':{'pane_id':a[2],'agent_status':'working','state_change_seq':185}}
 else:r={'type':'ok'}
 print(json.dumps({'result':r}))
 ''');(stub/'herdr').chmod(0o755)
