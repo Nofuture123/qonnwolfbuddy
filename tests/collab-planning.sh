@@ -215,8 +215,64 @@ file.write_text(json.dumps(s))
     cli('qwb-send.sh','accept','--task',intake,'--event',event,'--op','plan-request',actor='planner-pane')
     cli('qwb-send.sh','prepared','--task',intake,'--event',event,'--op','plan-request',actor='planner-pane')
     ack=p/'tasks/plan-request.json'; ack.write_text(json.dumps({'event_id':event,'op_id':'plan-request','outcome':'applied','evidence':'公开read核对同request映射与source'}))
+    if os.environ.get('QWB_NOTIFY_BASELINE')=='1':
+        runtime_bin=p/'qwbuddy/bin'
+        for script in ['qwb-ledger.sh','qwb-wake.sh','qwb-send.sh','qwb-lib.sh']:
+            (runtime_bin/script).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/'+script]))
     cli('qwb-send.sh','handled','--task',intake,'--event',event,'--op','plan-request','--result-ref',ack,actor='planner-pane')
     assert read('intake.md')['handoffs'][event]['handled']==1
+    original_result='source:planner-result:'+hashlib.sha256(event.encode()).hexdigest()
+    assert original_result in read('intake.md')['handoffs'], 'planner handled controller request without upward result'
+    def notify_finish(event_id,actor):
+        op='notify-'+hashlib.sha256(event_id.encode()).hexdigest()
+        result=p/'qwbuddy/.roles'/('notify-'+op+'.json')
+        result.write_text(json.dumps(dict(event_id=event_id,op_id=op,outcome='applied',evidence='public readback of request result')))
+        for verb in ['received','accept','prepared','handled']:
+            args=['--task',intake,'--event',event_id]
+            if verb!='received':args+=['--op',op]
+            if verb=='handled':args+=['--result-ref',result]
+            cli('qwb-send.sh',verb,*args,actor=actor)
+        return op,result
+    notify_finish(original_result,'ctl')
+    # Keep the request/result exercise isolated from old planning and route assertions.
+    request_snapshot=intake.read_bytes()
+    try:
+        for h in json.loads(cli('qwb-send.sh','pending','--task',intake).stdout):notify_finish(h['event_id'],'ctl')
+        request_id=cli('qwb-send.sh','send','--task',intake,'--corr','notify-controller-request','--attempt','1','--text','请修订已授权场景').stdout.strip()
+        op,ref=notify_finish(request_id,'planner-pane')
+        d=read('intake.md'); upward='source:planner-result:'+hashlib.sha256(request_id.encode()).hexdigest()
+        h=d['handoffs'][upward]
+        assert d['handoffs'][request_id]['handled'] and all(v in h['payload'] for v in [request_id,str(ref),d['handoffs'][request_id]['result_sha256']])
+        before=intake.read_bytes()
+        cli('qwb-send.sh','handled','--task',intake,'--event',request_id,'--op',op,'--result-ref',ref,actor='planner-pane')
+        assert intake.read_bytes()==before
+        for verb in ['received','accept','prepared','handled']:
+            args=['--task',intake,'--event',upward]
+            if verb!='received':args+=['--op','wrong-owner']
+            if verb=='handled':args+=['--result-ref',ref]
+            rejected=cli('qwb-send.sh',verb,*args,actor='planner-pane',ok=False)
+            assert '规划不能办理主控专属交接' in rejected.stderr and intake.read_bytes()==before
+        mark=count();cli('qwb-wake.sh','--once','--pane','ctl')
+        routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+        routes=[a for a in routes if a[:2]==['pane','run'] and upward in a[3]]
+        assert len(routes)==1 and routes[0][2]=='ctl',routes
+        notify_finish(upward,'ctl')
+        assert len([h for h in read('intake.md')['handoffs'] if h.startswith('source:planner-result:')])==2
+        fake=cli('qwb-send.sh','send','--task',intake,'--corr','notify-planner-self','--attempt','1','--text','主控请求：只是规划自己的正文',actor='planner-pane').stdout.strip()
+        notify_finish(fake,'planner-pane')
+        assert 'source:planner-result:'+hashlib.sha256(fake.encode()).hexdigest() not in read('intake.md')['handoffs']
+        # A failed atomic publish leaves neither a handled request nor its upward result.
+        failed=source('notify-publish-failure','请读回授权内修订')
+        op='notify-failed';ref=p/'qwbuddy/.roles/notify-failed.json'
+        ref.write_text(json.dumps(dict(event_id=failed,op_id=op,outcome='applied',evidence='readback')))
+        for verb in ['received','accept','prepared']:
+            cli('qwb-send.sh',verb,'--task',intake,'--event',failed,*([] if verb=='received' else ['--op',op]),actor='planner-pane')
+        before=intake.read_bytes()
+        cli('qwb-send.sh','handled','--task',intake,'--event',failed,'--op',op,'--result-ref',ref,actor='planner-pane',ok=False,extra={'PL_FAIL_PUBLISH':'1'})
+        assert intake.read_bytes()==before
+        print('PASS notify B：主控send及需求原话原子上行、一次主控门铃、重复handled零写、规划自发反例与四入口拒绝、发布失败零半写',flush=True)
+    finally:intake.write_bytes(request_snapshot)
+    if os.environ.get('QWB_NOTIFY_ONLY')=='B':raise SystemExit(0)
     before=intake.read_bytes()
     call('append','intake.md','--','working: spec-resolved: planner grant cannot answer spec',actor='planner-pane',ok=False)
     assert intake.read_bytes()==before

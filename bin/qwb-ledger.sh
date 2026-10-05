@@ -685,17 +685,23 @@ sub planner_manages_handoffs {
   my $g=$data->{gate};
   return !($g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/);
 }
+sub planner_request_source {
+  my $h=shift; my $e=$data->{events}[$h->{source_seq}-1];
+  return unless $planning_grant && $e && $e->{kind} eq 'handoff-send' && $h->{event_id} eq $e->{event_id} && $h->{source_event} eq $e->{event_id} && $h->{source_actor} eq $planning_grant->{identity}{controller};
+  return $e;
+}
 sub planner_result_source {
   my $h=shift;
   return unless $planning_grant && $h->{handled} && $h->{accepted} eq $planning_grant->{identity}{pane} && $h->{owner_fp} eq $planning_grant->{identity}{owner_fp};
   my $e=worker_handoff_source($h);
   return $e if $e && $e->{kind}=~/\A(blocked|needs-decision|question)\z/;
-  return;
+  return planner_request_source($h);
 }
 sub planner_result_id { 'source:planner-result:'.sha256_hex(encode('UTF-8',$_[0]{event_id})) }
 sub planner_result_payload {
   my $h=shift;
-  return "规划已办理工人阻塞/决策；原交接 $h->{event_id}；actor=$planning_grant->{identity}{actor} pane=$h->{accepted} op=$h->{op_id}；result_ref=$h->{result_ref}；result_sha256=$h->{result_sha256}；请主控读回结果。";
+  my $summary=planner_request_source($h) ? '规划已办理主控请求' : '规划已办理工人阻塞/决策';
+  return "${summary}；原交接 $h->{event_id}；actor=$planning_grant->{identity}{actor} pane=$h->{accepted} op=$h->{op_id}；result_ref=$h->{result_ref}；result_sha256=$h->{result_sha256}；请主控读回结果。";
 }
 sub ensure_planner_result {
   my $h=shift;
@@ -716,7 +722,7 @@ sub planner_controller_hint {
   return '' if grep { source_id($_->{event_id}) eq $h->{event_id} } values %{$data->{test_requests} // {}};
   return '门禁 accepted；下一步：主控安排落地/清理' if $g && $g->{verdict} eq 'accepted';
   return '门禁 rediagnose；下一步：主控安排技术重诊' if $g && $g->{verdict} eq 'rediagnose';
-  my $original=$data->{handoffs}{source_id($h->{source_event})};
+  my $original=$data->{handoffs}{source_id($h->{source_event})} // $data->{handoffs}{$h->{source_event}};
   return '规划办理结果；下一步：主控读回结果' if $original && planner_result_source($original) && $h->{event_id} eq planner_result_id($original) && $h->{corr} eq $h->{event_id} && $h->{attempt} eq '1' && $h->{payload} eq planner_result_payload($original);
   my $e=$data->{events}[$h->{source_seq}-1];
   return '迁入核查；下一步：主控核对旧义务' if $e->{kind} eq 'migrate';
