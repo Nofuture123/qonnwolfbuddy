@@ -2,7 +2,7 @@
 
 ```
 任务 id:  wake-exit-hang
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）
 dispatch-budget: 3
 来源:     2026-10-05 主控在一轮卡死的全门里现场取证
@@ -103,3 +103,4 @@ done: 2026-10-05T04:06:31Z 门禁：bash bin/qwb-test.sh fast rc0 PASS0 FAIL0；
 done: 2026-10-05T04:06:31Z 推断判断：析构吞SystemExit机制成立；对原现场是否命中该窗口仍无法判定。依据为测试解释器保持原Popen析构后自发TERM/INT，CPython打印Exception ignored/SystemExit，固定旧版继续循环、新版两层循环均退出，未加产品钩子且command信号屏蔽/2秒超时未动。强杀最坏残留：查询独立session内的子孙可能无限期存活，父订阅器已死就无法执行reap_command和2秒超时；本票未杀未核实归属的查询进程组。所有本票测试进程与临时夹具已清理，仅保留证据目录；资源原始记录=/Users/rocky/projects/qonnwolfbuddy/.worktrees/wake-exit-hang/.qwb-tmp/wake-exit-hang-evidence/resources.log。
 done: 2026-10-05T04:06:57Z 报告补正：上一组前两条done分别618/674字符，超过600限制；按仅追加约束保留历史，本行与下一行提供合规短版。commit=814d547c85fa7e923919532163ad6602aa9b3a5b；工作区干净，资源无残留。event_cleanup上限4秒；subscribe保留信号并检查双循环。四场景：python3 -B tests/process_fixture.py --command python3 -B tests/wake-exit-hang.py --baseline-wake .qwb-tmp/wake-exit-hang-evidence/baseline-qwb-wake.sh，rc0 PASS11 FAIL0。retry=2.177s，KILL=2.579s；正常124/2/0/143/130输出逐字节不变；吞异常后143/130。证据目录=/Users/rocky/projects/qonnwolfbuddy/.worktrees/wake-exit-hang/.qwb-tmp/wake-exit-hang-evidence，日志green-scenarios.log/red-wake.log/red-subscriber.log/commands.txt。
 done: 2026-10-05T04:06:57Z 门禁短版：bash bin/qwb-test.sh fast rc0 PASS0 FAIL0；/bin/bash tests/wake-block-output.sh rc0 PASS20 FAIL0；bash tests/collab-gate.sh rc0 PASS23 FAIL0；QWB_GATE_ROUTES_ONLY=1 bash tests/collab-gate.sh rc0 PASS3 FAIL0。python3 -B tests/subscribe-reap.py裸跑rc1（既有夹具缺QWB_TEST_GROUPS）；python3 -B tests/process_fixture.py --command python3 -B tests/subscribe-reap.py rc0 PASS8 FAIL0。三处禁改文件未变，未跑全门。原始日志目录同上一行：fast.log/wake-block-output.log/collab-gate.log/collab-final-routes.log/subscribe-reap.log/subscribe-reap-scoped.log/summary.log/resources.log。
+working: 2026-10-05T04:24:59Z 主控验收：读完产品改动（event_cleanup 改为 TERM、再 TERM、KILL，总上限 4 秒；订阅器两层循环检查停止标志）。提交 814d547 已 cherry-pick 进 main（1624688）。合并后 main @ 44ab8ac 上 bash bin/qwb-test.sh full rc=0、859 PASS、0 FAIL、669 秒（.qwb-tmp/ctl-full-merge6.log），tests/wake-exit-hang.py 经 tests/wake-block-output.sh 在冒烟内执行；真机验收第 12 轮 14 项断言全 PASS。已知残留：订阅器被强杀时，它正在跑的查询子进程可能留下（查询本身是短命令）。原现场是否就是「析构期间异常被吞」无法判定。
