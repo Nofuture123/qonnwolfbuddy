@@ -57,7 +57,7 @@ elif a[:2]==['pane','get']:
  pane=a[2]
  if pane=='planner-pane' and os.environ.get('PL_EXPIRE_PROOF'):
   counter=Path(os.environ['PL_EXPIRE_PROOF']); n=int(counter.read_text())+1 if counter.exists() else 1; counter.write_text(str(n))
-  if n>=2:s.pop(pane,None)
+  if n>=3:s.pop(pane,None)
  live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
  if live:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
  out({'pane':d})
@@ -328,7 +328,8 @@ file.write_text(json.dumps(s))
         native_bytes=native_path.read_bytes(); env['PL_EXPIRE_PROOF']=str(temp/'up-proof-counter')
         try:
             routes,_=deliveries()
-            assert int(Path(env['PL_EXPIRE_PROOF']).read_text())==2
+            # role status与其activity探针各读一次pane；第三次读才进入第二轮gate_proof。
+            assert int(Path(env['PL_EXPIRE_PROOF']).read_text())==3
             assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-second-proof' in routes[0][3],routes
         finally:
             del env['PL_EXPIRE_PROOF']; native_path.write_bytes(native_bytes)
