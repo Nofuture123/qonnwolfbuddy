@@ -1,0 +1,104 @@
+# 任务书：五角色说明合并：照着说明书就能把常驻职责流程走通
+
+```
+任务 id:  roles-walkthrough-docs
+state: running
+implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
+dispatch-budget: 3
+来源:     2026-10-05 副主控与门控真机演练第二、三轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r2.md 的 R2、R8；docs/reviews/2026-10-05-real-herdr-roles-drill-r3.md 的 S1–S8）；第一轮 D3
+派发:     主控（Claude Code，w14Z:p1）→ 执行者（Pi，--provider magpie --model codex/gpt-6-astra --thinking high）
+主账本:   /Users/rocky/projects/qonnwolfbuddy/tasks/2026-10-05-roles-walkthrough-docs.md
+工作目录: /Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-walkthrough-docs（隔离副本，detached HEAD，基点见派发行）
+分支:     无（detached HEAD；不建分支、不 push）
+```
+
+## 0. 原始意图与范围
+
+原始意图（Rocky，2026-10-05）：角色定为五个——主控、副主控、工人、门控、顾问。副主控是主控的直接下属，能开票也能派工执行（即现有「规划」常驻职责）；门控把审核、门禁、测试合在一起（即现有「门禁」常驻职责）；顾问（原「咨询师」）只在重大规划问题上被咨询。独立审核「模型不一样即可」，不要求换家族。
+
+三轮真机演练的结论：链路已经能走通，但主控每一轮都要读脚本源码、靠猜才知道下一步命令和载荷怎么写。本票的目标是让一个没读过源码的主控模型，只看装进项目的说明书（`qwbuddy/QWBUDDY.md` 与 `qwbuddy/roles/*.md`）和命令的帮助、拒绝信息，就能把「需求 → 副主控开票派工 → 工人交付 → 门控验收 → 落地收尾」走完。
+
+参考材料（只读）：三轮演练记录在 `docs/reviews/2026-10-05-real-herdr-roles-drill*.md`；演练主控的原始笔记在 `/Users/rocky/projects/qonnwolfbuddy/.qwb-tmp/drill-roles-r3/stage2-notes.md` 与 `.qwb-tmp/drill-roles-r2/stage2-notes.md`，第三轮两张票的终态在 `.qwb-tmp/drill-roles-r3/evidence/`。演练笔记里的说法是演练主控的记录，写进说明书之前逐条对照代码核实。
+
+### 要做的事
+
+1. **五角色总览。** `templates/QWBUDDY.md` 新增一节，列出五个角色的职责、谁向谁汇报、各自用的脚本入口，以及与现有名称的对应：副主控 = `qwb-role.sh --role 规划`，门控 = `--role 门禁`，工人 = 执行者，顾问 = 原咨询师。脚本里的角色标识（`规划`、`门禁`、`测试体系`、`CI`）不改名。写明默认的工具与模型档位（见 `templates/workers.sh` 与 `templates/dispatch-rules.json` 的现状，不凭空写）。
+2. **`咨询师` 改名 `顾问`。** `templates/roles/咨询师.md` 用 `git mv` 改为 `顾问.md`，正文与所有引用同步（`templates/QWBUDDY.md`、`tests/smoke.sh` 第 114 行附近的文件清单、`bin/qwb-init.sh` 若有清单、`docs/DESIGN.md`）。已装项目里旧文件怎么处理：先读 `bin/qwb-init.sh` 对角色文件的安装与覆盖规则，给出不丢使用者改动的做法；需要改安装器而你认为超出本票的，写 `needs-decision:`。
+3. **常驻职责流程逐步示例。** 在 `templates/QWBUDDY.md`（或新建 `templates/roles/常驻流程.md` 并由安装器装进项目——选哪种你定，说明理由）写一份从头到尾的示例，每一步给出：谁执行、完整命令、载荷文件的完整 JSON 样例、成功后的可见结果、下一棒是谁以及他怎么被叫到。至少覆盖：
+   - 来源票（入口票）怎么写、怎么迁移（迁移确认 JSON 对新建票怎么填）、用 `qwb-send.sh send` 登记原话；
+   - `plan-assign` 的授权 JSON：每个字段的类型与取值（预算是 1 到 64 的整数；包对应的票只写文件名；`permissions` 的允许值——读代码确定，代码不校验取值的话如实写并给推荐值）；主控授权后不要自己办结原话交接；
+   - 副主控 `new` 的请求 JSON、场景标题规则、派工；
+   - 工人交付后主控核对什么、`gate-assign` 的授权 JSON：`workers` 的键、`required` 的键与场景覆盖要求、`environment` 文件是什么与写什么、`base`、`policy` 怎么填；
+   - 门控被叫到后的步骤概览（指向 `门禁.md`），通过后交还；主控在「收到通过通知」与「收到交还通知」之间什么都不用做；
+   - 主控接回、`land-authorize` 的参数（授权引用怎么命名、哪些票文件要登记）、`qwb-worktree.sh land`；落地前先关掉本票的实现与审核工人窗口（写明由主控关，统一两处说法）；
+   - 来源票怎么结案；账本文件（`tasks/*.md`）由谁在什么时候提交；
+   - 操作号规则：同一张票上 claim、接手交接、落地各用不同的操作号；
+   - 主控、副主控、门控各自的载荷与结果文件放 `qwbuddy/.roles/<名字>.work/`（主控用 `controller.work`）；
+   - 规格或场景要修订时的路（带规划授权的票由主控发修订请求、副主控 `plan-revision` 加 `revise`），以及修订使版本加一之后派工授权怎么处理（读代码确认现状，如实写；现状有缺陷就写 `needs-decision:`）。
+4. **示例必须是测出来的。** 在已接入的测试里加一条用例：从说明书里原样取出这份示例的每个 JSON 样例与命令序列（约定一种可机读的标记方式，例如带固定前缀注释的代码块），在假 Herdr 的临时项目里按顺序执行到票 verified。说明书改了而跑不通，测试就红。占位的路径、提交号由测试按约定替换，替换规则写在说明书该节开头。
+5. **清理过时说法。** `templates/roles/主控.md` 等处残留的「同family」「换家族」字样改为「审核者与实现者模型不同、会话不同」；四份角色说明里与本票新流程矛盾或重复的句子对齐；`README.md`、`README.zh.md` 里列角色的地方同步（只改角色名与流程指引，不动证据段落）。
+6. `templates/dispatch-rules.json` 的顾问档候选在 `claude-fable-low` 之外加上 `pi-astra-high`（先确认 `templates/workers.sh` 里有这个工人名）。
+
+白名单：`templates/QWBUDDY.md`、`templates/roles/` 下全部文件（含改名与新增）、`templates/TASK.md`（仅与流程示例直接相关的句子）、`templates/dispatch-rules.json`、`bin/qwb-init.sh`（仅角色文件清单与安装新文件所需）、`docs/DESIGN.md`（仅角色名）、`README.md` 与 `README.zh.md`（仅角色名与流程指引）、`tests/` 下为验收所需的已接入文件。`bin/` 下其余脚本本票不改——另一张票 `roles-polish-code` 同时在改 `bin/qwb-ledger.sh`、`bin/qwb-status.sh`、`bin/qwb-worktree.sh`、`bin/qwb-run.sh` 的几处拒绝信息与显示；你写示例时以基点的行为为准，发现脚本行为本身有缺陷就写进 `done:` 行，不要顺手改。
+
+## 1. 验收场景
+
+### user_正常路径_按说明书示例走到票结案
+
+Given 假 Herdr 的临时项目，装上本副本的工具
+When  测试从装进项目的说明书里取出流程示例的命令与 JSON 样例，按顺序执行
+Then  来源票与实现票都 verified，main 快进到候选提交；全程没有一条命令被拒；这条用例在起点提交上是红的（说明书里没有可取出的示例），先跑出红并留证
+
+### user_失败路径_说明书样例被改坏时测试变红
+
+Given 把说明书里某个 JSON 样例改成不合法（例如预算写成对象）
+When  跑同一条测试
+Then  测试失败并指出是哪一步、哪个样例
+
+### user_正常路径_顾问文件改名后安装与清单一致
+
+Given 全新安装
+When  `bin/qwb-init.sh` 装进一个空项目
+Then  `qwbuddy/roles/顾问.md` 存在、`咨询师.md` 不存在；冒烟里的角色文件清单断言通过
+
+### user_正常路径_已装旧版的项目升级不丢改动
+
+Given 一个装过旧版、`咨询师.md` 被使用者改过的项目
+When  重跑安装
+Then  按你在第 2 条给出的规则处理，使用者的改动没有丢，输出里说明了处理结果
+
+### user_正常路径_说明书里不再有过时说法
+
+Given 改后的 `templates/`
+When  搜「同family」「换家族」「咨询师」
+Then  没有残留（历史记录类文档 `docs/reviews/`、`tasks/` 不在范围内）
+
+## 2. 硬约束
+
+- 只在自己的工作目录（隔离副本）里改，只动白名单内文件。主仓根下除了往主账本追加状态行，**什么都不许动**；不许碰任何已装项目。
+- **绝对不许对真 Herdr 做任何操作；不许启动任何模型会话。** 不要移除或绕过测试的失效关闭隔离、进程登记夹具与 socket 路径夹具。
+- 同时有另一张票 `roles-polish-code` 在改 `bin/` 下的拒绝信息与状态显示；`bin/qwb-init.sh` 只有你改。
+- 测试里需要与旧行为逐字节对照时，基线写成「当前脚本只撤掉本票改动」，不要钉某个固定的历史提交（钉死的基线会被后续正当的行为变更打坏）。
+- 测试不许真等长时间；用现有的假时钟。
+- 临时文件只许建在本副本的 `.qwb-tmp/` 之内；只许删除自己建出并记在变量里的确切路径，禁止任何带 `*` 的 `rm`。不许起烧 CPU 的压力进程。
+- git：只读命令随便用；写操作只许在自己的副本里 `git add` 白名单文件与 `git commit`（在基点之上追加；文件改名用 `git mv`）。禁止建分支、`push`、`stash`、`reset --hard`、`rebase`、`worktree`、改 git 配置。提交信息用英文祈使句一行，不加签名行。
+- 兼容 `/bin/bash` 3.2。脚本里变量后面紧跟中文或中文标点时一律用花括号括起变量名（包括嵌在脚本里的 Perl 与 Python 字符串，账本检查会按文本扫）。状态行时间戳取自机器；状态行里不要出现尖括号占位写法；阶段性进展用 `working:`，只有全部完成才写 `done:`；PASS 与 FAIL 的行数用 `grep -a -c '^PASS'` 与 `grep -a -c '^FAIL'` 数。`done:` 行每条 600 字以内，原始输出留在自己的日志文件里并写明路径。
+
+## 3. 验收门
+
+- 快门：`bash bin/qwb-test.sh fast`（不得新增 shellcheck 告警）。
+- 账本检查：`bash bin/qwb-lint.sh`，须 `LINT PASS`（快门不含这一项，必须单独跑）。
+- 五个场景逐个验证，命令与结论写进 `done:` 行。新增断言在起点提交上必须是红的，先跑出红并留证。
+- 定向：改动涉及的测试文件各单独跑一次，另单独跑 `tests/collab-planning.sh`、`tests/collab-gate.sh`、`tests/collab-land.sh`、`tests/collab-roles.sh`，写明各自退出码与 PASS、FAIL 行数。
+- **不要跑全门**（多个工人同时跑全门会互相挤出超时类假失败，全门由主控合并后串行跑）。作为替代，必须做这一步：在 `tests/smoke.sh` 与 `tests/collab-all.sh` 里搜你改过的每个测试文件名与你改过名的每个文件名，凡是写死了通过条数、用例组数或文件清单的地方同步改成新值；这些行自动算在白名单内。在 `done:` 行写明搜了什么、改了哪几处。
+
+## 4. 报告要求
+
+往主账本绝对路径追加状态行（列首、不缩进）：`working:` / `done:` / `blocked:` / `needs-decision:`。本票是未迁旧票，直接用 `printf` 追加；不改别人的行，**不改 `state:` 字段**。
+任务书里凡标为「主控推断」「演练主控的记录」或与你读到的代码不符的前提，先核对代码；不符就写 `needs-decision:` 说明，不要照着错的前提做。
+最后打印 DONE 加最终提交的 sha，或 STOP 加原因，并把同样的 sha 写进 `done:` 行。
+
+## 5. 本票不允许做的事
+
+- 不改脚本里的角色标识；不改任何脚本的行为；说明书里不写没有对照代码核实过的命令或字段。
+- 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
