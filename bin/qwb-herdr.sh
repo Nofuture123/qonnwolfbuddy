@@ -241,7 +241,7 @@ def activity(pane,directory=None):
         last=messages[-1]
         interrupted=last['type']=='user' and last['message'].get('content')==[{'type':'text','text':'[Request interrupted by user for tool use]'}]
         settled=latest is not None and (last['type']=='assistant' or interrupted)
-        observed=dict(evidence,activity='busy' if active else 'idle' if settled and info.get('agent_status')=='idle' else 'unknown',
+        observed=dict(evidence,activity='busy' if active else 'idle' if settled and info.get('agent_status') in ('idle','done') else 'unknown',
                       proof='native-pid-start+claude-session',session=str(session),pending_tools=sorted(outstanding))
         if latest:
             import hashlib

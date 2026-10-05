@@ -68,7 +68,7 @@ fi
 export QWB_ROLE_BINDIR="$BINDIR" QWB_ROLE_ROOT="$PROJECT_ROOT" QWB_ROLE_PROFILE="$PROFILE"
 export QWB_ROLE_PI_CONTROL QWB_ROLE_PI_INTEGRATION QWB_ROLE_CLAUDE_CONTROL QWB_WORKSPACE QWB_WORKERS
 python3 -B - "$@" <<'PY'
-import argparse, contextlib, fcntl, hashlib, json, os, re, subprocess, sys, tempfile, time, uuid
+import argparse, contextlib, fcntl, hashlib, json, os, re, shlex, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description='角色与保留现场控制；同UID防误用，不是OS沙箱')
@@ -322,6 +322,8 @@ def launch():
     auth = authorize(); require(auth == (r['controller'],r['owner_fp']), '原启动主控代次已变化，需reconcile后再启动')
     integration = adapter()
     pending = r['pending']; d = dict(r, **pending)
+    reconcile_cmd = shlex.join(['bash',str(bindir/'qwb-role.sh'),'reconcile','--project',str(root),
+                                '--actor',r['actor'],'--expect-gen',str(r['incarnation'])])
     # Never retry a possibly delivered launch by guessing from a timeout.
     if pending.get('attempted', r['phase'] not in ('prepared','pane-ready','stopped')):
         observation = current(d, pending=True, handshake=r['tool']=='claude')
@@ -346,7 +348,7 @@ def launch():
         if p.returncode:
             phase('launch-uncertain', last_error=p.stderr.strip())
             if r['tool']=='claude' and 'agent_not_ready' in p.stdout+p.stderr:
-                raise Refusal('Claude尚未就绪；请到窗口'+r['pane']+'确认目录信任，然后reconcile；现场保留，不重发启动')
+                raise Refusal('Claude尚未就绪；请到窗口'+r['pane']+'确认目录信任，然后执行：'+reconcile_cmd+'；现场保留，不重发启动')
             raise Refusal('启动未确认；记录与现场保留，先reconcile现实，不重发')
         observation = current(d, pending=True, handshake=r['tool']=='claude')
         require(observation['activity'] != 'stopped', '启动返回但未确认实际'+('Claude' if r['tool']=='claude' else 'Pi'))
@@ -354,7 +356,7 @@ def launch():
         pending.update({k:observation[k] for k in ('pid','pid_start','session_path') if k in observation}); save()
         d=dict(r,**pending)
         if not pending.get('handshake_sent'):
-            require(pane_info(r['pane']).get('agent_status')=='idle','Claude尚未空闲，保留现场待reconcile补握手')
+            require(pane_info(r['pane']).get('agent_status') in ('idle','done'),'Claude尚未空闲，保留现场；空闲后执行：'+reconcile_cmd)
             prompt=f'请先完整读取职责文件 {r["charter"]}，核对你是本项目的规划职责，然后只回复“就绪”。'
             require('\n' not in prompt and '\r' not in prompt and len(prompt)<=600,'Claude握手须单行且不超过600字符')
             pending.update(handshake_sent=True,handshake_before=observation['activity_evidence'].get('assistant_record'))
@@ -368,7 +370,7 @@ def launch():
                 require(observation['activity']=='idle','Claude握手尚未空闲')
                 break
             except Refusal as e: reason=str(e)
-            require(time.monotonic()<deadline,'Claude握手未确认：'+reason+'；现场保留，完成后reconcile')
+            require(time.monotonic()<deadline,'Claude握手未确认：'+reason+'；现场保留，完成后执行：'+reconcile_cmd)
             time.sleep(.5)
         pending.pop('handshake_sent',None); pending.pop('handshake_before',None)
 
@@ -443,7 +445,8 @@ def main():
                 launch()
         else:
             require(r is not None, '角色未登记')
-            require(a.expect_gen is not None and a.expect_gen == r['incarnation'], '旧代际/缺expect-gen，拒绝推进当前实例')
+            require(a.expect_gen is not None and a.expect_gen == r['incarnation'], '旧代际/缺expect-gen，拒绝推进当前实例'+
+                    (f'；当前代次为 {r["incarnation"]}，请加 --expect-gen {r["incarnation"]}' if a.command=='reconcile' else ''))
             require(r['phase'] != 'retired' or a.command == 'retire', '已退休角色不可控制/恢复')
             control_target = dict(r, **r.get('pending',{}))
             observation = current(control_target, pending=bool(r.get('pending')), handshake=r['tool']=='claude' and bool(r.get('pending')) and a.command=='reconcile')

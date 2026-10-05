@@ -12,7 +12,7 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_ROLES_TEST_ROOT="$ROOT"
 python3 -B - <<'PY'
-import hashlib, json, os, shutil, subprocess, tempfile
+import hashlib, json, os, shlex, shutil, subprocess, tempfile
 from pathlib import Path
 
 root = Path(os.environ['QWB_ROLES_TEST_ROOT'])
@@ -21,6 +21,8 @@ with tempfile.TemporaryDirectory(prefix='qwb-roles-') as tmp:
     tmp = str(Path(tmp).resolve())
     p = Path(tmp) / 'project'; p.mkdir()
     subprocess.run(['bash', str(root/'bin/qwb-init.sh'), str(p)], check=True, stdout=subprocess.DEVNULL)
+    installed_workers=(p/'qwbuddy/workers.sh').read_bytes()
+    installed_config=(p/'qwbuddy/config.sh').read_text()
     (p / 'qwbuddy/.controller.lock').mkdir(parents=True)
     (p / 'qwbuddy/.controller.lock/owner').write_text('2099-01-01T00:00:00Z w1:pCtl\n')
     integration = Path(tmp) / 'herdr-agent-state.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
@@ -48,7 +50,7 @@ mode=os.environ.get('ROLE_FAKE_MODE','')
 def reply():
  session=Path(s['session']);session.parent.mkdir(parents=True,exist_ok=True)
  with session.open('a') as f:
-  f.write(json.dumps({'type':'assistant','sessionId':s['sid'],'cwd':os.environ['ROLE_PROJECT'],'uuid':'reply-'+str(s['starts']),'effort':'low' if mode=='bad-effort' else s['effort'],'message':{'model':'wrong' if mode=='bad-model' else s['model'],'content':[{'type':'text','text':'ready'}]}})+'\\n')
+  f.write(json.dumps({'type':'assistant','sessionId':s['sid'],'cwd':os.environ['ROLE_PROJECT'],'uuid':'reply-'+str(s['starts']),'effort':'low' if mode=='bad-effort' else s['effort'],'message':{'model':'wrong' if mode=='bad-model' else s['model'],'stop_reason':'end_turn','content':[{'type':'text','text':'ready'}]}})+'\\n')
 if a[:2]==['workspace','list']:
  out({'workspaces':[{'active_tab_id':'w1:t1','agent_status':'idle','focused':True,'label':'drill-main','number':1,'pane_count':1,'tab_count':1,'workspace_id':'w1'}]} if mode=='workspace-no-worktree' else {'workspaces':[{'workspace_id':'w1','worktree':{'repo_root':os.environ['ROLE_PROJECT'],'is_linked_worktree':False}}]})
 elif a[:2]==['tab','create']:
@@ -87,6 +89,7 @@ elif a[:2]==['pane','get']:
   pane.update(agent='pi',agent_status='working' if mode=='busy' and not ctl else 'idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':'ctl-session' if ctl else s['session']})
  if s.get('tool')=='claude' and not ctl and s['live']:
   pane.update(agent='claude',agent_session={'agent':'claude','kind':'id','source':'herdr:claude','value':s['sid']})
+ if mode=='done' and not ctl and s['live']:pane.update(agent_status='done',focused=False)
  if mode=='untrusted' and not ctl:pane.update(agent_status='blocked',agent_session=None)
  if mode=='old-session' and not ctl:pane['agent_session']['value']='different-session'
  if mode=='scrolled' and not ctl:pane['scroll']={'offset_from_bottom':10}
@@ -171,8 +174,37 @@ print('Thu Oct  1 00:00:00 2099')
     config=p/'qwbuddy/config.sh'; saved_config=config.read_bytes()
     workers=p/'qwbuddy/workers.sh'; saved_workers=workers.read_bytes()
     env['QWB_CLAUDE_PROJECTS_DIR']=str(Path(tmp)/'claude-projects')
-    config.write_text(config.read_text()+"\nQWB_ROLE_CLAUDE_CONTROL='verified'\nQWB_WORKERS='sol claude-opus-medium'\n")
-    workers.write_text(workers.read_text()+'qwb_worker claude-opus-medium herdr claude -- --model claude-opus-5-5 --effort medium --dangerously-skip-permissions\n')
+    config.write_text(installed_config+"\nQWB_WORKSPACE='w1'\nQWB_ROLE_CLAUDE_CONTROL='verified'\n")
+    workers.write_bytes(installed_workers)
+    installed_roles=p/'qwbuddy/.roles'
+    installed=call('qwb-role.sh','start','--actor','installed','--role','规划','--worker','claude-opus-medium','--dir',str(p))
+    assert installed['phase']=='active' and installed['actual_model']=='claude-opus-5-5' and installed['actual_effort']=='medium',installed
+    installed_argv=installed['argv']
+    assert installed_argv[installed_argv.index('--add-dir')+1]==str(p)
+    native_argv=json.loads(state.read_text())['argv']
+    assert native_argv[native_argv.index('--add-dir')+1]==str(p)
+    assert workers.read_bytes()==installed_workers, 'installed declaration must not be hand-rewritten'
+    observed_done=call('qwb-role.sh','status','--actor','installed',extra={'ROLE_FAKE_MODE':'done'})
+    done_matches=observed_done['activity']=='idle' and observed_done.get('actual_model')=='claude-opus-5-5'
+    print(('PASS' if done_matches else 'FAIL')+' Claude未聚焦done且end_turn：活动可认闲并保留模型证明',flush=True)
+    call('qwb-control.sh','exit','--actor','installed','--expect-gen','1')
+    call('qwb-role.sh','retire','--actor','installed','--expect-gen','1')
+    installed_done=call('qwb-role.sh','start','--actor','installed-done','--role','规划','--worker','claude-opus-medium','--dir',str(p),extra={'ROLE_FAKE_MODE':'done'})
+    assert installed_done['phase']=='active' and done_matches,(installed_done,observed_done)
+    call('qwb-control.sh','exit','--actor','installed-done','--expect-gen','1',extra={'ROLE_FAKE_MODE':'done'})
+    call('qwb-role.sh','retire','--actor','installed-done','--expect-gen','1')
+    print('PASS Claude done握手发布active，done空输入框可exit，旧PID结束后退休')
+    shutil.rmtree(installed_roles);state.unlink();log.unlink()
+    print('PASS 真实qwb-init安装工人表：Claude规划start取得active，项目根add-dir原样保留',flush=True)
+    def claude_profile(*extra):
+        return subprocess.run(['/bin/bash','-c','. "$1"; shift; qwb_claude_profile role herdr claude "$@"','profile',str(root/'bin/qwb-lib.sh'),*installed_argv,*extra],env=env,capture_output=True,text=True)
+    repeated=claude_profile('--add-dir','目录 with spaces','--add-dir',"another ' directory")
+    assert repeated.returncode==0 and json.loads(repeated.stdout)==dict(provider='anthropic',model='claude-opus-5-5',effort='medium'),repeated
+    for extra in [('--add-dir',),('--add-dir',''),('--add-dir','-option'),('--unknown','x'),('--resume','session'),('--fast',),('--add-dir=path',)]:
+        rejected=claude_profile(*extra)
+        assert rejected.returncode!=0 and extra[0] in rejected.stderr,(extra,rejected)
+        if extra[0]!='--add-dir':assert '不允许参数' in rejected.stderr,rejected.stderr
+    print('PASS Bash3.2 Claude档位：重复add-dir及含空格/引号路径保真，缺值/空值/选项值和具名未知参数拒绝')
     args=('start','--actor','planner','--role','规划','--worker','claude-opus-medium','--dir',str(p))
     disabled=config.read_text().replace("QWB_ROLE_CLAUDE_CONTROL='verified'", "QWB_ROLE_CLAUDE_CONTROL=''")
     config.write_text(disabled)
@@ -183,8 +215,9 @@ print('Thu Oct  1 00:00:00 2099')
         denied=call('qwb-role.sh','start','--actor','invalid','--role',role,'--worker','claude-opus-medium','--dir',str(p),ok=False)
         assert 'Claude仅可担任规划' in denied.stderr
     valid_workers=workers.read_text()
+    claude_line=next(line for line in valid_workers.splitlines() if line.startswith('qwb_worker claude-opus-medium '))
     for suffix in (' --model duplicate',' --effort high',' --resume arbitrary',' --fast',' --append-system-prompt text'):
-        workers.write_text(valid_workers.rstrip()+suffix+'\n')
+        workers.write_text(valid_workers.replace(claude_line,claude_line+suffix))
         call('qwb-role.sh',*args,ok=False)
     for model in ('--dangerously-skip-permissions','""'):
         workers.write_text(valid_workers.replace('--model claude-opus-5-5','--model '+model))
@@ -204,6 +237,11 @@ print('Thu Oct  1 00:00:00 2099')
         assert (check.returncode==0)==ok,(check.stdout,check.stderr)
         return json.loads(check.stdout) if ok else check
     assert identity()['session_id']==claude['session_id']
+    for generation_args in ((),('--expect-gen','0')):
+        rejected=call('qwb-role.sh','reconcile','--actor','planner',*generation_args,ok=False)
+        assert '当前代次为 1' in rejected.stderr and '请加 --expect-gen 1' in rejected.stderr,rejected.stderr
+        assert json.loads((p/'qwbuddy/.roles/planner.json').read_text())['incarnation']==1
+    print('PASS reconcile缺代次/旧代次提示当前1与正确参数，代次校验保留')
     print('PASS Claude规划启动握手：UUID/单行指路/实际模型档位/active/规划身份')
     original=Path(claude['session_path']).read_bytes()
     for field,value in [('effort','low'),('model','wrong'),('sessionId','wrong'),('cwd',str(Path(tmp)) )]:
@@ -212,6 +250,7 @@ print('Thu Oct  1 00:00:00 2099')
         else:record[field]=value
         Path(claude['session_path']).write_text(json.dumps(record)+'\n')
         assert call('qwb-role.sh','status','--actor','planner')['activity']=='unknown'
+        assert call('qwb-role.sh','status','--actor','planner',extra={'ROLE_FAKE_MODE':'done'})['activity']=='unknown'
         identity(False)
         Path(claude['session_path']).write_bytes(original)
     for mode in ('old-session','wrong-pid'):
@@ -232,6 +271,8 @@ print('Thu Oct  1 00:00:00 2099')
     record=json.loads(original);record['message']['content']=[{'type':'tool_use','id':'call-1','name':'Read','input':{}}]
     Path(claude['session_path']).write_text(json.dumps(record)+'\n')
     assert call('qwb-role.sh','status','--actor','planner')['activity']=='working'
+    assert call('qwb-role.sh','status','--actor','planner',extra={'ROLE_FAKE_MODE':'done'})['activity']=='working'
+    call('qwb-control.sh','exit','--actor','planner','--expect-gen','1',ok=False,extra={'ROLE_FAKE_MODE':'done'})
     call('qwb-control.sh','exit','--actor','planner','--expect-gen','1',ok=False)
     result=dict(type='user',sessionId=claude['session_id'],cwd=str(p),message={'content':[{'type':'tool_result','tool_use_id':'call-1','content':'read'}]})
     with Path(claude['session_path']).open('a') as f:f.write(json.dumps(result)+'\n'+original.decode())
@@ -288,11 +329,18 @@ print('Thu Oct  1 00:00:00 2099')
     for mode in ('untrusted','bad-model','bad-effort','no-reply'):
         actor='planner-'+mode
         failed=call('qwb-role.sh','start','--actor',actor,'--role','规划','--worker','claude-opus-medium','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':mode,'ROLE_FAKE_CLOCK':'1'})
-        if mode=='untrusted': assert '确认目录信任，然后reconcile' in failed.stderr
+        if mode=='untrusted': assert '确认目录信任' in failed.stderr
         else: assert 'Claude握手未确认：' in failed.stderr,failed.stderr
+        command=failed.stderr.split('执行：',1)[1].split('；',1)[0]
+        assert shlex.split(command)==['bash',str(root/'bin/qwb-role.sh'),'reconcile','--project',str(p),'--actor',actor,'--expect-gen','0'],failed.stderr
         record_path=p/'qwbuddy/.roles'/(actor+'.json')
         pending=json.loads(record_path.read_text()); assert pending['incarnation']==0 and pending.get('pending') and pending['phase']!='active'
         snapshot=json.loads(state.read_text()); starts=snapshot['starts']
+        if mode=='untrusted':
+            for generation_args in ((),('--expect-gen','1')):
+                rejected=call('qwb-role.sh','reconcile','--actor',actor,*generation_args,ok=False)
+                assert '当前代次为 0' in rejected.stderr and '请加 --expect-gen 0' in rejected.stderr,rejected.stderr
+                assert json.loads(record_path.read_text())['incarnation']==0 and json.loads(state.read_text())['starts']==starts
         if mode!='untrusted':
             # Simulate the pending native answer arriving/correcting after timeout; no prompt re-send.
             session=Path(snapshot['session']);session.parent.mkdir(exist_ok=True,parents=True)
@@ -301,7 +349,7 @@ print('Thu Oct  1 00:00:00 2099')
         assert recovered['phase']=='active' and json.loads(state.read_text())['starts']==starts
         call('qwb-control.sh','exit','--actor',actor,'--expect-gen','1')
         call('qwb-role.sh','retire','--actor',actor,'--expect-gen','1')
-    print('PASS Claude未信任/模型不符/档位不符/握手超时保留现场，reconcile不重发启动')
+    print('PASS Claude未信任/握手超时附完整reconcile命令与当前代次，恢复不重发启动')
     # Two pane queries per loop; the 7th query releases the reply on loop 4.
     # The private clock advances 6s per deadline check: old 10s stops at loop 2.
     delayed=call('qwb-role.sh','start','--actor','planner-delayed','--role','规划','--worker','claude-opus-medium','--dir',str(p),extra={'ROLE_FAKE_MODE':'delayed-reply','ROLE_FAKE_CLOCK':'1'})

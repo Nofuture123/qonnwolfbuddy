@@ -266,9 +266,11 @@ try:
     while i<len(args):
         flag=args[i]
         if flag=='--dangerously-skip-permissions': i+=1; continue
-        assert flag in ('--model','--effort') and i+1<len(args), 'Claude角色仅允许--model/--effort与--dangerously-skip-permissions'
+        assert flag in ('--model','--effort','--add-dir'), 'Claude角色不允许参数: '+repr(flag)
+        assert i+1<len(args) and args[i+1] and not args[i+1].startswith('-'), flag+'须有非空且不以-开头的值'
+        if flag=='--add-dir': i+=2; continue
         key=flag[2:]; value=args[i+1]
-        assert key not in d and not value.startswith('-') and re.fullmatch(r'[a-zA-Z0-9_.-]+',value), flag+'须显式出现一次且非空'
+        assert key not in d and re.fullmatch(r'[a-zA-Z0-9_.-]+',value), flag+'须显式出现一次且非空'
         d[key]=value; i+=2
     assert 'model' in d and d.get('effort') in ('low','medium','high','max'), 'Claude须显式--model与--effort low|medium|high|max'
     print(json.dumps(d))
