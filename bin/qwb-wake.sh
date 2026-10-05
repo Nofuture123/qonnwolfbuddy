@@ -788,6 +788,7 @@ check_round() {
 }
 
 EVENT_DIR=""; EVENT_PID=""; EVENT_SEEN=""; QWB_DUE_FILE=""
+EVENT_CLEANUP_MAX_SECONDS=4  # SECONDS 为整秒：首段留取整裕量，再各等 1 秒；真实总时限 4 秒。
 # 创建期间只记中断；mktemp 忽略 INT/TERM，确保建好文件后路径能完整读回。
 # 路径登记后恢复既有退出码，再由 EXIT 同时回收 due 文件与订阅器。
 due_create() {
@@ -820,8 +821,21 @@ event_cleanup() {
   trap '' INT TERM
   due_cleanup
   if [[ -n "$EVENT_PID" ]]; then
-    kill "$EVENT_PID" 2>/dev/null || true
-    wait "$EVENT_PID" 2>/dev/null || true
+    local started=$SECONDS phase deadline
+    for phase in 1 2 3; do
+      kill -0 "$EVENT_PID" 2>/dev/null || break
+      case "$phase" in
+        1) kill -TERM "$EVENT_PID" 2>/dev/null || true ;;
+        2) echo 'Herdr subscriber still alive; retrying TERM' >&2
+           kill -TERM "$EVENT_PID" 2>/dev/null || true ;;
+        3) echo 'Herdr subscriber still alive after two TERM attempts; sending SIGKILL' >&2
+           kill -KILL "$EVENT_PID" 2>/dev/null || true ;;
+      esac
+      deadline=$((started + EVENT_CLEANUP_MAX_SECONDS - 3 + phase))
+      while kill -0 "$EVENT_PID" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.01; done
+    done
+    # 只回收已退出的子进程；即使内核尚未完成 KILL，也不再无限 wait。
+    if ! kill -0 "$EVENT_PID" 2>/dev/null; then wait "$EVENT_PID" 2>/dev/null || true; fi
   fi
   [[ -z "$EVENT_DIR" ]] || rm -rf "$EVENT_DIR"
 }

@@ -116,7 +116,10 @@ def targets():
     return sorted(panes)
 
 def subscribe():
+    stop_signal=None
     def interrupted(signum,_frame):
+        nonlocal stop_signal
+        stop_signal=signum
         raise SystemExit(128+signum)
     signals.signal(signals.SIGTERM,interrupted)
     signals.signal(signals.SIGINT,interrupted)
@@ -126,6 +129,7 @@ def subscribe():
         counter+=1; tmp=notice.with_suffix('.tmp')
         tmp.write_text(json.dumps(dict(seq=counter,phase=kind,panes=panes,at=time.time()))+'\n'); tmp.replace(notice)
     while True:
+        if stop_signal is not None: raise SystemExit(128+stop_signal)
         panes=[]
         try:
             panes=targets(); require(panes,'no registered targets')
@@ -137,6 +141,7 @@ def subscribe():
                 print('Herdr subscription established: '+','.join(panes),file=sys.stderr,flush=True)
                 refresh=time.monotonic()+1; s.settimeout(.2)
                 while True:
+                    if stop_signal is not None: raise SystemExit(128+stop_signal)
                     try:
                         v,buf=receive(s,buf)
                         if v.get('event')=='pane.agent_status_changed' and v.get('data',{}).get('pane_id') in panes:

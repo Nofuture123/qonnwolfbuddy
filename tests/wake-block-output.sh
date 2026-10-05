@@ -21,6 +21,8 @@ FP="$(printf 'running\n' | shasum | cut -d' ' -f1)"
 printf '# output\nstate: running\nwake: %s state=running fp=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FP" > "$TICKET"
 
+python3 -B "$ROOT/tests/wake-exit-hang.py"
+
 once="$(env -u HERDR_PANE_ID bash "$PROJECT/qwbuddy/bin/qwb-wake.sh" --project "$PROJECT" --once)"
 [[ "$once" == *"跳过：2099-01-01-output.md"* ]] || { echo "FAIL --once 跳过日志变化" >&2; exit 1; }
 dry="$(env -u HERDR_PANE_ID bash "$PROJECT/qwbuddy/bin/qwb-wake.sh" --project "$PROJECT" --dry-run)"
