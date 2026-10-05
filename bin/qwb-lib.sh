@@ -388,12 +388,19 @@ qwb_task_obligations_json() {
   # shellcheck disable=SC2016 # Perl变量必须原样传入两个消费者。
   local progress='sub {
     my ($d,$e,$h)=@_;
-    return 0 unless $e && $e->{kind} eq "working" && $e->{line}!~/^working:\s*spec-resolved:/;
-    return 0 if grep { $_->{event_id} eq $e->{event_id} } values %{$d->{test_requests} // {}};
+    return 0 unless $e;
     if ($h) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
       return 0 unless $h->{event_id} eq $id && $h->{corr} eq $id && $h->{source_event} eq $e->{event_id};
     }
+    if ($e->{kind} eq "gate-assign") {
+      my $g=$d->{gate};
+      my ($latest)=grep { $_->{kind} eq "gate-assign" } reverse @{$d->{events}};
+      return 1 unless $g && $latest->{event_id} eq $e->{event_id} && $e->{spec_rev}==$g->{binding}{spec_rev};
+      return scalar grep { $_->{seq}>$e->{seq} && $_->{kind}=~/^(claim|start-claim)$/ && ($_->{actor} eq $g->{identity}{pane} || $_->{actor} eq $g->{identity}{controller}) } @{$d->{events}};
+    }
+    return 0 unless $e->{kind} eq "working" && $e->{line}!~/^working:\s*spec-resolved:/;
+    return 0 if grep { $_->{event_id} eq $e->{event_id} } values %{$d->{test_requests} // {}};
     return 1;
   }'
   if [[ "${1:-}" == --progress-classifier ]]; then printf '%s\n' "$progress"; return; fi
@@ -409,7 +416,7 @@ qwb_task_obligations_json() {
     print "handoff=$_ " for sort grep { !$h->{$_}{handled} && !$progress->($d,$d->{events}[$h->{$_}{source_seq}-1],$h->{$_}) } keys %$h;
     for my $e (@{$d->{events}}) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id} && !$progress->($d,$e);
+      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || $e->{kind} eq "gate-assign" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id} && !$progress->($d,$e);
     }
   ' "$progress"
 }

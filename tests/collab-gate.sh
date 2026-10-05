@@ -20,6 +20,10 @@ with TemporaryDirectory(prefix='qwb-gate-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp=Path(tmp).resolve(); p=tmp/'project'; p.mkdir(); stub=tmp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')
+    notify_runtime=os.environ.get('QWB_NOTIFY_BASELINE')=='1'
+    if notify_runtime:
+        for script in ['qwb-ledger.sh','qwb-wake.sh','qwb-send.sh','qwb-lib.sh']:
+            (p/'qwbuddy/bin'/script).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/'+script]))
     baseline=os.environ.get('QWB_PROMPT_START_BASELINE')=='1'
     if baseline:
         (p/'qwbuddy/bin/qwb-run.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/qwb-run.sh']))
@@ -87,6 +91,11 @@ if ($verb eq 'workspace list') {
     out({type=>'agent_started'});
 } elsif ($verb eq 'pane get') {
     my $gate=$a[2] eq 'gate-pane';my $d={pane_id=>$a[2],workspace_id=>'ws',terminal_id=>$gate?'gate-terminal':'ctl-terminal',foreground_cwd=>$project,agent_status=>'idle'};
+    if ($gate && $ENV{GATE_NOTIFY_BAD}) {
+        my $bad=$ENV{GATE_NOTIFY_BAD} eq 'gone';
+        if (!$bad) { $s->{notify_probes}=($s->{notify_probes}//0)+1; $bad=$s->{notify_probes}>=3; }
+        if ($bad) { print $json->encode({error=>{code=>'pane_not_found'}}),"\n"; exit 1; }
+    }
     if (!$gate || exists $s->{session}) {
         $d->{agent}='pi';$d->{agent_status}='idle';
         if ($a[2] =~ /^worker-/ && exists $s->{worker_dirs}{$a[2]}) { $d->{foreground_cwd}=$s->{worker_dirs}{$a[2]}; }
@@ -109,7 +118,7 @@ close $output;
     for f in stub.iterdir(): f.chmod(0o755)
     env=os.environ|{'LC_ALL':'','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','GATE_PROJECT':str(p),'GATE_NATIVE_PID':str(os.getpid()),'GATE_NATIVE_STATE':str(state),'GATE_NATIVE_LOG':str(tmp/'native-calls.jsonl'),'GATE_CANDIDATES':json.dumps(list(map(str,[ca,cb,cc])))}
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
-        argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else ROOT/'bin'/script)]
+        argv=['bash',str(p/'qwbuddy/bin'/script if notify_runtime or baseline and script=='qwb-run.sh' else ROOT/'bin'/script)]
         argv += ['--project',str(p),verb,*map(str,args)] if script=='qwb-run.sh' else [verb,'--project',str(p),*map(str,args)]
         r=subprocess.run(argv,env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         assert (r.returncode==0)==ok,(script,verb,r.returncode,r.stdout,r.stderr)
@@ -138,6 +147,58 @@ close $output;
     request=tmp/'assignment.json'; environment=tmp/'environment'; environment.write_text('fixture dependency v1\n')
     request.write_text(json.dumps({'candidate':str(ca),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}))
     call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request)
+    # A: same assertion is red against the fixed starting writer/wake, without live endpoints.
+    saved_t=t.read_bytes(); saved_bt=bt.read_bytes(); saved_native=state.read_bytes()
+    notify_runtime=True
+    runtime=p/'qwbuddy/bin'; saved_scripts={s:(runtime/s).read_bytes() for s in ['qwb-ledger.sh','qwb-wake.sh']}
+    clock=tmp/'notify-clock'; clock.write_text('4102444800000')
+    now=tmp/'notify-now'; now.write_text('#!/bin/sh\ncat "$GATE_NOTIFY_CLOCK"\n'); now.chmod(0o755)
+    writer=saved_scripts['qwb-ledger.sh'].decode().replace('my $now=int(time()*1000);','my $now=0+read_file($ENV{GATE_NOTIFY_CLOCK});')
+    (runtime/'qwb-ledger.sh').write_text(writer)
+    env.update(GATE_NOTIFY_CLOCK=str(clock),QWB_NOW_MS_CMD=str(now),QWB_REWAKE_MS='1800000')
+    def notify_routes(**extra):
+        log=tmp/'native-calls.jsonl'; log.write_text('')
+        result=call('qwb-wake.sh','--once','--pane','ctl',extra=extra)
+        calls=[json.loads(row) for row in log.read_text().splitlines()]
+        return [a for a in calls if a[:2]==['pane','run']],result
+    try:
+        routes,result=notify_routes()
+        print('EVIDENCE notify A first',result.returncode,repr(result.stdout),repr(result.stderr),routes,flush=True)
+        bells=[a for a in routes if a[2]=='gate-pane']
+        assert len(bells)==1 and 'A(running)' in bells[0][3] and '待接手' in bells[0][3], 'gate-assign has no first doorbell'
+        d=json.loads(call('qwb-ledger.sh','read','--task',t).stdout)
+        assignment=next(e for e in d['events'] if e['kind']=='gate-assign'); aid='source:'+assignment['event_id']
+        initial=json.loads(saved_t.split(b'<!-- qwb-collab-v1\n')[1].split(b'\n-->')[0])
+        assert aid in initial['handoffs'], 'gate-assign and handoff must publish atomically'
+        assert d['handoffs'][aid]['transport_count']==1 and not d['handoffs'][aid]['handled']
+        assert all(aid not in a[3] for a in routes if a[2]=='ctl'), routes
+        assert not list((p/'qwbuddy/.roles').glob('*.inbox')), 'no handwritten inbox'
+        assert not notify_routes()[0], 'restart duplicates first bell'
+        call('qwb-ledger.sh','claim','--task',t,'--','notify-claim',actor='gate-pane')
+        clock.write_text('4102446600001')
+        assert all(aid not in a[3] for a in notify_routes()[0]), 'claim did not satisfy first bell'
+        call('qwb-ledger.sh','release','--task',t,'--','notify-claim',actor='gate-pane')
+        assert all(aid not in a[3] for a in notify_routes()[0]), 'release revived first bell'
+        for failure in ['gone','second']:
+            t.write_bytes(saved_t); bt.write_bytes(saved_bt); state.write_bytes(saved_native)
+            routes,_=notify_routes(GATE_NOTIFY_BAD=failure)
+            assert not any(a[2]=='gate-pane' for a in routes), routes
+            assert len(routes)==1 and routes[0][2]=='ctl' and aid in routes[0][3] and '门禁不可用' in routes[0][3], routes
+        t.write_bytes(saved_t); bt.write_bytes(saved_bt); state.write_bytes(saved_native)
+        for i in range(3):
+            clock.write_text(str(4102444800000+i*1800001))
+            assert sum(a[2]=='gate-pane' and aid in a[3] for a in notify_routes()[0])==1
+        routes,_=notify_routes()
+        assert len(routes)==1 and routes[0][2]=='ctl' and aid in routes[0][3] and '交接升级主控' in routes[0][3],routes
+        assert not notify_routes()[0]
+        assert json.loads(call('qwb-ledger.sh','read','--task',t).stdout)['handoffs'][aid]['transport_count']==3
+        print('PASS notify A：授权原子门铃、混批分流、claim后释放不复活、重启去重、双身份失效回主控、三投升级',flush=True)
+    finally:
+        t.write_bytes(saved_t); bt.write_bytes(saved_bt); state.write_bytes(saved_native)
+        for script,raw in saved_scripts.items(): (runtime/script).write_bytes(raw)
+        for key in ['GATE_NOTIFY_CLOCK','QWB_NOW_MS_CMD','QWB_REWAKE_MS']:env.pop(key,None)
+        notify_runtime=False
+    if os.environ.get('QWB_NOTIFY_ONLY')=='A': raise SystemExit(0)
     call('qwb-ledger.sh','claim','--task',t,'--','accept-A',actor='gate-pane')
     brequest=json.loads(request.read_text());brequest['candidate']=str(cb);request.write_text(json.dumps(brequest))
     call('qwb-ledger.sh','gate-assign','--task',bt,'--','gate',request)

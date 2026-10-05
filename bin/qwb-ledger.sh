@@ -638,6 +638,11 @@ if ($cmd =~ /\Ahandoff-/) {
   $pure_progress=eval $progress_classifier;
   fail('纯进度分类不可用') unless ref($pure_progress) eq 'CODE';
 }
+sub gate_assignment_handoff {
+  my $h=shift; my $e=$data->{events}[$h->{source_seq}-1];
+  return $e && $e->{kind} eq 'gate-assign' && $h->{event_id} eq source_id($e->{event_id}) && $h->{corr} eq $h->{event_id} && !$pure_progress->($data,$e,$h);
+}
+sub gate_assignment_payload { "门禁待接手；授权=$_[0]{event_id}；请先 claim，再按原交接协议读取成果。" }
 sub handoff_fallback {
   my ($h,$retry)=@_;
   return if $h->{handled} || $h->{received} ne '' || $h->{transport_count}<3 || $pure_progress->($data,$data->{events}[$h->{source_seq}-1],$h);
@@ -646,6 +651,7 @@ sub handoff_fallback {
   my $g=$data->{gate};
   if ($request) { ($role,$pane)=('测试体系',$request->{identity}{pane}) }
   elsif ($g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/) { ($role,$pane)=('门禁',$g->{identity}{pane}) }
+  elsif (gate_assignment_handoff($h)) { ($role,$pane)=('门禁',$g->{identity}{pane}) }
   elsif ($planning_grant && planner_controller_hint($h) eq '') { ($role,$pane)=('规划',$planning_grant->{identity}{pane}) }
   my $notified=grep { $_->{kind} eq 'handoff-transport' && $_->{line}=~/\Aworking: handoff-transport event_id=\Q$h->{event_id}\E mode=(?:escalation|reminder) / } @{$data->{events}};
   my $mode=$role ne '主控' && !$notified ? 'escalation' : 'reminder';
@@ -1466,15 +1472,15 @@ REPORT
     my $added=0;
     for my $e (@{$data->{events}}) {
       # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
-      next unless $e->{kind} eq 'migrate' || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      next unless $e->{kind} eq 'migrate' || $e->{kind} eq 'gate-assign' || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
       my $id=source_id($e->{event_id});
       next if exists $data->{handoffs}{$id};
-      my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{line};
+      my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{kind} eq 'gate-assign' ? gate_assignment_payload($e) : $e->{line};
       $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$payload); $added++;
     }
     # 旧版本已由规划handled的工人问题可恢复上行；与正常handled使用同一幂等键。
     $added+=ensure_planner_result($_) for values %{$data->{handoffs}};
-    my @p=map { my $fallback=handoff_fallback($_,$retry); +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0,($fallback ? (fallback=>$fallback) : ())} }
+    my @p=map { my $fallback=handoff_fallback($_,$retry); +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0,(gate_assignment_handoff($_) ? (gate_assignment=>1) : ()),($fallback ? (fallback=>$fallback) : ())} }
       sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
     # 只给规划分流增加瞬时提示；既有测试请求整批及门禁claim路径保持原输出。
     my %pending=map { $_->{event_id}=>1 } @p;
@@ -1769,6 +1775,10 @@ if ($data) {
     $event=unpack('H*',$bytes);
   }
   push @{$data->{events}},{event_id=>$event,seq=>$data->{seq},at=>strftime('%Y-%m-%dT%H:%M:%SZ',gmtime),kind=>$kind,actor=>$actor,op_id=>$op,spec_rev=>$data->{spec_rev},line=>$line};
+  if ($cmd eq 'gate-assign') {
+    my $e=$data->{events}[-1]; my $id=source_id($event);
+    $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,gate_assignment_payload($e));
+  }
   if ($handoff_return) {
     $data->{handoffs}{$event}=new_handoff($event,$handoff_return->[0],$handoff_return->[1],$data->{events}[-1],$handoff_return->[2]);
   }

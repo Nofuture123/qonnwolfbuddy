@@ -620,7 +620,7 @@ collect_due() {
       [[ "$pending" != '[]' ]] || continue
       # 同批完整event_id；旧wake指纹不是消费游标，摘要不把正文当系统指令。
       last="[qwb-handoff] $(printf '%s' "$pending" | perl -MJSON::PP -0777 -e '
-        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ()),(exists($_->{fallback}) ? (fallback=>$_->{fallback}) : ())} } @$p]);
+        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{gate_assignment}) ? (gate_assignment=>$_->{gate_assignment}) : ()),(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ()),(exists($_->{fallback}) ? (fallback=>$_->{fallback}) : ())} } @$p]);
       ')"
       fp="$(printf '%s' "$pending" | shasum | cut -d' ' -f1)"
       printf '%s\t%s\t%s\t%s\t\n' "$f" "$st" "$fp" "$last" >> "$out"
@@ -720,7 +720,18 @@ gate_proof() {
   printf '%s' "$proof" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print JSON::PP->new->canonical->encode(decode_json(<STDIN>))'
 }
 
-# 复用03唯一监督：已claim且02本代身份可信的原票，一批直接门铃门禁。
+# 仅首次授权的子集在身份失效时补明确原因，不改变其他交接的原摘要。
+gate_unavailable_summary() {
+  [[ "$1" == *'"gate_assignment":1'* ]] || { printf '%s' "$1"; return; }
+  perl -MJSON::PP -e '
+    use utf8;
+    my $p=decode_json(substr($ARGV[0],length("[qwb-handoff] ")));
+    for my $h (@$p) { $h->{controller_hint}="门禁不可用；actor=$ARGV[1] pane=$ARGV[2]；授权交接=$h->{event_id}；请主控核对" if $h->{gate_assignment} }
+    print "[qwb-handoff] ".JSON::PP->new->canonical->utf8->encode($p);
+  ' "$1" "$2" "$3"
+}
+
+# 复用03唯一监督：未接手授权及已claim的原票，经02本代身份复核后门铃门禁。
 # 不创建第二watcher，不替门禁确认received/handled；ready/重诊仍交主控。
 route_gate_due() {
   local duef="$1" controller="$2" dir keep f st fp last lostpane data info actor grant target proof i idx failed role request_event split remainder
@@ -761,6 +772,8 @@ route_gate_due() {
           print "$r->{identity}{actor}\t".JSON::PP->new->canonical->encode($r->{identity})."\t$r->{identity}{pane}\t测试体系\tsource:$r->{event_id}";
         } elsif ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
           print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁";
+        } elsif ($g && grep { $_->{gate_assignment} } @$due) {
+          print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁\t".join(",",map { $_->{event_id} } grep { $_->{gate_assignment} } @$due);
         } elsif ($g && $g->{verdict}=~/^(accepted|rediagnose)$/ && ($d->{planning_authority} || ($d->{planning} && $d->{planning}{authority}))) {
           # 验收结论和技术重诊回主控，不能再次落入规划分支。
         } elsif (my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef)) {
@@ -804,6 +817,7 @@ route_gate_due() {
         fi
         continue
       fi
+      if [[ "$role" == 门禁 ]]; then last="$(gate_unavailable_summary "$last" "$actor" "$target")"; fi
     fi
     if [[ "$last" == '[qwb-worker] '* ]]; then
       worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
@@ -820,6 +834,7 @@ route_gate_due() {
         if [[ "$last" == '[qwb-worker] '* ]]; then
           worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
         else
+          if [[ "${roles[i]}" == 门禁 ]]; then last="$(gate_unavailable_summary "$last" "${actors[i]}" "${targets[i]}")"; fi
           printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
         fi
       done < "${batches[i]}"
@@ -839,6 +854,7 @@ route_gate_due() {
       message="测试体系看账本：${DUE_N} 张原票有关联request →${DUE_MSG}。只处理本人绑定请求，给受限建议不替作者自证；门禁独自验收，不改场景或自动合并。"
     else
       message="门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"
+      if grep -q '"gate_assignment":1' "${batches[i]}"; then message="${message} 待接手授权请先 claim，再 received/accept/prepared。"; fi
     fi
     if herdr pane run "${targets[i]}" "$message"; then
       while IFS=$'\t' read -r f st fp last lostpane; do
