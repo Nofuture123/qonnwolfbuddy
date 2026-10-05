@@ -2,7 +2,7 @@
 
 ```
 任务 id:  roles-polish-code
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
 dispatch-budget: 3
 来源:     2026-10-05 副主控与门控真机演练第三轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r3.md 的 S1–S5）
@@ -102,3 +102,15 @@ Then  标准输出、标准错误、退出码、票内容新旧相同
 
 - 不改任何放行条件与权限；不改审核身份判定；拒绝仍然拒绝，只是把出路写出来。
 - 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
+working: 2026-10-05T07:35:27Z 主控手工派发（同 Space 独立 Tab，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6.1-sol --thinking high） agent=qwb-roles-polish-code pane=w14Z:p1C dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-polish-code base=a76b8fa
+working: 2026-10-05T07:37:35Z 主控更正：任务书事实 2 里「full 要覆盖全部 user_ 场景」不准确。实际规则是 required 必须有 full 键，且 fast 与 full 所列场景的并集覆盖全部 user_ 场景（bin/qwb-ledger.sh 第 1447–1451 行）。拒绝信息的补充文字按代码实际校验写。
+working: 2026-10-05T07:38:42Z 执行者已完整读规格/notify-gaps设计/r3报告；起点a76b8fa：route-base rc=0，planner-authorized与原话由wake路由planner-pane，ctl零该行门铃且未伪造handled，事实3不成立按验收约定跳过第2项。plan/status/land起点新增断言红：预算缺写法；verified逐条列历史待办；活工人拒绝时main已快进。原始日志=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/{route-base,plan-red,status-red,land-red}.log。required遵最新裁决：full必有、fast/full并集覆盖，不改校验。
+working: 2026-10-05T07:44:55Z 执行者阶段2完成：仅改5个bin脚本及tests；拒绝前缀/校验不变，required写full必有且并集覆盖；status复用义务读模；land前置复用退出探针，finish两处写窗口/同op出路，审核文字对齐模型+会话。plan/gate/land/旧票status逐字节比较通过，部分land恢复无重复merge。fast rc=0，lint rc=0且LINT PASS；handoff与wake-block定向rc=0；planning/gate/land完整定向执行中。证据均在.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence。
+working: 2026-10-05T07:49:10Z 执行者阶段3：入口自检44文件/选定helper一项rc=0，快门及独立lint通过。land旧endpoint夹具先显式建立部分落地，再保留原换代/未知端点/同op恢复断言；新增活工人场景单独守main不前进。完整land定向已重新开跑。一次E窄测业务断言通过后因运行期间源文件编辑导致shell旧偏移EOF，保留status-final.log/rc并以稳定源码重跑。此前阶段2写5个bin是计数误写，实际改4个bin。
+working: 2026-10-05T07:54:18Z 执行者阶段4：稳定源码land完整定向rc=0 PASS=58 FAIL=0；gate rc=0 29/0，handoff rc=0 12/0，wake-block rc=0 20/0；E状态窄测rc=0 4/0，agent-shapes rc=0 34/0；Bash3.2授权窄测plan 4/0、gate 2/0均rc=0。planning原运行所有业务断言通过，但改过运行中文件的旧偏移使最终shell rc=2，原日志planning.log保留；当前源码已冻结（frozen-files.sha256），planning-final完整重跑中，未提交/未写done。
+done: 2026-10-05T08:04:07Z sha=109c7e49be82aad58e669a49c25128012aa167be 执行者全部完成，detached追加提交且工作区clean；仅4个bin+4个tests文件，无分支/push/真Herdr/模型会话。场景1：QWB_ROLES_POLISH_ONLY=plan bash tests/collab-planning.sh、同变量gate bash tests/collab-gate.sh通过；预算对象/目录票名/多workers键/缺full均保留拒绝前缀、退出码与票字节，合规示例成功；required必须full且fast/full并集覆盖。起点plan-red/gate-red均rc=1，候选plan-green/gate-green3均rc=0；日志前缀=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/
+done: 2026-10-05T08:04:07Z sha=109c7e49be82aad58e669a49c25128012aa167be 场景2：QWB_ROLES_POLISH_ONLY=route bash tests/collab-planning.sh起点rc=0，PASS=3 FAIL=0；plan-assign授权行及需求原话均给planner-pane，ctl没有该行门铃，不伪造handled，事实3不成立按规格跳过第2项路由改动；planning-final完整入口亦保持。场景3/4：QWB_NOTIFY_ONLY=E bash tests/collab-land.sh，status-stable rc=0 PASS=4 FAIL=0；verified无待办列表、有精确历史计数，真实blocked行与仅撤本票改动的基线逐字节相同；起点status-red rc=1。日志前缀=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/
+done: 2026-10-05T08:04:07Z sha=109c7e49be82aad58e669a49c25128012aa167be 场景5：bash tests/collab-land.sh roles-polish，land-green3 rc=0 PASS=4 FAIL=0；起点land-red rc=1且main已快进，候选活工人拒绝时main不动，窗口/关闭出路/同op重跑成功；finish两处窗口提示及已部分land续接均保留，无重复merge。场景6：合规plan-assign/gate-assign、已停工人land与旧票status的stdout/stderr/rc/票字节逐字节一致，基线为当前脚本只撤本票改动；见plan-green/gate-green3/land-green3.log。日志前缀=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/
+done: 2026-10-05T08:04:07Z sha=109c7e49be82aad58e669a49c25128012aa167be 定向逐个：bash tests/collab-planning.sh rc=0 PASS=37 FAIL=0（planning-final.log）；bash tests/collab-gate.sh 0/29/0（gate.log）；bash tests/collab-land.sh 0/58/0（land-final.log）；bash tests/collab-handoff.sh 0/12/0（handoff.log）；bash tests/wake-block-output.sh 0/20/0（wake-block.log）；python3 -B tests/roles_polish_fixture.py 0/1/0（fixture.log）。bash bin/qwb-test.sh fast 0/0/0（fast-ship.log），bash bin/qwb-lint.sh 0/9/0且LINT PASS（lint-ship.log）；未跑仓库全门。日志前缀=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/
+done: 2026-10-05T08:04:07Z sha=109c7e49be82aad58e669a49c25128012aa167be 已逐名搜collab-planning.sh、collab-gate.sh、collab-land.sh、roles_polish_fixture.py及4个改动bin文件在tests/smoke.sh/tests/collab-all.sh的清单/组数/PASS断言，无改名，既有15项清单与动态计数无需改；helper由planning引用，collab-all.sh仅选helper自检44文件rc=0（entry.log）；检索原文entry-search.log。Bash3.2：四bin语法通过，agent-shapes-stable 0/34/0、plan-bash32 0/4/0、gate-bash32 0/2/0。8文件冻结哈希一致，本票测试进程零残留；汇总final-receipts.json；日志前缀=.worktrees/roles-polish-code/.qwb-tmp/roles-polish-evidence/
+working: 2026-10-05T08:42:39Z 主控验收：工人提交 109c7e4 合入主干为 534f966。主控读过全部脚本改动；合并后自跑 collab-land 58/0、collab-planning 37/0、collab-gate 29/0、账本检查通过。任务书事实 3（主控自己的授权行成了主控待办）被工人对照代码证伪：该行路由给规划窗口，第 2 项按规格跳过。合并后主干 a4ddc78 全门 rc=0、861 PASS、0 FAIL（724 秒，.qwb-tmp/ctl-full-merge11.log）；真机端到端第 15 轮 15 项断言全 PASS（docs/reviews/2026-10-05-e2e-real-claude-pi-r7.md）。

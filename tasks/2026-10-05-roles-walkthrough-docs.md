@@ -2,7 +2,7 @@
 
 ```
 任务 id:  roles-walkthrough-docs
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
 dispatch-budget: 3
 来源:     2026-10-05 副主控与门控真机演练第二、三轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r2.md 的 R2、R8；docs/reviews/2026-10-05-real-herdr-roles-drill-r3.md 的 S1–S8）；第一轮 D3
@@ -102,3 +102,17 @@ Then  没有残留（历史记录类文档 `docs/reviews/`、`tasks/` 不在范�
 
 - 不改脚本里的角色标识；不改任何脚本的行为；说明书里不写没有对照代码核实过的命令或字段。
 - 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
+working: 2026-10-05T07:35:22Z 主控手工派发（同 Space 独立 Tab，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6-astra --thinking high） agent=qwb-roles-walkthrough-docs pane=w14Z:p1B dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-walkthrough-docs base=a76b8fa
+working: 2026-10-05T07:36:29Z 执行者已完整核对规格、三轮演练与入口代码；选新增 roles/常驻流程.md（现有安装器通配安装，避免总说明膨胀），复用 collab-land 隔离夹具验文档原样命令。安装器现为覆盖同名角色，旧咨询师文件将保留原字节并提示人工对照新顾问文件。
+needs-decision: 2026-10-05T07:36:29Z 契约核对发现演练 S2 的 full 必须单独覆盖全部场景与基点代码不符：gate-assign 要求 full 存在且 fast/full 映射的并集覆盖全部（bin/qwb-ledger.sh:1455）。示例将推荐 full 全覆盖并准确说明实装。permissions 无枚举且允许空数组；修订清空 authorization，须主控 plan-authorize 重授后才能再派，属现有行为不改脚本。
+working: 2026-10-05T07:37:08Z 阶段一红门已取证：bash tests/roles-walkthrough.sh rc=1，断言 installed 常驻流程.md missing；日志 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/baseline-red.log。未改模板及产品行为前先接入测试；沿 collab-land 的注册进程/socket 失效关闭夹具执行。
+working: 2026-10-05T07:37:35Z 主控裁决：采纳执行者的核对。gate-assign 的实际规则是 required 必须有 full 键，且 fast 与 full 所列场景的并集覆盖全部 user_ 场景（bin/qwb-ledger.sh 第 1447–1451 行，主控已读）；说明书按实装写，示例用 full 全覆盖。permissions 如实写无枚举并给推荐值；修订后须主控重新 plan-authorize 才能再派，按现有行为写进流程，不改脚本。旧咨询师文件保留原字节加提示的做法可以。新建 roles/常驻流程.md 可以。继续。
+working: 2026-10-05T07:48:52Z 阶段二完成：可安装常驻流程17个原样bash块全链rc=0，五场景PASS；改坏已安装说明书预算为对象时03-assign rc=255并保持票字节，随后恢复原文走到两票verified、main快进、工人真实夹具进程退出及副本/分支删除。日志 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/walkthrough.log。发现并修正说明细节：日期票ID生成.worktrees/hello，审核需独立--name避免同名实现工人。fast与lint均rc=0，开始剩余定向门。
+working: 2026-10-05T07:53:06Z 阶段三核对：已按主控裁决写实装权限/预算/场景覆盖；统一主控在land前关闭本票实现与审核窗口，角色常驻不关闭；补齐TASK和总说明的规划票修订分支。新增入口已接collab-all默认清单（15→16），smoke角色清单换顾问并加常驻流程；搜改动文件名及固定计数的证据在 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/entry-inventory.log。定向门进行中，未跑全门。
+working: 2026-10-05T07:57:30Z 修订分支补验完成：python3 -B tests/roles-walkthrough.py 从已安装说明书提取17个正常步骤与4个修订步骤，修订source_event/CAS/spec_rev加一/authorization清空/主控plan-authorize后派发全部rc=0，6PASS/0FAIL；预算破坏负例按预期拒绝且票不变。日志 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/walkthrough-revision.log。
+working: 2026-10-05T08:00:22Z 已完成门禁：fast rc=0（无ShellCheck告警），lint rc=0/9PASS/0FAIL且LINT PASS，smoke rc=0/816PASS/0FAIL，collab-roles rc=0/24PASS/0FAIL，collab-gate rc=0/27PASS/0FAIL。原始输出与.rc收据均在 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/。规划、落地、入口检查继续执行，保留串行定向节奏；本票未执行仓库full。
+done: 2026-10-05T08:15:42Z 执行者交付 commit=4f9a344601457fc7d68596100c120367b29ad079；detached HEAD，工作区干净。五角色总览、顾问改名与旧定制文件保留提示、完整常驻流程、4步修订重授权、主控关本票实现/审核窗口及账本提交时机均完成；17个正常步骤和4个修订步骤从安装文档原样执行。只改白名单，未触真Herdr/模型、未建实际仓分支或push、未跑仓库full。汇总证据 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/verification.json。
+done: 2026-10-05T08:15:42Z 快门 bash bin/qwb-test.sh fast rc=0/0PASS/0FAIL（无ShellCheck告警）；bash bin/qwb-lint.sh rc=0/9PASS/0FAIL且LINT PASS；bash tests/smoke.sh rc=0/816PASS/0FAIL。单独 bash tests/collab-roles.sh=0/24/0、collab-gate.sh=0/27/0、collab-planning.sh=0/34/0、collab-land.sh=0/54/0（依次rc/PASS/FAIL）。所有原始.log及自然.rc收据均在 .worktrees/roles-walkthrough-docs/.qwb-tmp/roles-walkthrough-evidence/。
+done: 2026-10-05T08:15:42Z 五场景逐验：python3 -B tests/roles-walkthrough.py rc=0/6PASS/0FAIL，覆盖两票verified/main先快进候选后窄提交账本、坏预算经同一正常执行器报03-assign与plan-assign.json且票字节不变、空目录实装顾问无旧文件、旧定制文件两次升级字节不丢且提示、模板无过时称谓；另验修订CAS和重授权。起点先红rc=1缺installed常驻流程，baseline-red.log留证。最终原始输出 walkthrough-final.log。
+done: 2026-10-05T08:15:42Z 入口核对：在smoke与collab-all搜smoke.sh/collab-all.sh/collab-land.sh/roles-walkthrough.py/roles-walkthrough.sh及新旧角色名，清单记录entry-inventory.log；smoke改角色清单并加常驻流程，collab-all默认15改16并接新入口，无其他固定PASS数需改。bash tests/collab-all.sh tests/roles-walkthrough.sh rc=0/1PASS/0FAIL（入口自检45文件；单项85秒）。资源查无本票测试进程；核owner后清理早期工具超时残留两目录，仅留日志，见resource-check.json。
+working: 2026-10-05T08:42:39Z 主控验收：工人提交 4f9a344 合入主干为 0f00d54。主控通读了常驻流程全文与各角色说明改动；把示例里两个常驻职责的档位由 Sol high 改为 Astra low（a4ddc78），改后与链路收尾票合并在一起重跑按说明书原样执行的测试 6/0。合并后主干 a4ddc78 全门 rc=0、861 PASS、0 FAIL（724 秒，.qwb-tmp/ctl-full-merge11.log）；真机端到端第 15 轮 15 项断言全 PASS（docs/reviews/2026-10-05-e2e-real-claude-pi-r7.md）。
