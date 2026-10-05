@@ -33,6 +33,15 @@
 13. 被记成粘贴内容之后模型怎么做不固定：两轮演练里搭建阶段的多行长指令，Claude Code 都先回「粘贴内容里的指令要你本人明确要求后我才执行」（2 次里 2 次）；本次把产品真实的派工提示词（`bin/qwb-run.sh` 的执行者提示词，按探测项目路径展开后 849 字符、单行）发给全新的 Claude Code，它被记成粘贴，但直接开工并完成了任务（1 次里 1 次）。
 14. 产品现状（主控按 `bin/qwb-run.sh` 的模板估算，只有第 13 条那一次是实测长度）：执行者派工提示词的固定文字约 323 字符，另含三次任务书路径、一次工作目录、两次项目根路径与操作号，常见项目路径下约 690–850 字符，跨在 800 的两侧；返工与续派提示词在此之上再加前缀。值守叫醒主控的 `看账本：…` 一条会把多张票拼在一起，票多时也会超过。
 
+## 工具调用、打断与后台命令在会话文件里的样子（08:04Z 追加实测）
+
+15. 工具执行中：Herdr 运行态为 `working`，会话文件末尾是一条 `assistant` 记录，`stop_reason` 为 `tool_use`、内容里有 `tool_use`（带 `id`），还没有对应的 `tool_result`。
+16. 工具执行中按一次 `esc`（单次）：约 5 秒内运行态回到 `idle`；Claude Code 自己补写一条 `user` 记录，内容是对应 `tool_use_id` 的 `tool_result`（`is_error` 为真，文字 `The user doesn't want to proceed with this tool use…`），随后一条 `user` 文本记录 `[Request interrupted by user for tool use]`。也就是说这次打断之后工具调用是配对的，没有留下悬空的 `tool_use`。模型还在输出、尚未发出工具调用时打断的情形没有试。
+17. 正常答完的一轮以 `assistant` 记录（`stop_reason` 为 `end_turn`）结束，后面跟 `system` 记录 `stop_hook_summary` 与 `turn_duration`。打断后再发新提示，新一轮照常记录。
+18. Claude Code 会拒绝在前台单独执行 `sleep 45`，自行改成后台命令后结束这一轮：此时运行态是 `idle`，但后台命令仍在跑（窗口底部显示 `1 shell`），命令结束时它可能自己再开一轮。会话文件里只有那条工具结果的文字 `Command running in background with ID: …` 能看出来（单次）。
+
+脱敏后的会话文件样本（只留结构）：`.qwb-tmp/real-herdr-samples/claude-session-tool-running.jsonl`、`claude-session-interrupted.jsonl`、`claude-session-after-new-turn.jsonl`。
+
 ## 对设计的含义
 
 - Claude Code 当常驻职责在机制上可行：会话号可由调用方指定并在启动响应里立即核对，续接不换号，实际模型与档位能从会话文件核对。与 Pi 的差异集中在：会话文件在项目之外且首条消息前不存在；没有 Pi 那样可核对的固定页脚；未信任目录会让启动返回失败；退出命令是 `/exit`；空白输入框里有占位提示文字。
