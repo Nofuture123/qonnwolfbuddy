@@ -23,7 +23,7 @@ Q-Wolf Buddy 是仓库内的 AI 编程协作流程：Markdown 主账本记录需
 bash bin/qwb-init.sh /path/to/project
 ```
 
-安装器将模板和运行脚本复制到 `<project>/qwbuddy/`，添加角色与任务文件，并在条件满足时安装 Pi 扩展和 Claude Code hook。已有 `qwbuddy/config.sh` 和 `qwbuddy/workers.sh` 会保留；留意输出中是否有部分安装失败。每个工人在 `workers.sh` 中只有一条 `qwb_worker 名称 herdr 宿主 -- 参数…` 或 `qwb_worker 名称 pane-run 可执行文件 参数…` 声明；旧式 `qwb_worker 名称 herdr 参数…` 仍以工人名作为宿主。Pi 固定档位须显式声明 `--provider`、`--model`、`--thinking`；模板中的 Pi 工人统一使用 Magpie；`pi-sol-high` 参数为 `--provider magpie --model codex/gpt-6.1-sol --thinking high`。独立审核的模型家族来自 `workers.sh` 的 `qwb_family 渠道/模型 家族` 声明，按完整 ID 匹配，模型 ID 可含斜杠。 Bash 参数逐项保留空格、空串和字面特殊字符。仍使用 `QWB_WORKER_LAUNCH` / `QWB_WORKER_ARGS` 的旧项目，须从本仓显式运行 `bash bin/qwb-init.sh --migrate-worker-config <项目根>`；迁移先备份 `config.sh`，无法保留旧 shell 语义的命令会被拒绝。已有 `config.sh` 无旧启动键但缺 `workers.sh` 时，普通 init 不执行用户配置，也不猜默认工人表；须按提示手动声明工人后才可派发。
+安装器将模板和运行脚本复制到 `<project>/qwbuddy/`，添加角色与任务文件，并在条件满足时安装 Pi 扩展和 Claude Code hook。已有 `qwbuddy/config.sh` 和 `qwbuddy/workers.sh` 会保留；留意输出中是否有部分安装失败。每个工人在 `workers.sh` 中只有一条 `qwb_worker 名称 herdr 宿主 -- 参数…` 或 `qwb_worker 名称 pane-run 可执行文件 参数…` 声明；旧式 `qwb_worker 名称 herdr 参数…` 仍以工人名作为宿主。Pi 固定档位须显式声明 `--provider`、`--model`、`--thinking`；模板中的 Pi 工人统一使用 Magpie；`pi-sol-high` 参数为 `--provider magpie --model codex/gpt-6.1-sol --thinking high`。审核者的模型须与实现者不同，且为独立会话；同一会话换角色不算独立审核。型号比较忽略渠道前缀、大小写与推理档位，`family` 为可选附记。 Bash 参数逐项保留空格、空串和字面特殊字符。仍使用 `QWB_WORKER_LAUNCH` / `QWB_WORKER_ARGS` 的旧项目，须从本仓显式运行 `bash bin/qwb-init.sh --migrate-worker-config <项目根>`；迁移先备份 `config.sh`，无法保留旧 shell 语义的命令会被拒绝。已有 `config.sh` 无旧启动键但缺 `workers.sh` 时，普通 init 不执行用户配置，也不猜默认工人表；须按提示手动声明工人后才可派发。
 
 在目标项目的 `qwbuddy/config.sh` 声明项目检查。例如项目本来使用 pnpm：
 

@@ -1174,8 +1174,8 @@ if ($cmd eq 'land-authorize') {
   my $c=gate_context();
   fail('审核不是当前精确对象') unless $c->{status} eq 'clean' && $json->encode($r->{context}) eq $json->encode($c);
   for my $kind (qw(implementer reviewer)) {
-    my $id=$r->{$kind}; keys_only($id,qw(model family session evidence));
-    fail('审核身份unknown/字段不全') if grep { !string_ok($_) || $_ eq '' || lc($_) eq 'unknown' } values %$id;
+    my $id=$r->{$kind}; keys_only($id,qw(model session evidence), exists($id->{family}) ? 'family' : ());
+    fail('审核身份unknown/字段不全') if grep { !string_ok($_) || $_ eq '' || lc($_) eq 'unknown' } @{$id}{qw(model session evidence)};
     my $fh=safe_open(encode('UTF-8',$id->{evidence}),O_RDONLY); my @records;
     while (my $s=<$fh>) { push @records,strict_json($s) } close $fh;
     my $profile=$c->{worker_profiles}{$kind eq 'reviewer' ? 'review' : 'rework'};
@@ -1184,14 +1184,11 @@ if ($cmd eq 'land-authorize') {
     my @efforts=grep { ($_->{type} // '') eq 'thinking_level_change' } @records;
     fail('原生session/model证据不匹配（当前仅Pi JSONL）') unless $header && $header->{type} eq 'session' && $header->{id} eq $id->{session} && @models && $models[-1]{modelId} eq $id->{model} && $models[-1]{provider} eq $profile->{provider} && @efforts && $efforts[-1]{thinkingLevel} eq $profile->{effort};
     fail('会话目录不是候选/本项目') unless ($header->{cwd} // '') eq $c->{candidate} || ($header->{cwd} // '') eq $c->{project};
-    # 读取已由workers_sha256冻结的项目声明；不从昵称、CLI或model前缀猜family。
-    my $key="$models[-1]{provider}/$models[-1]{modelId}";
-    my $family=capture('bash','-c','. "$1"; qwb_model_family "$2" "$3"','family',"$bindir/qwb-lib.sh",$root,$key); chomp $family;
-    fail("原生模型family未可靠确认；请在 qwbuddy/workers.sh 里补唯一一行：qwb_family '$key' 家族（gpt/claude/gemini/glm/qwen/swe）；删除重复声明并修正非法家族") unless $family ne 'unknown' && $id->{family} eq $family;
     $id->{evidence_sha256}=sha256_hex(join('',map { $json->encode($_) } @records));
   }
   fail('同原生会话审核冲突；保留现有身份门') if $r->{implementer}{session} eq $r->{reviewer}{session} || $r->{reviewer}{session} eq $data->{gate}{identity}{session_id};
-  my $authorized=0;
+  my @models=map { my $model=lc($_->{model}); $model =~ s{.*/}{}; $model } @{$r}{qw(implementer reviewer)};
+  fail('同模型审核冲突；保留现有身份门') if $models[0] eq $models[1];
   if (exists $r->{authorization}) {
     fail('审核授权key非法') unless id_ok($r->{authorization});
     my $q=$data->{questions}{$r->{authorization}} // fail('审核无本票用户授权');
@@ -1199,9 +1196,7 @@ if ($cmd eq 'land-authorize') {
     my $a=strict_json(encode('UTF-8',$q->{answer}));
     keys_only($a,qw(schema context implementer_session reviewer_session owner_fp approval));
     fail('审核批准范围/对象/身份不匹配') unless $a->{schema} eq 'qwb-sol-astra-review-v1' && $json->encode($a->{context}) eq $json->encode($c) && $a->{implementer_session} eq $r->{implementer}{session} && $a->{reviewer_session} eq $r->{reviewer}{session} && $a->{owner_fp} eq $owner_fp && string_ok($a->{approval}) && $a->{approval} ne '' && $r->{implementer}{model} eq 'gpt-6.1-sol' && $r->{reviewer}{model} eq 'gpt-6-astra';
-    $authorized=1;
   }
-  fail('同family审核冲突；保留现有身份门') if $r->{implementer}{family} eq $r->{reviewer}{family} && !$authorized;
   fail('审核两轴/场景/意见非法') unless $r->{standards}=~/\A(pass|fail)\z/ && $r->{spec}=~/\A(pass|fail)\z/ && ref($r->{covered}) eq 'ARRAY' && ref($r->{findings}) eq 'ARRAY';
   my %seen;
   for my $f (@{$r->{findings}}) {

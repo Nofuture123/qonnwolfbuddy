@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # tests/review-identity.sh —— 审核身份可核验（scenario-03）定向测试
-# 覆盖任务书四个 user 场景的正反例：
-#   user_不同模型家族审核有效         → 不同 family + 各自原生 session + 证据齐 → 通过
-#   user_换CLI不等于独立审核          → 不同 CLI 同 family → 拒绝并点名家族
-#   user_身份未知不伪装通过           → unknown/缺字段/缺证据 → 报缺证据不通过
-#   user_无审核要求的普通票不额外烧token → 无 review-required 标记 → 不启用检查
+# 覆盖不同模型/独立会话、可选family、渠道/大小写归一化与缺证据拒绝。
 # shellcheck disable=SC2015 # ok/bad 仅 echo 与计数，均返回成功。
 set -uo pipefail
 TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/.qwb-tmp"
@@ -73,25 +69,24 @@ printf '# 普通票2\nstate: running\nreview-required: no\n' > "$T"
 runlint
 [[ "$RC" -eq 0 ]] && ok "review-required: no → 不启用" || bad "review-required: no 被误查"
 
-echo "== 4. user_换CLI不等于独立审核（反例：不同 CLI 同 family）=="
-mk 'review-impl: model=gpt-5.2 family=gpt cli=codex session=s-impl-1 evidence=docs/reviews/impl-session.md' \
-   'review-rev: model=gpt-4.1-mini family=gpt cli=pi session=s-rev-9 evidence=docs/reviews/rev-session.md'
-runlint
-[[ "$RC" -eq 1 ]] && ok "不同 CLI 同 family → lint 拒绝" || bad "同 family 竟通过（rc=${RC}）"
-printf '%s' "$OUT" | grep -q '同家族' && printf '%s' "$OUT" | grep -q 'gpt' \
-  && ok "报错点名同家族（gpt）" || bad "报错未点名同家族"
+echo "== 4. 同家族不同模型，family为可选附记 =="
+for family in 'family=gpt' '' 'family=unknown' 'family=arbitrary'; do
+  mk "review-impl: model=magpie/codex/gpt-6.1-sol $family session=s-impl-1 evidence=docs/reviews/impl-session.md" \
+     "review-rev: model=magpie/codex/gpt-6-astra $family session=s-rev-9 evidence=docs/reviews/rev-session.md"
+  runlint
+  [[ "$RC" -eq 0 ]] && ok "Sol/Astra同家族不同模型 ${family:-无family} → PASS" \
+    || { bad "不同模型被误拒（rc=${RC}）:"; printf '%s\n' "$OUT"; }
+done
 
-echo "== 5. user_身份未知不伪装通过（反例：unknown / cli 不充当 family / 缺行）=="
-mk "$IMPL" \
-   'review-rev: model=mystery-box family=unknown session=s-rev-9 evidence=docs/reviews/rev-session.md'
-runlint
-{ [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -q 'unknown'; } \
-  && ok "family=unknown → 报缺证据不通过" || bad "unknown family 竟通过（rc=${RC}）"
-
-mk "$IMPL" \
-   'review-rev: model=claude-opus-4.6 cli=claude session=s-rev-9 evidence=docs/reviews/rev-session.md'
-runlint
-[[ "$RC" -eq 1 ]] && ok "只有 cli 无 family → 拒绝（cli 不充当 family）" || bad "cli 冒充 family 竟通过"
+echo "== 5. 同模型不同档位/渠道/大小写一律拒绝 =="
+for model in 'magpie/codex/gpt-6-astra' 'openai-codex/gpt-6-astra' 'MAGPIE/CODEX/GPT-6-ASTRA'; do
+  mk 'review-impl: model=magpie/codex/gpt-6-astra family=gpt thinking=high session=s-impl-1 evidence=docs/reviews/impl-session.md' \
+     "review-rev: model=$model family=claude thinking=low session=s-rev-9 evidence=docs/reviews/rev-session.md"
+  runlint
+  { [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -q '同一模型(gpt-6-astra)'; } \
+    && ok "同型号 $model → 拒绝并点名模型" \
+    || { bad "同模型未正确拒绝（rc=${RC}）:"; printf '%s\n' "$OUT"; }
+done
 
 mk "$IMPL" ''
 runlint

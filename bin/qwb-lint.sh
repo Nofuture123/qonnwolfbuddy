@@ -19,7 +19,7 @@ usage() {
   7. 已派发任务书（带 scenarios-fp:）的验收场景仍在且指纹未变（派发后改场景即 FAIL）；
      带 scenarios-revised: 修订记录的票，再核对最新一条记录的 new= 指纹 == 当前基线
   8. 需独立审核的票（review-required: yes）：review-impl:/review-rev: 各行须有
-     model/family/session/evidence、family 非 unknown 且两方不同、原生 session 不同实例；
+     model/session/evidence、两方模型不同、原生 session 不同实例；family 可选；
      无标记的普通票不启用本检查
   9. 任务书正文无占位状态行（列首 working/done/blocked/needs-decision: 带未填占位符 <…>
      的行，是把模板示例当真实状态行抄进了票）——只警告不 FAIL：不补历史票，
@@ -224,9 +224,9 @@ fi
 
 echo "== 8. 需独立审核票的审核身份可核验 =="
 # 只对显式标记 review-required: yes 的票启用——普通票零新增负担、不补历史票。
-# 结构校验：review-impl:/review-rev: 两行各自 model/family/session/evidence 齐全；
-# family 非 unknown、两方 family 不同、两方原生 session 不是同一实例。
-# cli=/provider= 只是附记，绝不充当 family（同 CLI 不同家族合法，不同 CLI 同家族拒绝）。
+# 结构校验：review-impl:/review-rev: 两行各自 model/session/evidence 齐全；
+# 模型取最后一个 / 后的型号、忽略大小写比较，两方原生 session 不是同一实例。
+# family=/cli=/provider= 只是附记，不影响独立审核判定。
 # 边界：只做声明与证据引用的结构校验——不访问模型服务、不猜型号、不防伪造；
 # 无法确认一律报缺证据 FAIL，不假绿。
 rid_val() { # $1=身份行原文 $2=键名 → 取「键=非空白值」（行内以空白分隔）
@@ -242,21 +242,18 @@ while IFS= read -r f; do
   if [[ -z "$il" || -z "$rl" ]]; then
     rid_bad="${rid_bad} ${n}(缺 review-impl/review-rev 身份行)"; continue
   fi
-  im="$(rid_val "$il" model)";   ifam="$(rid_val "$il" family)"
+  im="$(rid_val "$il" model)"
   isess="$(rid_val "$il" session)"; iev="$(rid_val "$il" evidence)"
-  rm="$(rid_val "$rl" model)";   rfam="$(rid_val "$rl" family)"
+  rm="$(rid_val "$rl" model)"
   rsess="$(rid_val "$rl" session)"; rev="$(rid_val "$rl" evidence)"
-  [[ -n "$im" && -n "$ifam" && -n "$isess" && -n "$iev" ]] \
+  [[ -n "$im" && -n "$isess" && -n "$iev" ]] \
     || b="${b} 实现者身份字段不全(需model/family/session/evidence)"
-  [[ -n "$rm" && -n "$rfam" && -n "$rsess" && -n "$rev" ]] \
+  [[ -n "$rm" && -n "$rsess" && -n "$rev" ]] \
     || b="${b} 审核者身份字段不全(需model/family/session/evidence)"
-  ifam_l="$(printf '%s' "$ifam" | tr '[:upper:]' '[:lower:]')"
-  rfam_l="$(printf '%s' "$rfam" | tr '[:upper:]' '[:lower:]')"
-  [[ "$ifam_l" == "unknown" ]] && b="${b} 身份未确认(实现者family=unknown)"
-  [[ "$rfam_l" == "unknown" ]] && b="${b} 身份未确认(审核者family=unknown)"
-  if [[ -n "$ifam_l" && -n "$rfam_l" && "$ifam_l" != "unknown" && "$rfam_l" != "unknown" ]]; then
-    [[ "$ifam_l" == "$rfam_l" ]] && b="${b} 实现者与审核者同家族(${ifam_l})"
-  fi
+  im_l="$(printf '%s' "${im##*/}" | tr '[:upper:]' '[:lower:]')"
+  rm_l="$(printf '%s' "${rm##*/}" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$im" && -n "$rm" && "$im_l" == "$rm_l" ]] \
+    && b="${b} 实现者与审核者同一模型(${im_l})"
   [[ -n "$isess" && -n "$rsess" && "$isess" == "$rsess" ]] \
     && b="${b} 两方同一原生session实例(${isess})"
   for ev in "$iev" "$rev"; do
