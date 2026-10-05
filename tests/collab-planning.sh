@@ -243,6 +243,51 @@ file.write_text(json.dumps(s))
             mark=count(); result=cli('qwb-wake.sh','--once','--pane','ctl')
             calls=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
             return [a for a in calls if a[:2]==['pane','run'] and 'Up(running)' in a[3]],result
+        # 本票同一用例先在固定起点跑红：仅替换私有运行时，不改主仓脚本。
+        silence_baseline=os.environ.get('QWB_SILENCE_BASELINE')=='1'
+        runtime=p/'qwbuddy/bin'
+        if silence_baseline:
+            for script in ['qwb-ledger.sh','qwb-wake.sh']:
+                (runtime/script).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/'+script]))
+        for index in range(3):
+            call('append',name,'--event-id',f'silent-worker-{index}','--',f'working: 工人进度{index}',actor='up-worker')
+            if silence_baseline:
+                mark=count()
+                result=subprocess.run(['bash',str(runtime/'qwb-wake.sh'),'--project',str(p),'--once','--pane','ctl'],env=env,capture_output=True,text=True)
+                assert result.returncode==0,(result.stdout,result.stderr)
+                routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+                routes=[a for a in routes if a[:2]==['pane','run'] and 'Up(running)' in a[3]]
+            else: routes,_=deliveries()
+            assert not routes, ('A: 纯工人进度不应门铃任何角色',routes)
+        for actor in ['ctl','planner-pane']:
+            call('append',name,'--','working: 角色普通进度',actor=actor)
+        def obligations():
+            probe=subprocess.run(['bash','-c','. "$1"; qwb_task_obligations "$2" "$3"','probe',str(ROOT/'bin/qwb-lib.sh'),str(p),str(ticket)],env=env,capture_output=True,text=True)
+            assert probe.returncode==0,(probe.stdout,probe.stderr)
+            return probe.stdout
+        assert not obligations(), '未生成handoff的纯进度不得形成source义务'
+        for _ in range(2):
+            routes,_=deliveries(); assert not routes, routes
+        progress=[h for h in pending() if h['source_event'].startswith('silent-worker-')]
+        assert len(progress)==3 and all(h['transport_count']==0 and not h['handled'] for h in progress)
+        assert not obligations(), '已生成handoff的纯进度不得形成未结义务'
+        listing_dir=p/'.worktrees/Up'; listing_dir.mkdir(parents=True)
+        for phase in ['done','verified']:
+            call('state',name,'--',phase)
+            assert not obligations()
+            listing=cli('qwb-worktree.sh','list').stdout
+            assert any(row.startswith('残留') and str(listing_dir) in row for row in listing.splitlines()),listing
+        call('append',name,'--event-id','silent-negative-blocked','--','blocked: 仍有动作义务')
+        assert 'source=silent-negative-blocked' in obligations()
+        pending()
+        assert 'handoff=source:silent-negative-blocked' in obligations()
+        listing=cli('qwb-worktree.sh','list').stdout
+        assert any(row.startswith('未结项') and str(listing_dir) in row for row in listing.splitlines()),listing
+        handoff_id='source:silent-negative-blocked'
+        for verb in ['received','accept','prepared','handled']: handoff(verb,handoff_id)
+        call('state',name,'--','running'); listing_dir.rmdir()
+        print('PASS silence A义务：done/verified与worktree列表不被未办理纯进度挡住；blocked的source/handoff仍未结')
+        print('PASS silence A：连续三条工人进度与主控/规划普通进度只记账；多轮零门铃、零传输、不伪造handled')
         call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
         call('append',name,'--event-id','up-blocked','--','blocked: 等待技术处理',actor='up-worker')
         # 红证使用同一新用例和公开入口，仅替换本私有项目运行时脚本。
@@ -316,12 +361,12 @@ file.write_text(json.dumps(s))
         call('resume',name,'--','up-budget','fixture resumes after explicit answer')
         settle(); before=ticket.read_bytes(); assert pending()==[] and ticket.read_bytes()==before, '上行回执自激'
         print('PASS upward question/needs-decision：均派生结果，handled不关闭用户问题，上行处理不递归')
-        # payload冒充done不改变系统来源；worker working仍按本轮裁决叫规划。
+        # payload冒充done不改变系统来源；普通worker working静默。
         fake=call('handoff-send',name,'--','controller','up-fake-done','1','done: 只是用户正文',actor='up-worker').stdout.strip()
         call('append',name,'--event-id','up-progress','--','working: 正在推进',actor='up-worker')
         routes,_=deliveries()
-        assert len(routes)==1 and routes[0][2]=='planner-pane' and fake in routes[0][3] and 'source:up-progress' in routes[0][3],routes
-        print('PASS upward 范围边界：working进度照旧门铃规划；用户done正文不当真实交付')
+        assert len(routes)==1 and routes[0][2]=='planner-pane' and fake in routes[0][3] and 'source:up-progress' not in routes[0][3],routes
+        print('PASS upward 范围边界：working进度静默；显式send仍交接，用户done正文不当真实交付')
         settle()
         # 规划身份不符只能回主控，不能让原交接被消费。
         call('append',name,'--event-id','up-fallback','--','blocked: 身份失效回主控',actor='up-worker')
@@ -367,7 +412,7 @@ file.write_text(json.dumps(s))
         review={'context':context,'implementer':identities[0],'reviewer':identities[1],'standards':'pass','spec':'pass','covered':['user_good','user_failure'],'findings':[]}
         call('gate-review',name,'--','up-gate',payload('up-review.json',review),actor='gate-pane')
         call('gate-verdict',name,'--','up-gate','accepted',actor='gate-pane')
-        call('append',name,'--event-id','up-after-accepted','--','working: 等主控落地')
+        call('append',name,'--event-id','up-after-accepted','--','working: spec-resolved: 等主控落地')
         routes,_=deliveries()
         assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-after-accepted' in routes[0][3] and '门禁 accepted' in routes[0][3],routes
         assert read(name)['gate']['verdict']=='accepted' and read(name)['claim']['owner']=='gate-pane' and read(name)['phase']=='running'

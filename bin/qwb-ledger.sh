@@ -90,7 +90,9 @@ TEST_IDENTITY='{}'
 if [[ "$CMD" == test-request ]]; then
   TEST_IDENTITY="$(qwb_gate_identity "$ROOT" "${3:-}" '测试体系')" || exit 1
 fi
-exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$@" <<'PERL'
+PROGRESS_CLASSIFIER=''
+if [[ "$CMD" == handoff-* ]]; then PROGRESS_CLASSIFIER="$(qwb_task_obligations_json --progress-classifier)"; fi
+exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$PROGRESS_CLASSIFIER" "$@" <<'PERL'
 # Keep native refusal diagnostics at the baseline 8d897cd Perl source positions.
 #line 1
 use strict;
@@ -108,7 +110,7 @@ use IO::Handle;
 use Time::HiRes qw(time);
 use Errno qw(ESRCH);
 binmode STDERR, ':encoding(UTF-8)';
-my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,$identity_raw,$test_identity_raw,@args)=@ARGV;
+my ($cmd,$root,$file,$actor,$expect,$event,$legacy,$bindir,$identity_raw,$test_identity_raw,$progress_classifier,@args)=@ARGV;
 sub fail { die "账本拒绝：$_[0]\n" }
 sub text { my $v=shift; return decode('UTF-8',$v,FB_CROAK) }
 @args=map { text($_) } @args;
@@ -621,8 +623,15 @@ sub new_handoff {
   my ($id,$corr,$attempt,$source,$payload)=@_;
   return {event_id=>$id,corr=>$corr,attempt=>$attempt,recipient=>'controller',source_event=>$source->{event_id},source_seq=>$source->{seq},source_actor=>$source->{actor},payload=>$payload,transport_count=>0,transport_at=>0,received=>'',accepted=>'',owner_fp=>'',op_id=>'',activity_at=>0,wait_until=>0,wait_reason=>'',prepared=>0,handled=>0,result_ref=>'',result_sha256=>''};
 }
+# 只求值qwb-lib内的固定分类定义，数据从参数传入，绝不求值payload。
+my $pure_progress;
+if ($cmd =~ /\Ahandoff-/) {
+  $pure_progress=eval $progress_classifier;
+  fail('纯进度分类不可用') unless ref($pure_progress) eq 'CODE';
+}
 sub handoff_due {
   my ($h,$retry)=@_;
+  return 0 if $pure_progress->($data,$data->{events}[$h->{source_seq}-1],$h);
   return 0 if $h->{handled} || $h->{transport_count}>=3;
   # 回复迟到不是失活；工具活动或有界合理wait保住本代claim。
   if ($h->{accepted} ne '' && $h->{owner_fp} eq $owner_fp) {

@@ -471,6 +471,13 @@ PY
 git -C "$P" init -q; git -C "$P" config user.email test@example.invalid; git -C "$P" config user.name Test
 printf 'temporary base\n' > "$P/base"; git -C "$P" add base; git -C "$P" commit -qm base
 mkdir -p "$P/.worktrees"; git -C "$P" worktree add -q -b case "$P/.worktrees/case" HEAD
+ledger append --event-id finish-progress -- 'working: 收尾前纯进度' >/dev/null
+bash "$ROOT/bin/qwb-send.sh" pending --project "$P" --task "$T" > "$TMP/finish-pending.json"
+python3 - "$TMP/finish-pending.json" <<'PY'
+import json,sys
+h=next(h for h in json.load(open(sys.argv[1])) if h['source_event']=='finish-progress')
+assert not h['handled'] and not h['due'] and h['transport_count']==0
+PY
 bash "$ROOT/bin/qwb-worktree.sh" finish case --keep=测试保留 --project "$P" > "$TMP/finish.log"
 ledger read > "$TMP/finish-readback.json"
 python3 - "$TMP/finish-readback.json" <<'PY'
@@ -478,6 +485,8 @@ import json,sys
 x=json.load(open(sys.argv[1])); assert x['claim'] is None
 assert any(e['kind']=='worktree' and 'keep' in e['line'] for e in x['events'])
 assert any(o['status']=='released' for o in x['ops'].values())
+assert not x['handoffs']['source:finish-progress']['handled'], 'finish伪造纯进度办理'
+print('PASS silence A finish：公开finish --keep通过，未办理纯进度仍保留原始收据')
 PY
 echo 'PASS user_单主控兼容时间线：真实run/wake/worktree入口、持久问题、metrics与场景冻结'
 # UTF-8/schema/重复key/符号链接边界通过公开reader/writer实际拒绝。

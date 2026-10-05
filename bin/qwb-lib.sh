@@ -384,7 +384,21 @@ qwb_task_obligations() {
 
 # 点名复用同一次 reader 的 JSON；来源排除与 qwb-ledger.sh handoff-pending 的事件筛选对齐。
 qwb_task_obligations_json() {
+  # 同一段可信本地分类供义务读模与ledger due复用；不从账本执行代码。
+  # shellcheck disable=SC2016 # Perl变量必须原样传入两个消费者。
+  local progress='sub {
+    my ($d,$e,$h)=@_;
+    return 0 unless $e && $e->{kind} eq "working" && $e->{line}!~/^working:\s*spec-resolved:/;
+    return 0 if grep { $_->{event_id} eq $e->{event_id} } values %{$d->{test_requests} // {}};
+    if ($h) {
+      my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
+      return 0 unless $h->{event_id} eq $id && $h->{corr} eq $id && $h->{source_event} eq $e->{event_id};
+    }
+    return 1;
+  }'
+  if [[ "${1:-}" == --progress-classifier ]]; then printf '%s\n' "$progress"; return; fi
   perl -MJSON::PP -MDigest::SHA=sha256_hex -0777 -e '
+    my $progress=eval $ARGV[0]; die $@ if $@;
     my $d=decode_json(<STDIN>);
     print "claim=$d->{claim}{op_id} " if $d->{claim};
     my $stage=$d->{land} ? $d->{land}{stage} : "";
@@ -392,12 +406,12 @@ qwb_task_obligations_json() {
     print "land=$stage " if $d->{land} && $stage ne "closed";
     for my $k (sort keys %{$d->{questions}}) { print "key=$k " if $d->{questions}{$k}{resumed} eq "" }
     my $h=$d->{handoffs} // {};
-    print "handoff=$_ " for sort grep { !$h->{$_}{handled} } keys %$h;
+    print "handoff=$_ " for sort grep { !$h->{$_}{handled} && !$progress->($d,$d->{events}[$h->{$_}{source_seq}-1],$h->{$_}) } keys %$h;
     for my $e (@{$d->{events}}) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id};
+      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id} && !$progress->($d,$e);
     }
-  '
+  ' "$progress"
 }
 
 # 全部运行时写账经此入口。legacy仅保留未迁票格式；contract后权限/原子发布自动启用。

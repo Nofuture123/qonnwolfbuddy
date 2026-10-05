@@ -1,10 +1,10 @@
-# 协作进度静默、工人失联兜底与传输耗尽升级（待主控确认）
+# 协作进度静默、工人失联兜底与传输耗尽升级
 
-基点：`44ab8ac60f7f65591b87f5291b68cd95250feff8`；唯一规格为主账本及其最新 working 裁决。此提交只交设计。
+基点：`44ab8ac60f7f65591b87f5291b68cd95250feff8`；按主账本 2026-10-05T04:19:57Z、04:20:49Z 裁决实施。
 
-## 范围与需确认的前提
-- 建议 A/B/C 均只启用于有 `planning_authority` 或 `planning.authority` 的已迁票；授权身份失效仍在范围内，但实际通知回主控。无规划授权已迁票、未迁旧票保持原行为。
-- 任务 B 的“票上没有规划授权则叫主控”与“无规划授权已迁票影响为零/逐字节不变”冲突；建议本票优先后者，前者仅指有授权记录但身份失效，真正无授权留后续票。请主控明确范围。
+## 已确认范围与前提
+- A/B/C 对所有已迁票生效。B 的最近派工者为规划且本票授权身份有效时给规划，其余给主控；未迁旧票保持原行为。
+- 已迁票逐字节兼容仅覆盖非纯进度、未耗尽、工人未丢失/停滞的输入；旧断言按新契约改写并逐条报告。
 - `handoffs.recipient` 恒为 controller，并未保存每次实际收件角色；原目标只能按到期时原路由规则判定，不能声称还原历史三次真实目标。建议升级摘要明确“原路由目标（当前判定）”，历史实际目标写 unknown。
 - “直到接收、不会无界增长”建议解释为重提频率有上限、transport_count 封顶、每条交接不派生无限新交接；既有逐次审计 events/wake 行仍随提醒次数增长。若要求整票字节恒定，会改变审计模型，需另行裁决。
 - 工人丢失只认 `worker_lost` 的 pane_not_found；空 agent、查询失败均 unknown，不推断死亡。沿用最近一条有效 dispatch 的工人边界，不在本票扩成多工人监控。
@@ -17,11 +17,12 @@
 - 主控 working：有授权时通常叫规划，门禁 claim 优先，accepted/rediagnose 后归主控；建议普通 append 静默。
 - 例外：`working: spec-resolved:` 是显式规格处置，保留；answer/resume、plan-ready/start-claim、新票/修订/恢复等有独立 kind 的动作事件保留；绑定 test-request 来源保留。显式 send 即使 payload 写 working 也不是纯进度。
 - blocked、needs-decision、question、done、request、门禁 verdict 和规划结果上行照旧；筛出纯进度后才按测试请求→门禁→规划/主控做原分流，不让新 working 遮住较早动作。
-- 只改变 due，不伪造 received/handled、不删除已有 handoff。完整 pending/status 仍能看到进度义务；收尾由接收者按既有协议读回处理，静默不等于自动清债。
+- 只改变 due，不伪造 received/handled、不删除已有 handoff。完整 pending 仍能读进度；lib 获批的 qwb_task_obligations_json 内提供唯一分类定义，ledger复用，义务读模排除真实自动纯进度 source/handoff，spec-resolved/test-request仍保留。
+- 查明：未办理交接会使status/wake/worktree list继续报未结；gate接手/verdict、land各步、state与finish动作本身不以普通未received交接阻断。验证done/verified可结清、finish --keep通过；blocked仍是未结义务，不新增起点不存在的finish硬门。
 - 不改 events/handoffs schema；静默项不耗预算、不参与 C 升级、不单独写 wake。修改规划测试中“working仍叫醒”的已过期断言，保留对伪造 done 正文的独立断言。
 
 ## B：复用已有丢失判定、时间与去重
-- 在已迁 collect_due 提前 continue 前补检查；仅有规划授权、phase 非 done/verified、最近有效 dispatch 尚无对应 op 的 done/not-sent，且没有 accepted 门禁结论的票参与。
+- 在已迁 collect_due 提前 continue 前补检查；phase 非 done/verified、最近有效 dispatch 尚无对应 op 的 done/not-sent，且没有 accepted 门禁结论的票参与。
 - 调用现有 worker_lost，不改 lib；时间仍用 now_ms/QWB_REWAKE_MS 和 ts_epoch。已迁票用最近业务事件的 at，不能用每轮 pending/transport/wake 都会更新的 mtime。
 - “任何新事件”指外部业务动作/工人进度/received/accept/activity 等；排除监督自身 handoff-pending、handoff-transport、wake，避免通知本身无限推迟兜底。新业务事件立即重置静默计时。
 - 路由按最近 dispatch 的真实 ops.owner：等于本票规划 grant pane 且双 identity proof 有效才给规划；主控派发、其他 owner、身份未知/失效均给当前主控。不借兜底扩大门禁或规划权限。
@@ -48,8 +49,8 @@
 - 设计先提交并写 needs-decision，待主账本 working 裁决后再做 A、B、C 三次实现提交；每次运行 `bash bin/qwb-test.sh fast`，不跑全门、不启动真 Herdr/模型。
 - A：在已接入 tests/collab-planning.sh 复用公开授权/派发与隔离 fake Herdr；同一“连续三条 working 后零门铃”用例先对基点44ab8ac跑红并留 stdout/stderr/rc，再跑候选绿。覆盖四角色进度、显式 send、answer/resume、混批、历史未接进度。
 - B：同文件新增丢失一次/重复扫描/重启去重/身份两次复核失效、主控实际派工、未派工/已done不误报、停滞与进度重置/quiet/wait；使用现有私有运行时替换时钟及 QWB_NOW_MS_CMD，不真等阈值。
-- C：同文件覆盖规划/门禁/测试体系三种目标耗尽、同批正常与耗尽交接隔离、主控低频、重启、API失败、收据发布失败、后来接收/办理；断言原交接/计数/权限不变、无重复 planner-result；collab-handoff 保留无授权三次停投与 prepared/wait 的全部断言。
+- C：同文件覆盖规划/门禁/测试体系三种目标耗尽、同批正常与耗尽交接隔离、主控低频、重启、API失败、收据发布失败、后来接收/办理；断言原交接/计数/权限不变、无重复 planner-result；collab-handoff 改为验证三次后低频重提，prepared/wait断言保留。
 - 第七场景：复用 planning 的同路径冻结票/时钟/随机源字节对照，把基点固定为44ab8ac；比 stdout、stderr、rc、票字节、Herdr序列，不过滤业务差异。门禁 pending/rework、测试优先级只以非纯进度、未耗尽输入要求等价，A/C 命中输入是明确行为变化。
-- 旧票值守用例复用 tests/wake-block-output.sh 的 QWB_TEST_WAKE_BASELINE；无规划授权用例与普通门禁/测试批次保持基点逐字节。不修改或移除失效关闭、进程登记和短 socket 夹具。
+- 旧票值守用例复用 tests/wake-block-output.sh 的 QWB_TEST_WAKE_BASELINE；无规划授权用例与普通门禁/测试批次在未命中A/B/C时保持基点逐字节。不修改或移除失效关闭、进程登记和短 socket 夹具。
 - 最终分别跑所有改动测试及 collab-planning、collab-handoff、collab-gate、collab-test-policy、wake-block-output；记录 rc 和 grep -c '^PASS'/grep -c '^FAIL'，七个场景逐项映射。原始日志仅本副本 .qwb-tmp；代码仅白名单、detached HEAD 正常提交。
-- 四份角色说明只更新静默/失联通知/耗尽提醒相关句子；run/herdr/role/lib 与权限、主控锁、验收门、五值state、落地授权不动。
+- 四份角色说明只更新静默/失联通知/耗尽提醒相关句子；run/herdr/role与权限、主控锁、验收门、五值state、落地授权不动；lib仅改已获批的义务函数。
