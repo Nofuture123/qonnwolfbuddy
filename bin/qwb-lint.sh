@@ -142,11 +142,18 @@ if [[ -f "$CONF" ]]; then
     # 声明形式：QWB_X=… 与 export QWB_X=… 都算
     while IFS= read -r k; do
       [[ -n "$k" ]] || continue
-      # 「被引用」= 非注释行里出现真实变量读取 $QWB_X / ${QWB_X}（R2-M3）；
-      # 纯赋值（QWB_X=…）、不带 $ 的字面量（echo QWB_X）、整行注释都不算
-      grep -hE '\$[{]?'"$k"'([^A-Za-z0-9_]|$)' "${binsh[@]}" 2>/dev/null \
-        | grep -vE '^[[:space:]]*#' | grep -q . \
-        || dead="${dead} ${k}"
+      # 非注释行中的变量读取，或同一脚本中裸 export 且内嵌 Python 读取环境；
+      # 纯赋值、注释、字面量和仅 export 均不算。
+      perl -0777 -ne '
+        BEGIN { $key=shift @ARGV; $used=0 }
+        s/^[\t ]*#.*$//mg;
+        $used=1 if /\$[{]?\Q$key\E([^A-Za-z0-9_]|$)/;
+        s/#.*$//mg;  # 环境读取也不能来自行尾注释。
+        my @exports=/^[\t ]*export[\t ]+((?:[A-Za-z_][A-Za-z0-9_]*[\t ]*)+)(?:#.*)?$/mg;
+        $used=1 if (grep { /(?:^|[\t ])\Q$key\E(?:[\t ]|$)/ } @exports)
+          && /\bos\.environ(?:\.get\([\t ]*|\[[\t ]*)[\x27"]\Q$key\E[\x27"]/;
+        END { exit($used ? 0 : 1) }
+      ' "$k" "${binsh[@]}" 2>/dev/null || dead="${dead} ${k}"
     done < <(sed 's/^export[[:space:]][[:space:]]*//' "$CONF" | sed -n 's/^\(QWB_[A-Z_]*\)=.*/\1/p')
   fi
   if [[ -z "$dead" ]]; then

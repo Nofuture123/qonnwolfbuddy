@@ -506,6 +506,14 @@ qwb_task_obligations_json() {
         }
       }
     }
+    if ($e->{kind} eq "plan-ready" && $e->{line}=~/^blocked: planner-not-ready spec_rev=$e->{spec_rev} /) {
+      my $authorized=0;
+      for my $later (@{$d->{events}}) {
+        next unless $later->{seq}>$e->{seq} && $later->{spec_rev}==$e->{spec_rev};
+        $authorized=1 if $later->{kind} eq "plan-authorize";
+        return 1 if $authorized && $later->{kind}=~/^(plan-ready|start-claim)$/ && $later->{line}=~/^working: planner-ready /;
+      }
+    }
     if ($e->{kind} eq "gate-assign") {
       my $g=$d->{gate};
       my ($latest)=grep { $_->{kind} eq "gate-assign" } reverse @{$d->{events}};

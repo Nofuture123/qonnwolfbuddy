@@ -12,6 +12,7 @@ QWB_WORKTREE_SETUP=""                  # 可选：新建隔离副本后在副本
                                        # 只对新建副本执行：复用既有副本 / --here / --worktree <既有路径> 均不跑
 QWB_HOOK_MAX_MS=7200000                # Claude Code Stop hook 单轮阻塞值守上限（毫秒，2 小时）；到期无变化 hook 静默退出，
                                        # 下次 Stop 再起。对应 settings.json hook 的 timeout=7200（单位是秒）
+QWB_ROLE_PI_CONTROL=""                 # 常驻 Pi 职责：真机核验并批准后设为 verified；未启用拒绝启动
 QWB_ROLE_CLAUDE_CONTROL=""             # 仅规划职责：真机核验并批准后设为 verified；未启用拒绝启动
 QWB_CONTROLLER_PANE=""                 # 主控 pane id；开局点名时填入
 QWB_WORKSPACE=""                       # 本项目的 herdr workspace id（如 wA3）；主控开局把 HERDR_WORKSPACE_ID 填在这里，

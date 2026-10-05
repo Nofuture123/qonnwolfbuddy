@@ -16,6 +16,12 @@ blocks = re.findall(r'<!-- qwb-walk:([\w-]+) actor=([\w-]+) -->\n```bash\n(.*?)\
 assert len(blocks) == 17, ('walkthrough step 00: missing executable blocks', len(blocks))
 assert len({b[0] for b in blocks}) == len(blocks)
 
+revision_timing = os.environ.get('QWB_WALK_REVISION', 'before')
+probe = os.environ.get('QWB_R4_PROBE', '')
+if revision_timing == 'dispatched':
+    dispatched = re.findall(r'<!-- qwb-dispatched:([\w-]+) actor=([\w-]+) -->\n```bash\n(.*?)\n```', doc.read_text(), re.S)
+    assert len(dispatched) == 1, 'walkthrough: missing dispatched revision branch'
+
 # Exercise a genuinely empty installation before upgrading the configured fixture.
 fresh = tmp/'fresh-install'
 fresh.mkdir()
@@ -23,6 +29,22 @@ installed = subprocess.run(['bash', str(ROOT/'bin/qwb-init.sh'), str(fresh)], en
 assert installed.returncode == 0, installed.stderr
 assert (fresh/'qwbuddy/roles/顾问.md').is_file() and not (fresh/'qwbuddy/roles/咨询师.md').exists()
 assert (fresh/'qwbuddy/roles/常驻流程.md').read_bytes()==doc.read_bytes()
+if probe == 'lint' or not probe:
+    fresh_config = fresh/'qwbuddy/config.sh'
+    with fresh_config.open('a') as output:
+        output.write('\nQWB_ROLE_PI_CONTROL="verified"\nQWB_ROLE_CLAUDE_CONTROL="verified"\nQWB_GATE_FAST="true"\nQWB_GATE_FULL="true"\n')
+    def lint_fresh():
+        return subprocess.run(['/bin/bash', str(fresh/'qwbuddy/bin/qwb-lint.sh'), '--project', str(fresh)], env=env, capture_output=True, text=True)
+    checked = lint_fresh()
+    assert checked.returncode == 0 and 'LINT PASS' in checked.stdout, ('verified role config rejected', checked.stdout, checked.stderr)
+    print('PASS user_正常路径_启用常驻职责后自检通过', flush=True)
+    with fresh_config.open('a') as output:
+        output.write('QWB_DEAD_ROLE="unused"\nQWB_ASSIGNED_ONLY="unused"\nQWB_COMMENT_ONLY="unused"\nQWB_EXPORT_ONLY="unused"\n')
+    (fresh/'qwbuddy/bin/dead-config.sh').write_text('QWB_ASSIGNED_ONLY="value"\n# export QWB_COMMENT_ONLY\n# os.environ.get("QWB_COMMENT_ONLY")\nexport QWB_EXPORT_ONLY # os.environ.get("QWB_EXPORT_ONLY")\necho QWB_DEAD_ROLE\n')
+    checked = lint_fresh()
+    assert checked.returncode != 0 and all(key in checked.stdout for key in ['QWB_DEAD_ROLE', 'QWB_ASSIGNED_ONLY', 'QWB_COMMENT_ONLY', 'QWB_EXPORT_ONLY']), checked.stdout
+    print('PASS user_失败路径_真正的死配置仍被报出：赋值、注释、字面量及无解释器读取的export', flush=True)
+    if probe == 'lint': raise SystemExit(0)
 print('PASS user_正常路径_顾问文件改名后安装与清单一致（空目录实装）', flush=True)
 doc.unlink()  # Only this fixture-owned copy; prove the installer actually supplies the walkthrough.
 installed = subprocess.run(['bash', str(ROOT/'bin/qwb-init.sh'), str(p)], env=env, capture_output=True, text=True)
@@ -113,7 +135,7 @@ elif a[:2]==['agent','start']:
 elif a[:2]==['agent','get']:
  pane='review-pane' if any('review' in x for x in a[2:]) else 'task-pane'
  if pane not in s['panes']:print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
- out({'type':'agent_info','agent':{'pane_id':pane,'agent_status':'idle','state_change_seq':s['seq']}})
+ out({'type':'agent_info','agent':{'name':a[2],'agent':'pi','foreground_cwd':candidate,'workspace_id':'task-space','pane_id':pane,'agent_status':'idle','state_change_seq':s['seq']}})
 elif a[:2]==['pane','get']:
  pane=a[2];v=s['panes'].get(pane,{});d={'pane_id':pane,'workspace_id':'task-space' if pane in ['task-pane','review-pane'] else 'ws','tab_id':'task-tab' if pane=='task-pane' else 'tab-'+pane,'terminal_id':'terminal-'+pane,'foreground_cwd':candidate if pane in ['task-pane','review-pane'] else p}
  if v and not v.get('closed'):d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':v['session']})
@@ -178,6 +200,51 @@ def execute(step,actor,code):
     assert process.returncode==0, ('walkthrough step '+step+' samples='+','.join(samples),process.returncode,out,err)
     return err
 
+def read_task():
+    result = subprocess.run(['/bin/bash', str(p/'qwbuddy/bin/qwb-ledger.sh'), 'read', '--project', str(p), '--task', 'tasks/2026-10-05-hello.md'], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+def obligations(data):
+    result = subprocess.run(['/bin/bash', '-c', '. "$1"; qwb_task_obligations_json', 'obligations', str(p/'qwbuddy/bin/qwb-lib.sh')], input=json.dumps(data), env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+def compare_unrevised():
+    # Baseline = today's scripts minus this ticket's classifier branch, never a pinned Git object.
+    library = p/'qwbuddy/bin/qwb-lib.sh'
+    writer = p/'qwbuddy/bin/qwb-ledger.sh'
+    current = library.read_bytes(); original_writer = writer.read_bytes()
+    old, removed = re.subn(r'    if \(\$e->\{kind\} eq "plan-ready".*?(?=    if \(\$e->\{kind\} eq "gate-assign")', '', current.decode(), count=1, flags=re.S)
+    assert removed == 1, 'r4 classifier baseline removal must be exact'
+    saved_tasks = {f:f.read_bytes() for f in (p/'tasks').iterdir() if f.is_file()}
+    state = Path(env['LAND_NATIVE_STATE']); log = Path(env['LAND_NATIVE_LOG'])
+    native = state.read_bytes(); native_log = log.read_bytes(); now_bytes = clock.read_bytes()
+    def restore():
+        for file,content in saved_tasks.items(): file.write_bytes(content)
+        state.write_bytes(native); log.write_bytes(native_log); clock.write_bytes(now_bytes)
+    results = []
+    try:
+        writer.write_text(freeze_writer(original_writer.decode()).replace("strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)", "'2026-10-05T00:00:00Z'"))
+        for version in [old.encode(), current]:
+            restore(); library.write_bytes(version)
+            observed = []
+            for script,args in [('qwb-status.sh', []), ('qwb-wake.sh', ['--once', '--pane', 'ctl'])]:
+                result = subprocess.run(['/bin/bash', str(p/'qwbuddy/bin'/script), '--project', str(p), *args], env=env, capture_output=True, timeout=60)
+                assert result.returncode == 0, (script, result.stdout, result.stderr)
+                observed.append((result.returncode, result.stdout, result.stderr))
+            results.append((observed, {f.name:f.read_bytes() for f in saved_tasks}, log.read_bytes(), state.read_bytes()))
+        if results[0] != results[1]:
+            import difflib
+            for index,(left,right) in enumerate(zip(results[0], results[1])):
+                if left != right:
+                    print('R4 byte mismatch component', index, flush=True)
+                    print('\n'.join(difflib.unified_diff(repr(left).split('\\n'), repr(right).split('\\n')))[:16000], flush=True)
+            raise AssertionError('unrevised status/wake stdout/stderr/rc/ticket/native bytes changed')
+    finally:
+        restore(); library.write_bytes(current); writer.write_bytes(original_writer)
+    print('PASS user_正常路径_未涉及修订的状态和值守逐字节相同：当前脚本只撤本票分类，含rc与票/native字节', flush=True)
+
 try:
     for step,actor,code in blocks:
         if step=='03-assign':
@@ -202,10 +269,95 @@ try:
                 print('PASS user_失败路径_说明书样例被改坏时测试变红：03-assign plan-assign.json budget',flush=True)
             finally:doc.write_bytes(original)
         execute(step,actor,code)
-        if step=='04-new':
+        if step == '06-worker':
+            execute('06-progress', 'worker', "cd '@ROOT@'\nbash qwbuddy/bin/qwb-ledger.sh append --project '@ROOT@' --task tasks/2026-10-05-hello.md -- 'working: 本轮进度已记录，交付以done为准'")
+        if step == '04-new' and revision_timing == 'before' and not probe:
+            compare_unrevised()
+        if (step=='04-new' and revision_timing == 'before') or (step=='06-worker' and revision_timing == 'dispatched'):
+            original_worker = json.loads(Path(env['LAND_NATIVE_STATE']).read_text()).get('panes', {}).get('task-pane')
+            revision_writer = p/'qwbuddy/bin/qwb-ledger.sh'
+            revision_writer_bytes = revision_writer.read_bytes()
+            assert revision_writer_bytes.count(b'use Time::HiRes qw(time);') == 1
+            revision_writer.write_bytes(revision_writer_bytes.replace(b'use Time::HiRes qw(time);', b'use subs qw(time); sub time { open my $c,"<",$ENV{WALK_CLOCK} or die $!; return scalar(<$c>)/1000 }').replace(b',gmtime)', b',gmtime(time()))'))
             for revision_step,revision_actor,revision_code in revisions:
                 execute(revision_step,revision_actor,revision_code)
+                if revision_step == 'r03-apply':
+                    result = subprocess.run(['/bin/bash', str(p/'qwbuddy/bin/qwb-ledger.sh'), 'plan-ready', '--project', str(p), '--task', 'tasks/2026-10-05-hello.md'], env=env, capture_output=True, text=True)
+                    assert result.returncode != 0 and '首次启动无明确实施授权/预算' in result.stdout, (result.stdout, result.stderr)
+                    data = read_task()
+                    blocker = next(e for e in reversed(data['events']) if e['kind'] == 'plan-ready')
+                    blocked_id = 'source:' + blocker['event_id']
+                    assert 'source='+blocker['event_id'] in obligations(data)
+                    execute('r03-blocked-wake', 'controller', "cd '@ROOT@'\nbash qwbuddy/bin/qwb-wake.sh --project '@ROOT@' --once --pane ctl")
+                    data = read_task()
+                    assert 'handoff='+blocked_id in obligations(data) and not data['handoffs'][blocked_id]['handled']
+                    from prompt_file import native_calls
+                    calls = native_calls(Path(env['LAND_NATIVE_LOG']).read_text().splitlines(), p)
+                    assert any(a[:3] == ['pane', 'run', 'planner-pane'] and blocked_id in a[3] for a in calls), calls
+                    print('PASS user_失败路径_未重新授权时阻塞仍是规划的待办且值守叫醒规划', flush=True)
+                if revision_step == 'r04-authorize':
+                    assert 'handoff='+blocked_id in obligations(read_task()), 'authorization alone must not settle blocked'
+                    # A direct dispatch also publishes readiness through start-claim, without a watcher scan.
+                    task_path = p/'tasks/2026-10-05-hello.md'
+                    before_claim = task_path.read_bytes()
+                    try:
+                        execute('r04-direct-ready', 'planner', "cd '@ROOT@'\nbash qwbuddy/bin/qwb-ledger.sh start-claim --project '@ROOT@' --task tasks/2026-10-05-hello.md -- direct-ready pi-sol-high")
+                        direct = read_task()
+                        assert direct['events'][-1]['kind'] == 'start-claim'
+                        assert 'handoff='+blocked_id not in obligations(direct), 'authorized direct start-claim readiness leaves the blocker unresolved'
+                    finally:
+                        task_path.write_bytes(before_claim)
+                    mark = len(Path(env['LAND_NATIVE_LOG']).read_text().splitlines())
+                    clock.write_text(str(int(clock.read_text()) + 1800001))
+                    execute('r04-ready-wake', 'controller', "cd '@ROOT@'\nbash qwbuddy/bin/qwb-wake.sh --project '@ROOT@' --once --pane ctl")
+                    data = read_task()
+                    assert data['planning']['ready']['status'] == 'ready'
+                    assert 'handoff='+blocked_id not in obligations(data), 'authorized and ready blocker remains an obligation'
+                    assert not data['handoffs'][blocked_id]['handled'], 'satisfaction must preserve raw handled audit'
+                    calls = native_calls(Path(env['LAND_NATIVE_LOG']).read_text().splitlines()[mark:], p)
+                    assert not any(a[:2] == ['pane', 'run'] and blocked_id in a[3] for a in calls), calls
+                    # Historical evidence is monotonic; unrelated spec and forged append do not satisfy it.
+                    variant = json.loads(json.dumps(data)); variant['planning']['ready'] = {}
+                    assert 'handoff='+blocked_id not in obligations(variant)
+                    for kind in ['plan-authorize', 'plan-ready']:
+                        variant = json.loads(json.dumps(data))
+                        for event in variant['events']:
+                            if event['seq'] > blocker['seq'] and event['kind'] == kind: event['spec_rev'] += 1
+                        assert 'handoff='+blocked_id in obligations(variant), kind
+                    variant = json.loads(json.dumps(data))
+                    for event in variant['events']:
+                        if event['seq'] > blocker['seq'] and event['kind'] == 'plan-authorize': event['seq'] = variant['seq'] + 1
+                    variant['events'].sort(key=lambda e:e['seq'])
+                    assert 'handoff='+blocked_id in obligations(variant), 'ready before authorization must not settle'
+                    variant = json.loads(json.dumps(data))
+                    variant['events'][blocker['seq']-1]['kind'] = 'blocked'
+                    assert 'handoff='+blocked_id in obligations(variant), 'ordinary blocked text must not be auto-settled'
+                    print('PASS user_正常路径_重新授权后各角色没有残留待办：同spec后续ready、值守无旧阻塞门铃、历史不伪造handled', flush=True)
+            revision_writer.write_bytes(revision_writer_bytes)
+            if revision_timing == 'dispatched':
+                for revision_step,revision_actor,revision_code in dispatched:
+                    execute(revision_step,revision_actor,revision_code)
+                data = read_task()
+                assert 'gate' not in data, 'old done must not be submitted to gate'
+                old_done = [e for e in data['events'] if e['kind']=='done']
+                assert old_done
+                for event in old_done:
+                    h = data['handoffs']['source:'+event['event_id']]
+                    assert h['handled'] and json.loads(Path(h['result_ref']).read_text())['outcome'] == 'not-applied'
+                for replay in ['05-dispatch', '06-worker']:
+                    replay_actor,replay_code = next((a,c) for s,a,c in blocks if s == replay)
+                    execute('redispatched-'+replay,replay_actor,replay_code)
+                assert json.loads(Path(env['LAND_NATIVE_STATE']).read_text())['panes']['task-pane'] == original_worker
+                native_rows = [json.loads(line) for line in Path(env['LAND_NATIVE_LOG']).read_text().splitlines()]
+                assert len([a for a in native_rows if isinstance(a, list) and a[:3] == ['agent', 'start', 'qwb-hello']]) == 1, 'redispatch must not restart the implementer'
+                assert len([e for e in read_task()['events'] if e['kind']=='dispatch']) == 2
+                print('PASS user_正常路径_已派出后修订按说明书走通：旧done不送门控、not-applied、同副本同会话重派', flush=True)
             print('PASS 文档修订分支：真实source、CAS plan-revision/revise、清空授权、主控plan-authorize后继续派工',flush=True)
+        if step=='07-readback':
+            data = read_task()
+            assert not data['handoffs'][blocked_id]['handled'], 'readback loop must skip the satisfied blocker'
+            progress = [e for e in data['events'] if e['kind']=='working']
+            assert progress and any(not data['handoffs']['source:'+e['event_id']]['handled'] for e in progress), 'readback loop must leave raw progress alone'
         if step=='11-close-workers':
             for child in children:
                 child.wait(timeout=10)
@@ -220,11 +372,15 @@ try:
         data=json.loads(subprocess.check_output(['bash',str(p/'qwbuddy/bin/qwb-ledger.sh'),'read','--project',str(p),'--task',str(p/f'tasks/2026-10-05-{name}.md')],env=env,text=True))
         assert data['phase']=='verified' and data['claim'] is None
         if name=='intake':
-            assert data['handoffs'] and all(h['handled'] for h in data['handoffs'].values())
+            assert data['handoffs'] and all(h['handled'] or h['payload'].startswith('working:') for h in data['handoffs'].values())
         else:
             assert data['spec_rev']==1 and len(data['planning']['revisions'])==1
             assert data['gate']['verdict']=='accepted' and data['land']['stage']=='closed'
             assert data['land']['after']==values['HEAD']
+    # Both tickets are truly settled despite raw progress/accepted/release remaining pending.
+    for name in ['intake','hello']:
+        settled = json.loads(subprocess.check_output(['/bin/bash', str(p/'qwbuddy/bin/qwb-ledger.sh'), 'read', '--project', str(p), '--task', f'tasks/2026-10-05-{name}.md'], env=env, text=True))
+        assert obligations(settled) == '', (name, obligations(settled))
     assert (p/'hello.txt').read_bytes()==b'hello\n'
     print('PASS user_正常路径_按说明书示例走到票结案：两票 verified、main 快进候选后窄提交账本、候选副本和分支清理',flush=True)
 finally:
