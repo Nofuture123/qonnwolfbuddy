@@ -32,6 +32,7 @@ with manager as temp:
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
     (stub/'lsof').write_text('#!/bin/sh\nexit 1\n')
+    (stub/'mv').write_text('#!/bin/sh\n[ "${PL_FAIL_PUBLISH:-0}" != 1 ] || exit 9\nexec /bin/mv "$@"\n')
     (stub/'ps').write_text("#!/usr/bin/env python3\nimport subprocess,sys\nif sys.argv[-1]=='ppid=': sys.exit(subprocess.run(['/bin/ps',*sys.argv[1:]]).returncode)\nprint('Thu Oct 1 00:00:00 2099')\n")
     (stub/'herdr').write_text('''#!/usr/bin/env python3
 import json,os,sys
@@ -53,7 +54,11 @@ elif a[:2]==['agent','start']:
   sid=v[v.index('--session-id')+1];sd=v[v.index('--session-dir')+1];s[pane]={'session':sd+'/2099_'+sid+'.jsonl'}
  out({'type':'agent_started'})
 elif a[:2]==['pane','get']:
- pane=a[2]; live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
+ pane=a[2]
+ if pane=='planner-pane' and os.environ.get('PL_EXPIRE_PROOF'):
+  counter=Path(os.environ['PL_EXPIRE_PROOF']); n=int(counter.read_text())+1 if counter.exists() else 1; counter.write_text(str(n))
+  if n>=2:s.pop(pane,None)
+ live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
  if live:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
  out({'pane':d})
 elif a[:2]==['pane','process-info']:
@@ -248,7 +253,59 @@ file.write_text(json.dumps(s))
         state=read(name)
         assert state['handoffs']['source:up-done']['transport_count']==1 and state['handoffs']['source:up-blocked']['transport_count']==1
         print('PASS upward P1：混合done/blocked按真实来源分流；交付提示安排门禁；预算只记各自子集')
+        def reject_planner(event,task=name):
+            for verb in ['received','accept','prepared','handled']:
+                result=handoff(verb,event,task,actor='planner-pane',ok=False)
+                assert '规划不能办理主控专属交接' in result.stderr,(verb,result.stderr)
+        reject_planner('source:up-done')
+        migration_state=read(intake_name)
+        migrated=next(h['event_id'] for h in migration_state['handoffs'].values() if migration_state['events'][h['source_seq']-1]['kind']=='migrate')
+        reject_planner(migrated,intake_name)
+        for verb in ['received','accept','prepared']: handoff(verb,'source:up-blocked',actor='planner-pane')
+        bad_ref=p/'tasks/up-unknown.json'
+        bad_ref.write_text(json.dumps({'event_id':'source:up-blocked','op_id':'handle-source:up-blocked','outcome':'unknown','evidence':'not proven'}))
+        before=ticket.read_bytes()
+        failed=cli('qwb-send.sh','handled','--task',ticket,'--event','source:up-blocked','--op','handle-source:up-blocked','--result-ref',bad_ref,actor='planner-pane',ok=False)
+        assert ticket.read_bytes()==before and '结果读回不匹配/未知' in failed.stderr
+        env['PL_FAIL_PUBLISH']='1'
+        try:
+            failed=handoff('handled','source:up-blocked',actor='planner-pane',ok=False)
+            assert '候选发布失败' in failed.stderr
+        finally: del env['PL_FAIL_PUBLISH']
+        handoff('handled','source:up-blocked',actor='planner-pane')
+        # 直接read，不先调用pending：原handled与派生必须已在同一次发布里可见。
+        state=read(name); result_id='source:planner-result:'+hashlib.sha256(b'source:up-blocked').hexdigest()
+        original_h=state['handoffs']['source:up-blocked']; result_h=state['handoffs'][result_id]
+        assert original_h['handled']==1 and not result_h['handled'] and result_h['source_event']=='up-blocked'
+        for text in ['source:up-blocked','actor=planner','op=handle-source:up-blocked',original_h['result_ref'],original_h['result_sha256']]: assert text in result_h['payload']
+        before=ticket.read_bytes(); handoff('handled','source:up-blocked',actor='planner-pane')
+        assert ticket.read_bytes()==before, '重放handled产生第二条上行或额外事件'
+        # 升级恢复夹具：模拟旧writer已handled但尚无结果上行，不能依赖规划再次行动。
+        legacy_state=json.loads(json.dumps(state)); del legacy_state['handoffs'][result_id]
+        legacy_body=before.split(b'\n<!-- qwb-collab-v1\n')[0]
+        ticket.write_bytes(legacy_body+b'\n<!-- qwb-collab-v1\n'+json.dumps(legacy_state,ensure_ascii=False,separators=(',',':')).encode()+b'\n-->\n')
+        pending(); recovered=read(name)
+        assert recovered['handoffs'][result_id]==result_h and recovered['handoffs']['source:up-blocked']==original_h
+        restored=ticket.read_bytes(); pending(); assert ticket.read_bytes()==restored, '恢复扫描重复造上行'
+        reject_planner(result_id)
+        routes,_=deliveries()
+        assert len(routes)==1 and routes[0][2]=='ctl' and result_id in routes[0][3] and original_h['result_sha256'] in routes[0][3],routes
+        print('PASS upward P2：blocked先规划；handled原子派生带结果引用的主控上行；重复handled原字节不变')
+        print('PASS upward writer：done/迁入核查/结果上行的四入口拒绝规划，票字节不变；未知结果拒绝无半发布')
         settle()
+        # needs-decision与question均须是派发工人的真实来源；question本身没有op字段。
+        call('append',name,'--event-id','up-decision','--','needs-decision: 原授权内技术选择',actor='up-worker')
+        call('question',name,'--event-id','up-question','--','up-budget','真实用户预算问题',actor='up-worker')
+        pending()
+        for event in ['source:up-decision','source:up-question']:
+            for verb in ['received','accept','prepared','handled']: handoff(verb,event,actor='planner-pane')
+            result='source:planner-result:'+hashlib.sha256(event.encode()).hexdigest()
+            assert result in read(name)['handoffs']
+        assert read(name)['questions']['up-budget']['answer']=='' and read(name)['questions']['up-budget']['resumed']==''
+        call('answer',name,'--','up-budget','fixture controller approved')
+        call('resume',name,'--','up-budget','fixture resumes after explicit answer')
+        settle(); before=ticket.read_bytes(); assert pending()==[] and ticket.read_bytes()==before, '上行回执自激'
+        print('PASS upward question/needs-decision：均派生结果，handled不关闭用户问题，上行处理不递归')
         # payload冒充done不改变系统来源；worker working仍按本轮裁决叫规划。
         fake=call('handoff-send',name,'--','controller','up-fake-done','1','done: 只是用户正文',actor='up-worker').stdout.strip()
         call('append',name,'--event-id','up-progress','--','working: 正在推进',actor='up-worker')
@@ -267,6 +324,20 @@ file.write_text(json.dumps(s))
         finally: native_path.write_bytes(native_bytes)
         print('PASS upward 场景6：规划身份失效回主控，原事件仍未handled')
         settle()
+        call('append',name,'--event-id','up-second-proof','--','blocked: 第二次身份复核失效',actor='up-worker')
+        native_bytes=native_path.read_bytes(); env['PL_EXPIRE_PROOF']=str(temp/'up-proof-counter')
+        try:
+            routes,_=deliveries()
+            assert int(Path(env['PL_EXPIRE_PROOF']).read_text())==2
+            assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-second-proof' in routes[0][3],routes
+        finally:
+            del env['PL_EXPIRE_PROOF']; native_path.write_bytes(native_bytes)
+        settle()
+        call('append',name,'--event-id','up-block-mode','--','done: 宿主block同样回主控',actor='up-worker')
+        result=cli('qwb-wake.sh','--block','--max-ms','1',ok=False)
+        assert result.returncode==2 and 'source:up-block-mode' in result.stdout and '下一步：主控安排门禁' in result.stdout,(result.returncode,result.stdout,result.stderr)
+        settle()
+        print('PASS upward 双身份复核不减，第二次失效回主控；block入口同样报告交付')
         # 用公开04收据/审核/verdict走到accepted；私有true门不等于仓库全门。
         environment=temp/'up-environment'; environment.write_text('private fixture dependencies\n')
         assignment={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
@@ -290,6 +361,8 @@ file.write_text(json.dumps(s))
         assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-after-accepted' in routes[0][3] and '门禁 accepted' in routes[0][3],routes
         assert read(name)['gate']['verdict']=='accepted' and read(name)['claim']['owner']=='gate-pane' and read(name)['phase']=='running'
         print('PASS upward P3：公开accepted之后交接回主控，pending门禁优先、claim/state不变')
+        reject_planner('source:up-after-accepted')
+        print('PASS upward writer：accepted后续交接的四入口拒绝规划，票字节不变')
         if os.environ.get('QWB_PLANNING_UPWARD_COMPARE')!='1': return
         # 同路径、同初始票/身份，固定两份writer的时钟与随机输入；比较未过滤的完整字节。
         cli('qwb-role.sh','start','--actor','up-test','--role','测试体系','--worker','sol','--dir',p)

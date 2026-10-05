@@ -634,20 +634,50 @@ sub handoff_due {
 sub worker_handoff_source {
   my $h=shift; my $e=$data->{events}[$h->{source_seq}-1];
   return unless $e && $h->{event_id} eq source_id($e->{event_id}) && $h->{corr} eq $h->{event_id};
-  return unless $e->{op_id} ne '' && grep {
-    $_->{kind} eq 'dispatch' && $_->{seq}<$e->{seq} && $_->{op_id} eq $e->{op_id} &&
-    $data->{ops}{$_->{op_id}}{pane} eq $e->{actor}
-  } @{$data->{events}};
+  my ($dispatch)=grep {
+    $_->{kind} eq 'dispatch' && $_->{seq}<$e->{seq} && $data->{ops}{$_->{op_id}}{pane} eq $e->{actor}
+  } reverse @{$data->{events}};
+  return unless $dispatch && ($e->{op_id} eq $dispatch->{op_id} || ($e->{kind} eq 'question' && $e->{op_id} eq ''));
   return $e;
+}
+sub planner_manages_handoffs {
+  return 0 unless $planning_grant;
+  my $g=$data->{gate};
+  return !($g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/);
+}
+sub planner_result_source {
+  my $h=shift;
+  return unless $planning_grant && $h->{handled} && $h->{accepted} eq $planning_grant->{identity}{pane} && $h->{owner_fp} eq $planning_grant->{identity}{owner_fp};
+  my $e=worker_handoff_source($h);
+  return $e if $e && $e->{kind}=~/\A(blocked|needs-decision|question)\z/;
+  return;
+}
+sub planner_result_id { 'source:planner-result:'.sha256_hex(encode('UTF-8',$_[0]{event_id})) }
+sub planner_result_payload {
+  my $h=shift;
+  return "规划已办理工人阻塞/决策；原交接 $h->{event_id}；actor=$planning_grant->{identity}{actor} pane=$h->{accepted} op=$h->{op_id}；result_ref=$h->{result_ref}；result_sha256=$h->{result_sha256}；请主控读回结果。";
+}
+sub ensure_planner_result {
+  my $h=shift;
+  return 0 unless planner_manages_handoffs();
+  my $e=planner_result_source($h) or return 0;
+  my $id=planner_result_id($h); my $payload=planner_result_payload($h);
+  if (my $old=$data->{handoffs}{$id}) {
+    fail('规划结果上行来源/内容冲突') unless $old->{corr} eq $id && $old->{attempt} eq '1' && $old->{source_event} eq $e->{event_id} && $old->{payload} eq $payload;
+    return 0;
+  }
+  $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$payload);
+  return 1;
 }
 sub planner_controller_hint {
   my $h=shift;
-  return '' unless $planning_grant;
+  return '' unless planner_manages_handoffs();
   my $g=$data->{gate};
-  return '' if $g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/;
   return '' if grep { source_id($_->{event_id}) eq $h->{event_id} } values %{$data->{test_requests} // {}};
   return '门禁 accepted；下一步：主控安排落地/清理' if $g && $g->{verdict} eq 'accepted';
   return '门禁 rediagnose；下一步：主控安排技术重诊' if $g && $g->{verdict} eq 'rediagnose';
+  my $original=$data->{handoffs}{source_id($h->{source_event})};
+  return '规划办理结果；下一步：主控读回结果' if $original && planner_result_source($original) && $h->{event_id} eq planner_result_id($original) && $h->{corr} eq $h->{event_id} && $h->{attempt} eq '1' && $h->{payload} eq planner_result_payload($original);
   my $e=$data->{events}[$h->{source_seq}-1];
   return '迁入核查；下一步：主控核对旧义务' if $e->{kind} eq 'migrate';
   my $worker_source=worker_handoff_source($h);
@@ -1400,6 +1430,8 @@ REPORT
       my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{line};
       $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$payload); $added++;
     }
+    # 旧版本已由规划handled的工人问题可恢复上行；与正常handled使用同一幂等键。
+    $added+=ensure_planner_result($_) for values %{$data->{handoffs}};
     my @p=map { +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0} }
       sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
     # 只给规划分流增加瞬时提示；既有测试请求整批及门禁claim路径保持原输出。
@@ -1437,6 +1469,7 @@ REPORT
         fail('回复未持久读回，不能handled') if $cmd eq 'handoff-handled' && $request->{reply_sha256} eq '';
       }
       fail('仅当前收件人能确认') unless $controller || $gate || $test || $planner;
+      fail('规划不能办理主控专属交接') if $planner && !$controller && $cmd=~/\Ahandoff-(received|accept|prepared|handled)\z/ && planner_controller_hint($h) ne '';
       require_claim($data->{claim}{op_id}) if $gate;
       if ($cmd eq 'handoff-received') {
         fail('received参数非法') unless @args==1;
@@ -1486,6 +1519,7 @@ REPORT
           if ($h->{handled}) { fail('重复handled结果冲突') unless $h->{result_ref} eq text($resolved) && $h->{result_sha256} eq sha256_hex($proof); print "$id\n"; exit }
           $h->{handled}=1; $h->{result_ref}=text($resolved); $h->{result_sha256}=sha256_hex($proof);
           $h->{wait_until}=0;
+          ensure_planner_result($h) if $planner && !$controller;
         } else { fail("未知交接命令 $cmd") }
       }
     }
