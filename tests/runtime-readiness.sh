@@ -143,6 +143,11 @@ case "$1 $2" in
         [[ "$QWB_STUB_REAL_AGENT_FILE" != *agent-get-missing-real.json ]] || exit 1
         exit 0
       fi
+      if [[ -n "${QWB_STUB_ENTER_DELAY_MS:-}" && -s "$QWB_STUB_ENTER_AT" && "$seq" -eq 185 ]] \
+        && (( $(cat "$QWB_STUB_NOW") - $(cat "$QWB_STUB_ENTER_AT") >= QWB_STUB_ENTER_DELAY_MS )); then
+        prompt_transition working
+        seq=186; status=working
+      fi
       if [[ -n "${QWB_STUB_CHANGE_AT_MS:-}" && "$(cat "$QWB_STUB_NOW")" -ge "$QWB_STUB_CHANGE_AT_MS" && "$seq" -eq 185 ]]; then
         prompt_transition done
         seq=186; status=done
@@ -215,6 +220,7 @@ case "$1 $2" in
     esac ;;
   "pane send-keys")
     [[ "$3 $4" == 'wT:p1 enter' ]] || exit 7
+    cat "$QWB_STUB_NOW" > "$QWB_STUB_ENTER_AT"
     [[ "${QWB_STUB_ENTER_STARTS:-0}" != 1 ]] || prompt_transition "${QWB_STUB_ENTER_STATUS:-working}"
     echo '{"result":{"type":"ok"}}' ;;
   "tab close") echo '{"result":{"type":"ok"}}' ;;
@@ -259,7 +265,12 @@ export QWB_STUB_LOG="$TMP/herdr.log" QWB_STUB_CWD="$PROJECT" QWB_STUB_TASK="$TAS
 export QWB_STUB_PID="$$" QWB_STUB_SESSION="$TMP/pi-session.jsonl"
 export QWB_STUB_PROMPT_STATE="$TMP/prompt-state" QWB_STUB_PROMPT_SEQ="$TMP/prompt-seq"
 export QWB_STUB_AGENT_MISSING="$ROOT/tests/fixtures/herdr/agent-get-missing-real.json"
-export QWB_STUB_NOW="$TMP/prompt-now" QWB_STUB_SLEEP_LOG="$TMP/prompt-sleep.log"
+export QWB_STUB_NOW="$TMP/prompt-now" QWB_STUB_SLEEP_LOG="$TMP/prompt-sleep.log" QWB_STUB_ENTER_AT="$TMP/prompt-enter-at"
+RUNTIME_BIN="$TMP/runtime-bin"
+cp -R "$ROOT/bin" "$RUNTIME_BIN"
+if [[ "${QWB_PROMPT_START_BASELINE:-0}" == 1 ]]; then
+  git -C "$ROOT" show 44ab8ac:bin/qwb-run.sh > "$RUNTIME_BIN/qwb-run.sh"
+fi
 printf '#!/usr/bin/env bash\ncat "$QWB_STUB_NOW"\n' > "$TMP/now-ms.sh"
 printf '#!/usr/bin/env bash\necho "$1" >> "$QWB_STUB_SLEEP_LOG"\necho $(( $(cat "$QWB_STUB_NOW") + ${QWB_STUB_SLEEP_BUMP:-5000} )) > "$QWB_STUB_NOW"\n' > "$TMP/sleep-ms.sh"
 chmod +x "$TMP/now-ms.sh" "$TMP/sleep-ms.sh"
@@ -273,7 +284,7 @@ reuse_proof() {
 run_case() {
   (cd "$PROJECT" && PATH="$TMP/bin:$PATH" HERDR_PANE_ID=wT:ctl \
     QWB_NOW_MS_CMD="$TMP/now-ms.sh" QWB_SLEEP_CMD="$TMP/sleep-ms.sh" \
-    bash "$ROOT/bin/qwb-run.sh" --task case --worker pi --here --accept-new-scenarios "$@")
+    "$BASH" "$RUNTIME_BIN/qwb-run.sh" --task case --worker pi --here --accept-new-scenarios "$@")
 }
 mkdir -p "$LOCK"
 printf '2020-01-01T00:00:00Z wT:ctl\n' > "$LOCK/owner"
@@ -411,6 +422,7 @@ prepare_prompt_case() {
   echo 185 > "$QWB_STUB_PROMPT_SEQ"
   echo 0 > "$QWB_STUB_NOW"
   : > "$QWB_STUB_SLEEP_LOG"
+  : > "$QWB_STUB_ENTER_AT"
   printf '%s\n' 'qwb_worker pi herdr' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
 }
 check_prompt_success() {
@@ -420,14 +432,67 @@ check_prompt_success() {
     && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq "$enters" ]] \
     && ! grep -q '^agent wait' "$QWB_STUB_LOG" \
     && [[ "$(wc -l < "$QWB_STUB_SLEEP_LOG")" -eq "$((waits - 1))" ]] \
-    && [[ "$(grep -c '^working: .*prompt-submit-enter ' "$TASK" || true)" -eq "$enters" ]] \
-    && { [[ "$enters" -eq 0 ]] || grep -q "^working: .*prompt-submit-enter op=$op pane=wT:p1$" "$TASK"; }; then
+    && ! grep -q 'prompt-submit-enter' "$TASK" \
+    && [[ "$(grep -c '^prompt-submit-enter ' "$TMP/prompt.out" || true)" -eq "$enters" ]] \
+    && { [[ "$enters" -eq 0 ]] || grep -q "^prompt-submit-enter op=$op pane=wT:p1$" "$TMP/prompt.out"; }; then
     ok "$label"
   else
     bad "${label}：rc=$rc"
     cat "$TMP/prompt.out" "$TMP/prompt.err" "$QWB_STUB_LOG" "$TASK"
   fi
 }
+# 固定观察副本中的随机op和日期；不过滤输出，逐字节比较同路径同夹具。
+python3 -B - "$ROOT" "$TMP" <<'PY'
+import subprocess,sys
+from pathlib import Path
+root,tmp=map(Path,sys.argv[1:])
+for version,raw in [('old',subprocess.check_output(['git','-C',str(root),'show','44ab8ac:bin/qwb-run.sh'])),('new',(root/'bin/qwb-run.sh').read_bytes())]:
+    needle=b'RUN_OP="$(qwb_op_id)"'
+    assert raw.count(needle)==1
+    (tmp/('prompt-byte-'+version+'.sh')).write_bytes(raw.replace(needle,b'RUN_OP="0123456789abcdef0123456789abcdef"'))
+PY
+cat > "$TMP/bin/date" <<'EOF'
+#!/bin/sh
+if [ "${QWB_PROMPT_FIXED_DATE:-0}" = 1 ] && [ "$*" = '-u +%Y-%m-%dT%H:%M:%SZ' ]; then
+  printf '2099-01-01T00:00:00Z\n'
+else
+  exec /bin/date "$@"
+fi
+EOF
+chmod +x "$TMP/bin/date"
+cp "$RUNTIME_BIN/qwb-run.sh" "$TMP/prompt-run.saved"
+for mode in first reuse pane-run; do
+  for version in old new; do
+    prepare_prompt_case
+    reuse=0
+    if [[ "$mode" == reuse ]]; then
+      reuse=1
+      printf 'dispatch: historical worker=pi agent=qwb-case pane=wT:p1 dir=%s\n' "$(cd "$PROJECT" && pwd -P)" >> "$TASK"
+      reuse_proof
+    elif [[ "$mode" == pane-run ]]; then
+      reuse=1
+      printf '%s\n' 'qwb_worker pi pane-run mock-agent' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
+    fi
+    cp "$TMP/prompt-byte-$version.sh" "$RUNTIME_BIN/qwb-run.sh"
+    QWB_PROMPT_FIXED_DATE=1 QWB_STUB_REUSE="$reuse" run_case > "$TMP/byte-$mode-$version.out" 2> "$TMP/byte-$mode-$version.err"; rc=$?
+    printf '%s\n' "$rc" > "$TMP/byte-$mode-$version.rc"
+    cp "$TASK" "$TMP/byte-$mode-$version.ticket"
+    cp "$QWB_STUB_LOG" "$TMP/byte-$mode-$version.herdr"
+    cp "$QWB_STUB_SLEEP_LOG" "$TMP/byte-$mode-$version.sleep"
+  done
+  same=1
+  for field in out err rc ticket herdr sleep; do
+    cmp -s "$TMP/byte-$mode-old.$field" "$TMP/byte-$mode-new.$field" || { same=0; diff -u "$TMP/byte-$mode-old.$field" "$TMP/byte-$mode-new.$field"; }
+  done
+  if [[ "$same" -eq 1 && "$(cat "$TMP/byte-$mode-new.rc")" -eq 0 && "$(cat "$QWB_STUB_NOW")" -eq 0 ]] \
+    && [[ ! -s "$QWB_STUB_SLEEP_LOG" ]] && ! grep -q '^pane send-keys' "$QWB_STUB_LOG"; then
+    ok "user_立即开工字节对照 ${mode}：stdout/stderr/rc/票/Herdr与44ab8ac完全相同，零等待"
+  else
+    bad "user_立即开工字节对照 ${mode} 不一致或发生等待"
+  fi
+done
+cp "$TMP/prompt-run.saved" "$RUNTIME_BIN/qwb-run.sh"
+
 for status in working done blocked; do
   prepare_prompt_case
   QWB_STUB_PROMPT_STATUS="$status" run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
@@ -444,6 +509,30 @@ for reuse in 0 1; do
   check_prompt_success "prompt-submit reuse=${reuse}：卡住补一次Enter后二次确认" 1 2
   if [[ "$reuse" -eq 1 ]] && grep -q '^agent start\|^tab create' "$QWB_STUB_LOG"; then
     bad 'prompt-submit 续派错误新建端点'
+  fi
+done
+# 回车之后20秒才working；首次、续派、pane-run共用同一时钟和确认契约。
+for mode in first reuse pane-run; do
+  prepare_prompt_case
+  reuse=0
+  if [[ "$mode" == reuse ]]; then
+    reuse=1
+    printf 'dispatch: historical worker=pi agent=qwb-case pane=wT:p1 dir=%s\n' "$(cd "$PROJECT" && pwd -P)" >> "$TASK"
+    reuse_proof
+  elif [[ "$mode" == pane-run ]]; then
+    reuse=1
+    printf '%s\n' 'qwb_worker pi pane-run mock-agent' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
+  fi
+  QWB_STUB_REUSE="$reuse" QWB_STUB_PROMPT_STATUS=idle QWB_STUB_ENTER_DELAY_MS=20000 QWB_STUB_SLEEP_BUMP=1000 \
+    run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
+  if [[ "$rc" -eq 0 && "$(cat "$QWB_STUB_ENTER_AT")" -eq 5000 && "$(cat "$QWB_STUB_NOW")" -eq 25000 ]] \
+    && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq 1 ]] \
+    && grep -q '^已派发：' "$TMP/prompt.out" && grep -q '^state-query status=working seq=186$' "$QWB_STUB_LOG" \
+    && ! grep -q 'prompt-submit-enter' "$TASK"; then
+    ok "user_补回车后二十秒开工 ${mode}：5秒补一次Enter，25秒立即成功"
+  else
+    bad "user_补回车后二十秒开工 ${mode}：rc=$rc clock=$(cat "$QWB_STUB_NOW") enter=$(cat "$QWB_STUB_ENTER_AT")"
+    cat "$TMP/prompt.out" "$TMP/prompt.err"
   fi
 done
 # 对照原agent prompt失败：检查票、冻结指纹、并发行与端点保留，而非只看返回码。
@@ -465,8 +554,12 @@ for mode in herdr pane-run; do
     && ! grep -q '^已派发：' "$TMP/prompt.out" \
     && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq 1 ]] \
     && ! grep -q '^agent wait' "$QWB_STUB_LOG" \
-    && [[ "$(cat "$QWB_STUB_NOW")" -eq 10000 && "$(wc -l < "$QWB_STUB_SLEEP_LOG")" -eq 2 ]] \
-    && [[ "$(grep -c '^working: .*prompt-submit-enter op=.* pane=wT:p1$' "$TASK" || true)" -eq 1 ]] \
+    && grep -q '补回车后仍超时 60000ms' "$TMP/prompt.err" \
+    && grep -q 'herdr pane read wT:p1 --source visible；herdr pane process-info --pane wT:p1；herdr agent get wT:p1' "$TMP/prompt.err" \
+    && [[ "$rc" -eq 1 && "$(cat "$QWB_STUB_NOW")" -eq 65000 && "$(cat "$QWB_STUB_ENTER_AT")" -eq 5000 \
+      && "$(wc -l < "$QWB_STUB_SLEEP_LOG")" -eq 13 ]] \
+    && ! grep -q 'prompt-submit-enter' "$TASK" \
+    && [[ "$(grep -c '^prompt-submit-enter op=.* pane=wT:p1$' "$TMP/prompt.out" || true)" -eq 1 ]] \
     && grep -q '^not-sent:' "$TASK" && ! grep -q '^dispatch:' "$TASK" \
     && grep -q '^blocked: .*派发投递失败' "$TASK" \
     && grep -q '^state: running$' "$TASK" && grep -q '^scenarios-fp:' "$TASK" \

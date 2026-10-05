@@ -20,6 +20,9 @@ with TemporaryDirectory(prefix='qwb-gate-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp=Path(tmp).resolve(); p=tmp/'project'; p.mkdir(); stub=tmp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')
+    baseline=os.environ.get('QWB_PROMPT_START_BASELINE')=='1'
+    if baseline:
+        (p/'qwbuddy/bin/qwb-run.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/qwb-run.sh']))
     for n in ['TASK.md','QWBUDDY.md']: shutil.copy(ROOT/'templates'/n,p/'qwbuddy'/n)
     (p/'qwbuddy/.controller.lock').mkdir(); (p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
     integration=tmp/'integration.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
@@ -73,8 +76,12 @@ if ($verb eq 'workspace list') {
     if ($a[2] !~ /^worker-/) { print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1; }
     out({type=>'agent_info',agent=>{pane_id=>$a[2],agent_status=>'idle',state_change_seq=>$s->{submit_seq}//185}});
 } elsif ($verb eq 'agent prompt') {
-    $s->{submit_seq}=($s->{submit_seq}//185)+1;
+    $s->{submit_seq}=($s->{submit_seq}//185)+1 unless $ENV{GATE_PROMPT_HOLD};
     out({type=>'prompt_sent'});
+} elsif ($verb eq 'pane send-keys') {
+    die 'unexpected Enter' unless $a[2] =~ /^worker-/ && $a[3] eq 'enter';
+    $s->{submit_seq}=($s->{submit_seq}//185)+1;
+    out({type=>'ok'});
 } elsif ($verb eq 'agent start') {
     if (grep { $_ eq '--session-id' } @a) { my $sid=after('--session-id');$s={session=>after('--session-dir').'/2099_'.$sid.'.jsonl',sid=>$sid}; }
     out({type=>'agent_started'});
@@ -102,7 +109,7 @@ close $output;
     for f in stub.iterdir(): f.chmod(0o755)
     env=os.environ|{'PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','GATE_PROJECT':str(p),'GATE_NATIVE_PID':str(os.getpid()),'GATE_NATIVE_STATE':str(state),'GATE_NATIVE_LOG':str(tmp/'native-calls.jsonl'),'GATE_CANDIDATES':json.dumps(list(map(str,[ca,cb,cc])))}
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
-        argv=['bash',str(ROOT/'bin'/script)]
+        argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else ROOT/'bin'/script)]
         argv += ['--project',str(p),verb,*map(str,args)] if script=='qwb-run.sh' else [verb,'--project',str(p),*map(str,args)]
         r=subprocess.run(argv,env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         assert (r.returncode==0)==ok,(script,verb,r.returncode,r.stdout,r.stderr)
@@ -135,6 +142,33 @@ close $output;
     brequest=json.loads(request.read_text());brequest['candidate']=str(cb);request.write_text(json.dumps(brequest))
     call('qwb-ledger.sh','gate-assign','--task',bt,'--','gate',request)
     call('qwb-ledger.sh','claim','--task',bt,'--','accept-B',actor='gate-pane')
+    def prompt_enter(ticket,candidate,op,worker,kind,name):
+        clock=tmp/'prompt-clock'; clock.write_text('0\n')
+        now=tmp/'prompt-now.sh'; now.write_text('#!/bin/sh\ncat "$GATE_PROMPT_CLOCK"\n'); now.chmod(0o755)
+        sleeper=tmp/'prompt-sleep.sh'; sleeper.write_text('#!/bin/sh\necho $(( $(cat "$GATE_PROMPT_CLOCK") + 1000 )) > "$GATE_PROMPT_CLOCK"\n'); sleeper.chmod(0o755)
+        previous=[line for line in ticket.read_text().splitlines() if line.startswith('working:')]
+        mark=len((tmp/'native-calls.jsonl').read_text().splitlines())
+        r=call('qwb-run.sh','--task',ticket,'--worker',worker,'--worktree',candidate,'--gate-op',op,'--gate-kind',kind,'--name',name,actor='gate-pane',ok=not baseline,
+               extra={'GATE_PROMPT_HOLD':'1','GATE_PROMPT_CLOCK':str(clock),'QWB_NOW_MS_CMD':str(now),'QWB_SLEEP_CMD':str(sleeper)})
+        calls=[json.loads(row) for row in (tmp/'native-calls.jsonl').read_text().splitlines()[mark:]]
+        enters=[a for a in calls if a[:2]==['pane','send-keys']]
+        if baseline:
+            assert r.returncode==25 and r.stderr=='账本拒绝：门禁仅可写本人已派child活动绑定\n' and not enters,(r,enters)
+            assert 'prompt-submit-enter' not in ticket.read_text()
+            print(f'BASELINE gate rc={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r} enters={len(enters)}',flush=True)
+        else:
+            current=json.loads(call('qwb-ledger.sh','read','--task',ticket).stdout)
+            child=next(child for child in current['gate']['dispatches'] if child in current['ops'] and current['ops'][child]['pane']==enters[0][2])
+            assert len(enters)==1 and r.stdout.count(f'prompt-submit-enter op={child} pane={enters[0][2]}\n')==1,r.stdout
+            assert '账本拒绝' not in r.stderr and 'prompt-submit-enter' not in ticket.read_text(),r.stderr
+            working=[line for line in ticket.read_text().splitlines() if line.startswith('working:')]
+            assert working[:len(previous)]==previous and len(working)==len(previous)+2,working
+            assert working[-2].startswith('working: gate-dispatch ') and working[-1].startswith('working: worker-activity '),working
+            assert current['claim']=={'owner':'gate-pane','op_id':op} and '已派发：' in r.stdout,current['claim']
+            print('PASS user_门禁派工提示词停输入框：补一次Enter成功，stdout含op/pane，原claim保留且无额外working/拒绝痕迹',flush=True)
+    if os.environ.get('QWB_GATE_PROMPT_ONLY')=='1':
+        prompt_enter(t,ca,'accept-A','reviewer','review','prompt-review-a')
+        raise SystemExit(0)
     # 现有03唯一监督直接给被claim门禁一条A/B摘要，不先唤主控逐票转发。
     (tmp/'native-calls.jsonl').write_text('')
     call('qwb-wake.sh','--once','--pane','ctl')
@@ -332,7 +366,7 @@ close $output;
         assert '门禁仅可写本人已派child活动绑定' in refused.stderr and t.read_bytes()==before,refused.stderr
     print('PASS 门禁run先持久记录本人child活动；任意append/他人op/错pane零写入拒绝')
     br=tmp/'B-full.json';call('qwb-test.sh','full','--project',cb,'--task',bt,'--ledger-project',p,'--op','accept-B','--report',br,actor='gate-pane')
-    call('qwb-run.sh','--task',bt,'--worker','reviewer','--worktree',cb,'--gate-op','accept-B','--gate-kind','review','--name','review-b',actor='gate-pane')
+    prompt_enter(bt,cb,'accept-B','reviewer','review','review-b')
     breview=tmp/'B-review.json';breview.write_text(json.dumps(dict(review,context=json.loads(br.read_text())['after'],findings=[])))
     call('qwb-ledger.sh','gate-review','--task',bt,'--','accept-B',breview,actor='gate-pane')
     bstate=json.loads(call('qwb-ledger.sh','read','--task',bt).stdout);bchild=next(iter(bstate['gate']['dispatches']))

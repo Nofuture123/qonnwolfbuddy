@@ -22,6 +22,9 @@ with manager as temp:
     os.environ["TMPDIR"] = str(temp)
     temp=Path(temp).resolve(); p=temp/'project'; p.mkdir(); stub=temp/'stub'; stub.mkdir()
     shutil.copytree(ROOT/'bin',p/'qwbuddy/bin'); shutil.copytree(ROOT/'templates/roles',p/'qwbuddy/roles')
+    baseline=os.environ.get('QWB_PROMPT_START_BASELINE')=='1'
+    if baseline:
+        (p/'qwbuddy/bin/qwb-run.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/qwb-run.sh']))
     for name in ['TASK.md','QWBUDDY.md']: shutil.copy(ROOT/'templates'/name,p/'qwbuddy'/name)
     (p/'tasks').mkdir(); (p/'qwbuddy/.controller.lock').mkdir()
     (p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
@@ -47,7 +50,7 @@ elif a[:2]==['tab','create']:
  out({'root_pane':{'pane_id':pane,'tab_id':'tab-'+pane,'terminal_id':'terminal-'+pane}})
 elif a[:2]==['agent','get']:
  if not a[2].startswith('worker-'): print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
- out({'type':'agent_info','agent':{'pane_id':a[2],'agent_status':'idle','state_change_seq':185+sum(json.loads(row)[:2]==['agent','prompt'] for row in Path(os.environ['PL_LOG']).read_text().splitlines())}})
+ out({'type':'agent_info','agent':{'pane_id':a[2],'agent_status':'idle','state_change_seq':s.get('submit_seq',185)}})
 elif a[:2]==['agent','start']:
  v=a[a.index('--')+1:]; pane=a[a.index('--pane')+1]
  if '--session-id' in v:
@@ -65,7 +68,14 @@ elif a[:2]==['pane','process-info']:
  pane=a[-1];live=pane=='ctl' or pane in s;i=pid if live else 42
  out({'process_info':{'pane_id':pane,'shell_pid':42,'foreground_process_group_id':i,'foreground_processes':[{'pid':i,'argv0':'pi' if live else 'zsh','argv':['pi'],'cwd':p}]}})
 elif a[:2]==['pane','read']:print('(openai-codex) gpt-6.1-sol • high');sys.exit()
-elif a[:2] in (['agent','prompt'],['pane','run'],['tab','close']):out({'type':'ok'})
+elif a[:2]==['agent','prompt']:
+ if not os.environ.get('PL_PROMPT_HOLD'):s['submit_seq']=s.get('submit_seq',185)+1
+ out({'type':'ok'})
+elif a[:2]==['pane','send-keys']:
+ assert a[2].startswith('worker-') and a[3]=='enter',a
+ s['submit_seq']=s.get('submit_seq',185)+1
+ out({'type':'ok'})
+elif a[:2] in (['pane','run'],['tab','close']):out({'type':'ok'})
 else:sys.exit(77)
 file.write_text(json.dumps(s))
 ''')
@@ -87,16 +97,16 @@ file.write_text(json.dumps(s))
             children=grown
         return '\n'.join(line for line in rows if int(line.split(None,4)[0]) in children)+'\n'
     step=0
-    def cli(script,*args,ok=True,actor='ctl'):
+    def cli(script,*args,ok=True,actor='ctl',extra=None):
         global step
         step+=1; verb=str(args[0]) if args else 'status'; label=f'{step:03}-{verb}'
-        argv=['bash',str(ROOT/'bin'/script),*map(str,args)]
+        argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else ROOT/'bin'/script),*map(str,args)]
         if Path(script).name not in ('qwb-ledger.sh','qwb-ledger-old.sh','qwb-ledger-new.sh'): argv+=['--project',str(p)]
         if diagnostic: print(f'DIAG start {label} actor={actor}',flush=True)
         target=verb in ('gate-assign','plan-revision','revision-handoff')
         bound=20 if target else 90
         started=time.monotonic(); started_at=time.time()
-        child_env=env|{'HERDR_PANE_ID':actor}
+        child_env=env|{'HERDR_PANE_ID':actor}|(extra or {})
         if diagnostic and script in ('qwb-run.sh','qwb-wake.sh'):
             argv.insert(1,'-x'); child_env['PS4']='+qwb-cli seconds=${SECONDS} pid=$$ line=${LINENO}: '
         process=subprocess.Popen(argv,env=child_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
@@ -146,8 +156,8 @@ file.write_text(json.dumps(s))
     def payload(name,data):
         f=temp/name; f.write_text(json.dumps(data,ensure_ascii=False)); return f
     def source(corr,text): return call('handoff-send','intake.md','--','controller',corr,'1',text).stdout.strip()
-    def run(task,ok=True,actor='ctl',worker='sol'):
-        return cli('qwb-run.sh','--task',p/'tasks'/task,'--worker',worker,'--here',ok=ok,actor=actor)
+    def run(task,ok=True,actor='ctl',worker='sol',extra=None):
+        return cli('qwb-run.sh','--task',p/'tasks'/task,'--worker',worker,'--here',ok=ok,actor=actor,extra=extra)
     def no_dispatch_since(offset):
         calls=[json.loads(s) for s in log.read_text().splitlines()[offset:]] if log.exists() else []
         assert not any(a[:2] in (['tab','create'],['agent','start'],['agent','prompt'],['pane','run'],['worktree','open']) for a in calls),calls
@@ -518,8 +528,26 @@ file.write_text(json.dumps(s))
     assert read('B.md')['planning']['ready']['status']=='blocked'
     c_before=read('C.md'); call('plan-ready','C.md',actor='planner-pane'); ready=read('C.md')
     call('plan-ready','C.md',actor='planner-pane'); assert read('C.md')['rev']==ready['rev']
-    run('C.md',actor='planner-pane'); c_running=read('C.md')
+    clock=temp/'prompt-clock'; clock.write_text('0\n')
+    now=temp/'prompt-now.sh'; now.write_text('#!/bin/sh\ncat "$PL_PROMPT_CLOCK"\n'); now.chmod(0o755)
+    sleeper=temp/'prompt-sleep.sh'; sleeper.write_text('#!/bin/sh\necho $(( $(cat "$PL_PROMPT_CLOCK") + 1000 )) > "$PL_PROMPT_CLOCK"\n'); sleeper.chmod(0o755)
+    mark=count()
+    prompted=run('C.md',actor='planner-pane',extra={'PL_PROMPT_HOLD':'1','PL_PROMPT_CLOCK':str(clock),'QWB_NOW_MS_CMD':str(now),'QWB_SLEEP_CMD':str(sleeper)})
+    c_running=read('C.md')
+    calls=[json.loads(row) for row in log.read_text().splitlines()[mark:]]
+    enters=[a for a in calls if a[:2]==['pane','send-keys']]
+    dispatch=next(e for e in c_running['events'] if e['kind']=='dispatch')
+    assert len(enters)==1 and int(clock.read_text())==15000 and '账本拒绝' not in prompted.stderr,(enters,prompted)
+    note=f"prompt-submit-enter op={dispatch['op_id']} pane={enters[0][2]}"
+    if baseline:
+        assert note in (p/'tasks/C.md').read_text() and note not in prompted.stdout,prompted.stdout
+        print(f'BASELINE planning rc={prompted.returncode} stdout={prompted.stdout!r} stderr={prompted.stderr!r} enters=1 ticket-note={note!r}',flush=True)
+    else:
+        assert prompted.stdout.count(note+'\n')==1 and 'prompt-submit-enter' not in (p/'tasks/C.md').read_text(),prompted.stdout
+        print('PASS user_规划派工提示词停输入框：补一次Enter成功，stdout含op/pane，票无额外working/拒绝痕迹',flush=True)
     assert len([e for e in c_running['events'] if e['kind']=='dispatch'])==1 and c_running['claim'] is None
+    if os.environ.get('QWB_PLANNING_PROMPT_ONLY')=='1':
+        raise SystemExit(0)
     mark=count(); run('C.md',actor='planner-pane',ok=False); no_dispatch_since(mark)
     artifact=temp/'api-v1'; artifact.write_text('interface v1\n')
     call('plan-artifact','A.md','--',payload('artifact.json',{'name':'api','version':'v1','ref':str(artifact)}))

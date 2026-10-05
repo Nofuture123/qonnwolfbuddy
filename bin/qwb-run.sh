@@ -205,8 +205,9 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
-# Allow startup/TUI submission; each bounded polling attempt uses this millisecond budget.
+# Submit once more after 5 seconds; allow slower startup after the single Enter.
 PROMPT_SUBMIT_WAIT_MS=5000
+PROMPT_START_WAIT_MS=60000
 WORKER_ARGV=(); PANE_COMMAND=""
 for i in "${!QWB_CONFIG_NAMES[@]}"; do
   [[ "${QWB_CONFIG_NAMES[i]}" == "$WORKER" ]] || continue
@@ -816,17 +817,17 @@ read_prompt_state() {
 }
 
 wait_prompt_started() {
-  local before="$1" started elapsed left
+  local before="$1" budget="$2" started elapsed left
   started="$(now_ms)"
   while :; do
     elapsed=$(( $(now_ms) - started ))
-    (( elapsed < PROMPT_SUBMIT_WAIT_MS )) || return 1
+    (( elapsed < budget )) || return 1
     read_prompt_state
     elapsed=$(( $(now_ms) - started ))
-    (( elapsed < PROMPT_SUBMIT_WAIT_MS )) || return 1
+    (( elapsed < budget )) || return 1
     # Old done/blocked cannot confirm a new prompt unless its native sequence changed.
     [[ "$PROMPT_STATUS" == working || "$PROMPT_SEQ" != "$before" ]] && return 0
-    left=$(( PROMPT_SUBMIT_WAIT_MS - elapsed ))
+    left=$(( budget - elapsed ))
     (( left > 0 )) || return 1
     (( left > 100 )) && left=100
     sleep_ms "$left"
@@ -834,15 +835,14 @@ wait_prompt_started() {
 }
 
 confirm_prompt_submitted() {
-  if wait_prompt_started "$PROMPT_BEFORE_SEQ"; then
+  if wait_prompt_started "$PROMPT_BEFORE_SEQ" "$PROMPT_SUBMIT_WAIT_MS"; then
     return 0
   fi
-  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append \
-    "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) prompt-submit-enter op=$RUN_OP pane=$PANE" >/dev/null
+  printf 'prompt-submit-enter op=%s pane=%s\n' "$RUN_OP" "$PANE"
   deliver "herdr pane send-keys" herdr pane send-keys "$PANE" enter
-  if ! wait_prompt_started "$PROMPT_BEFORE_SEQ"; then
+  if ! wait_prompt_started "$PROMPT_BEFORE_SEQ" "$PROMPT_START_WAIT_MS"; then
     delivery_failed "提示词提交确认" 1 \
-      "提示词已投递但工人未开工（补回车后仍超时 ${PROMPT_SUBMIT_WAIT_MS}ms），pane=${PANE}；排查：herdr pane read ${PANE} --source visible；herdr pane process-info --pane ${PANE}；herdr agent get ${PANE}"
+      "提示词已投递但工人未开工（补回车后仍超时 ${PROMPT_START_WAIT_MS}ms），pane=${PANE}；排查：herdr pane read ${PANE} --source visible；herdr pane process-info --pane ${PANE}；herdr agent get ${PANE}"
   fi
 }
 
