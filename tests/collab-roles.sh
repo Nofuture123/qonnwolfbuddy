@@ -20,13 +20,14 @@ with tempfile.TemporaryDirectory(prefix='qwb-roles-') as tmp:
     os.environ["TMPDIR"] = tmp
     tmp = str(Path(tmp).resolve())
     p = Path(tmp) / 'project'; p.mkdir()
+    subprocess.run(['bash', str(root/'bin/qwb-init.sh'), str(p)], check=True, stdout=subprocess.DEVNULL)
     (p / 'qwbuddy/.controller.lock').mkdir(parents=True)
     (p / 'qwbuddy/.controller.lock/owner').write_text('2099-01-01T00:00:00Z w1:pCtl\n')
     integration = Path(tmp) / 'herdr-agent-state.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
     (p / 'qwbuddy/config.sh').write_text("QWB_WORKERS='sol'\nQWB_WORKSPACE='w1'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='"+str(integration)+"'\n")
     (p / 'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\n')
-    (p / 'qwbuddy/roles').mkdir()
-    (p / 'tasks').mkdir()
+    (p / 'qwbuddy/roles').mkdir(exist_ok=True)
+    (p / 'tasks').mkdir(exist_ok=True)
     for role in ('门禁', '规划', '测试体系'):
         src = root / 'templates/roles' / (role + '.md')
         (p / 'qwbuddy/roles' / (role + '.md')).write_text(src.read_text() if src.exists() else '# 门禁\n仅按主控安排工作；空闲不造票。\n')
@@ -152,8 +153,12 @@ print('Thu Oct  1 00:00:00 2099')
     assert first['pane'] == second['pane'] == 'w1:pRole'
     assert first['incarnation'] == second['incarnation'] == 1
     assert json.loads(state.read_text())['starts'] == 1
-    assert not list((p/'tasks').iterdir()), 'idle role must not manufacture tasks'
+    assert list((p/'tasks').iterdir()) == [p/'tasks/lessons'], 'idle role must not manufacture tasks'
     assert not any(json.loads(x)[:2] == ['agent','prompt'] for x in log.read_text().splitlines())
+    role_status = subprocess.run(['git','-C',str(p),'status','--short','--untracked-files=all'],capture_output=True,text=True)
+    assert role_status.returncode == 0 and role_status.stdout == '', role_status.stdout
+    assert (p/'qwbuddy/.roles/gate.json').exists()
+    print('PASS public role start: local registry/charter/session directory ignored, installed project remains clean')
     print('PASS public start: one bound instance, no work manufactured')
 
     # Next vertical slice: unknown/late observations never grant a replacement or advance gen.
@@ -221,7 +226,7 @@ print('Thu Oct  1 00:00:00 2099')
     print('PASS exact resume: existing session id/path survives, same native model/effort')
 
     # Durable01 claim/question guards via the actual ledger entry, no hand-built protocol data.
-    shutil.copytree(root/'bin',p/'qwbuddy/bin')
+    shutil.copytree(root/'bin',p/'qwbuddy/bin',dirs_exist_ok=True)
     for name in ('QWBUDDY.md','TASK.md'):
         shutil.copyfile(root/'templates'/name,p/'qwbuddy'/name)
     shutil.copyfile(root/'templates/roles/执行者.md',p/'qwbuddy/roles/执行者.md')

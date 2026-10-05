@@ -92,6 +92,14 @@ elif args[:2] == ["agent", "get"]:
     err("agent_not_found")
 elif args[:2] == ["tab", "create"]:
     out({"root_pane": {"pane_id": "wTask:p2", "tab_id": "wTask:t2"}})
+elif args[:2] == ["pane", "get"] and os.environ.get("QWB_TEST_NATIVE_PID"):
+    out({"pane": {"pane_id": args[2], "agent": "pi", "agent_status": "idle", "workspace_id": "wTask",
+                  "foreground_cwd": os.environ["QWB_TEST_WT"], "tab_id": "wTask:t1",
+                  "agent_session": {"source": "herdr:pi", "kind": "path", "value": os.environ["QWB_TEST_NATIVE_SESSION"]}}})
+elif args[:2] == ["pane", "process-info"] and os.environ.get("QWB_TEST_NATIVE_PID"):
+    pid = int(os.environ["QWB_TEST_NATIVE_PID"])
+    out({"process_info": {"pane_id": args[3], "foreground_process_group_id": pid, "shell_pid": 42,
+                          "foreground_processes": [{"pid": pid, "argv0": "pi", "cwd": os.environ["QWB_TEST_WT"]}]}})
 elif args[:2] == ["pane", "get"]:
     pane = args[2]
     if pane == "wRoot:p9":
@@ -396,4 +404,50 @@ for stage in ("worktree-remove", "branch-delete"):
             assert call("bash", "-c", recovery, env=os.environ).returncode == 0, recovery
         assert call("git", "-C", str(repo), "show-ref", "--verify", "--quiet", "refs/heads/case",
                     env=os.environ).returncode != 0
+# Installed runtime must stay out of Git through the public dispatch/writer/wake/finish flow.
+with tempfile.TemporaryDirectory(prefix='s-') as d:
+    os.environ["TMPDIR"] = d
+    repo, ticket, state, log, env = project(Path(d))
+    session = Path(d) / "native-session.jsonl"
+    session.write_text(json.dumps({"type": "session", "cwd": env["QWB_TEST_WT"]}) + "\n")
+    child = subprocess.Popen([sys.executable, "-u", "-c", "import sys; sys.stdin.readline()"],
+                             stdin=subprocess.PIPE, text=True)
+    try:
+        result = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
+                      "--task", "case", "--worker", "pi", env=env | {
+                          "QWB_TEST_NATIVE_PID": str(child.pid), "QWB_TEST_NATIVE_SESSION": str(session)})
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        child.communicate("exit\n", timeout=10)
+        assert child.returncode == 0
+    finally:
+        if child.poll() is None:
+            child.terminate(); child.wait(timeout=10)
+    ledger = str(repo / "qwbuddy/bin/qwb-ledger.sh")
+    result = call("bash", ledger, "append", "--project", str(repo), "--task", str(ticket),
+                  "--legacy", "--", "working: offline runtime ignore regression", env=env)
+    assert result.returncode == 0, result.stderr
+    # Legacy state remains controller-owned Markdown, outside the writer's compatibility actions.
+    ticket.write_text(ticket.read_text().replace("state: running", "state: verified", 1))
+    result = call("bash", str(repo / "qwbuddy/bin/qwb-wake.sh"), "--project", str(repo),
+                  "--once", "--pane", "wRoot:pCtl", env=env)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    result = call("bash", str(repo / "qwbuddy/bin/qwb-worktree.sh"), "finish", "case", "--merged",
+                  "--project", str(repo), env=env)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not (repo / ".worktrees/case").exists() and not state.exists()
+    runtime = [ticket.relative_to(repo).as_posix() + ".qwb-lock", "qwbuddy/.supervisor.guard"]
+    assert all((repo / path).is_file() for path in runtime), runtime
+    status = call("git", "-C", str(repo), "status", "--short", "--untracked-files=all", env=env)
+    assert status.returncode == 0, status.stderr
+    assert not any(path in status.stdout for path in runtime), "unignored runtime paths:\n" + status.stdout
+    assert call("git", "-C", str(repo), "add", "tasks", env=env).returncode == 0
+    staged = call("git", "-C", str(repo), "diff", "--cached", "--name-only", env=env)
+    assert staged.returncode == 0 and ".qwb-lock" not in staged.stdout, staged.stdout
+    assert call("git", "-C", str(repo), "commit", "-qm", "Record offline lifecycle", env=env).returncode == 0
+    clean = call("git", "-C", str(repo), "status", "--short", env=env)
+    assert clean.returncode == 0 and clean.stdout == "", clean.stdout
+    history = call("git", "-C", str(repo), "log", "--all", "--format=", "--name-only", env=env)
+    assert history.returncode == 0 and ".qwb-lock" not in history.stdout, history.stdout
+print("PASS runtime ignore: public dispatch, ledger append, wake once, finish, git add tasks and clean history")
+
 print("R1 ARCHIVE RECOVERY PASS: retry same-OID tag and execute conditional branch deletion")

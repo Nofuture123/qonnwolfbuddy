@@ -319,7 +319,7 @@ def setup():
     else:
         workers.write_text("qwb_worker claude herdr claude -- --dangerously-skip-permissions --model claude-opus-5-5 --effort medium --add-dir " + shlex.quote(str(REPO.resolve())) + "\n")
     TICKET.write_text(
-        f"# e2e\nstate: running\n\n## 背景与范围\n只在本隔离项目的任务 worktree 新建 e2e/hello.txt，不访问其他项目。\n"
+        f"# e2e\nstate: running\nimplementation-authorized: explicit real E2E isolated hello.txt scope\ndispatch-budget: 3\n\n## 背景与范围\n只在本隔离项目的任务 worktree 新建 e2e/hello.txt，不访问其他项目。\n"
         f"\n## 验收场景\n### 正常\nGiven 默认任务 worktree\nWhen 新增 e2e/hello.txt，内容恰为 QWB E2E OK {NONCE} 后跟一个换行，并提交\nThen 主控从 Git 提交与文件字节独立核对\n"
         "### 失败\nGiven 文件缺失、内容不符或没有提交\nWhen 主控验收\nThen 拒绝合并与收尾\n"
         "\n## 硬约束\n只改 e2e/hello.txt；工作完成后向主账本追加 done: 行，含提交 SHA 与实际检查退出码。\n"
@@ -375,7 +375,8 @@ def start_controller():
         "你现在是 QW buddy。按 qwbuddy/QWBUDDY.md 开局；账本里的未结票派给 " + WORKER +
         " 工人（默认新建 worktree，不传 --name），按你所在宿主的唯一值守入口等待。工人报 done 后独立验收"
         "（跑 qwb-test.sh fast/full 并核对产出），合格则合并进 main、把 state 改为 verified、"
-        f"执行 qwb-worktree.sh finish {TASK_ID} --merged。全部完成后单独输出一行 "
+        f"执行 qwb-worktree.sh finish {TASK_ID} --merged。收尾后提交应入库的任务书等产物，"
+        "确认 git status --short 为空且 Git 历史没有 .qwb-lock 文件。全部完成后单独输出一行 "
         "QWB_E2E_CONTROLLER_DONE；无法完成则输出 QWB_E2E_CONTROLLER_BLOCKED <原因>。"
     )
     h("pane", "run", CONTROL_PANE, prompt)
@@ -468,6 +469,13 @@ def monitor():
         event("等待超时")
 
 
+def git_runtime_clean(repo):
+    """Require a clean final checkout and no ticket locks in any reachable history."""
+    status = run(["git", "-C", str(repo), "status", "--short", "--untracked-files=all"])
+    history = run(["git", "-C", str(repo), "log", "--all", "--format=", "--name-only", "--", "*.qwb-lock"])
+    return status.stdout == "" and history.stdout.strip() == ""
+
+
 def assert_result():
     global INVALID_UTF8_OBSERVED, HOST_WAKE_EXCERPT, SESSION_PATH, WAKE_MESSAGES, POLL_COMMANDS, FINISH_AT
     global PI_LEDGER_WAKES, PI_DELIVERED_WAKES
@@ -488,6 +496,7 @@ def assert_result():
     branch = run(["git", "-C", str(REPO), "show-ref", "--verify", "--quiet", f"refs/heads/{TASK_ID}"], check=False)
     config = run(["git", "-C", str(REPO), "config", "--local", "--get-regexp", rf"^branch\.{TASK_ID}\."], check=False)
     CHECKS["git_cleanup"] = not WT.exists() and branch.returncode != 0 and config.returncode != 0
+    CHECKS["git_runtime_clean"] = git_runtime_clean(REPO)
     CHECKS["space_observed"] = bool(TASK_SPACE and CHECKS.get("worker_space_observed"))
     final = spaces()
     (BASE / "spaces-before.json").write_text(json.dumps(BASE_SPACES, ensure_ascii=False, indent=2))

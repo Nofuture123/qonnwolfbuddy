@@ -3,3 +3,7 @@
 qwbuddy/
 .env
 .qwb-tmp/
+tasks/*.md.qwb-lock
+tasks/*.md.qwb-original
+tasks/.qwb-publish-*
+tasks/.qwb-lsof-*

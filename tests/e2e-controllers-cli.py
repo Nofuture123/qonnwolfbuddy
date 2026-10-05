@@ -38,7 +38,8 @@ for option, value, expected in (
 # Import only selected functions: the real runner reads live E2E environment at module load.
 source = ast.parse((ROOT / "tests/e2e-real.py").read_text())
 names = {"controller_model_visible", "snapshot_global_state", "check_global_state",
-         "claude_projects", "claude_trust_prompt", "accept_claude_trust", "setup", "start_controller"}
+         "claude_projects", "claude_trust_prompt", "accept_claude_trust", "setup", "start_controller",
+         "git_runtime_clean"}
 functions = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names]
 namespace = {"re": re, "json": json, "os": os}
 exec(compile(ast.Module(body=functions, type_ignores=[]), str(ENTRY.with_suffix(".py")), "exec"), namespace)
@@ -107,6 +108,9 @@ with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT, prefix="e2e-cli-") as tmp:
         (repo / "tasks").rmdir()
         repo.rmdir()
         namespace["setup"]()
+        ticket_text = namespace["TICKET"].read_text()
+        assert re.search(r"(?m)^implementation-authorized: .+", ticket_text), ticket_text
+        assert re.search(r"(?m)^dispatch-budget: [1-9][0-9]*$", ticket_text), ticket_text
         argv = shlex.split((repo / "qwbuddy/workers.sh").read_text())
         assert argv[:5] == ["qwb_worker", worker, "herdr", worker, "--"]
         if worker == "pi":
@@ -143,4 +147,87 @@ with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT, prefix="e2e-cli-") as tmp:
             raise AssertionError("unconfirmed trust selection accepted")
         assert keys == [("pane", "send-keys", "offline-worker", "Down")]
 
+# Exercise the real installer upgrade path with the exact pre-fix ignore segment,
+# including project-owned bytes after the marker and a missing final newline.
+OLD_RULES = [".worktrees/", "qwbuddy/.controller.lock/", "qwbuddy/.watch", "qwbuddy/.posture.md",
+             "qwbuddy/.posture.md.qwb-lock", "qwbuddy/.watch.lock/", "qwbuddy/.hook.lock/",
+             "qwbuddy/.hook.err", "qwbuddy/.pi-watch.err"]
+RUNTIME_PATHS = [
+    "tasks/normal.md.qwb-lock", "tasks/normal.md.qwb-original", "tasks/.qwb-publish-fixture",
+    "tasks/.qwb-lsof-fixture", "qwbuddy/.supervisor.guard", "qwbuddy/.roles/gate.json",
+    "qwbuddy/.roles/gate.sessions/session.jsonl", "qwbuddy/.roles/gate.inbox/request.msg",
+    "qwbuddy/.roles/.role-fixture", "qwbuddy/.qwb-publish-fixture",
+    "qwbuddy/.qwb-install.fixture", "qwbuddy/roles/.qwb-install.fixture",
+    "qwbuddy/bin/.qwb-install.fixture", "qwbuddy/test-policy/.qwb-install.fixture",
+    ".pi/extensions/.qwb-install.fixture", "qwbuddy/.workers.fixture", "qwbuddy/.config.fixture",
+    ".qwb-gitignore.fixture", ".qwb-hook.fixture", ".claude/.qwb-settings.fixture",
+    "reports/.qwb-reuse-fixture", "reports/.qwb-receipt-fixture",
+    "reports/.qwb-test-preflight.fixture", "reports/.qwb-test-report.fixture",
+]
+USER_PATHS = ["tasks/normal.md", "tasks/lessons/note.md", "qwbuddy/config.sh", "qwbuddy/workers.sh",
+              "qwbuddy/roles/门禁.md", "qwbuddy/brief-include.md", "qwbuddy/dispatch-rules.json",
+              "qwbuddy/test-policy/qwb-v1.md", "qwbuddy/config.sh.worker-config.bak",
+              ".pi/extensions/qwb-watch.ts.bak", "reports/result.json"]
+with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT, prefix="ignore-cli-") as tmp:
+    repo = Path(tmp)
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    def install():
+        result = subprocess.run(["/bin/bash", str(ROOT / "bin/qwb-init.sh"), str(repo)],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+    assert git("init", "-q").returncode == 0
+    install()
+    fresh = (repo / ".gitignore").read_bytes()
+    old = ("# project prefix\r\nnode_modules/\r\n"
+           "# QW buddy 运行态（qwb-init.sh 写入，勿手改本段）\n" +
+           "\n".join(OLD_RULES) + "\n# project suffix\nuser-local/").encode()
+    (repo / ".gitignore").write_bytes(old)
+    install()
+    upgraded = (repo / ".gitignore").read_bytes()
+    added = b"".join(line + b"\n" for line in fresh.splitlines()[1:]
+                     if line.decode() not in OLD_RULES)
+    assert upgraded == old + b"\n" + added, (old, upgraded)
+    install()
+    assert (repo / ".gitignore").read_bytes() == upgraded
+    print("PASS runtime ignore upgrade: original project bytes preserved, missing rules appended, reinstall byte-identical")
+    for path in RUNTIME_PATHS + USER_PATHS:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists(): target.write_text("fixture\n")
+    for path in RUNTIME_PATHS:
+        result = git("check-ignore", "--no-index", path)
+        assert result.returncode == 0, (path, result.stdout, result.stderr)
+    for path in USER_PATHS:
+        result = git("check-ignore", "--no-index", path)
+        assert result.returncode == 1 and result.stdout == "", (path, result.stdout, result.stderr)
+    status = git("status", "--short", "--untracked-files=all")
+    assert status.returncode == 0, status.stderr
+    assert all(path in status.stdout for path in ("tasks/normal.md", "qwbuddy/config.sh", "qwbuddy/workers.sh"))
+    assert not any(path in status.stdout for path in RUNTIME_PATHS), status.stdout
+    print("PASS runtime ignore boundaries: runtime/transient paths hidden, tickets/config/workers/roles/backups/reports visible")
+    namespace["run"] = lambda args: subprocess.run(args, capture_output=True, text=True, check=True)
+    assert git("add", ".").returncode == 0
+    assert git("-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "seed").returncode == 0
+    assert namespace["git_runtime_clean"](repo)
+    (repo / "tasks/normal.md").write_text("changed\n")
+    assert not namespace["git_runtime_clean"](repo), "dirty final checkout passed real E2E assertion"
+    assert git("add", "tasks/normal.md").returncode == 0
+    assert git("-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "Record ticket").returncode == 0
+    historical_lock = "tasks/中文票.md.qwb-lock"
+    (repo / historical_lock).write_text("lock\n")
+    assert git("add", "-f", historical_lock).returncode == 0
+    assert git("-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "Record lock counterexample").returncode == 0
+    assert not namespace["git_runtime_clean"](repo), "tracked lock passed real E2E assertion"
+    assert git("rm", historical_lock).returncode == 0
+    assert git("-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "Remove lock counterexample").returncode == 0
+    assert git("status", "--short").stdout == ""
+    assert not namespace["git_runtime_clean"](repo), "historically committed lock passed clean final checkout"
+    print("PASS real E2E runtime assertion: clean success, dirty checkout rejected, removed historical lock still rejected")
+assert any(isinstance(node, ast.Assign) and
+           any(isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and
+               target.value.id == "CHECKS" and isinstance(target.slice, ast.Constant) and
+               target.slice.value == "git_runtime_clean" for target in node.targets) and
+           isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and
+           node.value.func.id == "git_runtime_clean" for node in ast.walk(source)), "real E2E runtime assertion not wired"
 print("E2E CONTROLLERS CLI PASS: two-tool CLI, TUI identity, both participants' global state, worker argv/session/trust boundaries")
