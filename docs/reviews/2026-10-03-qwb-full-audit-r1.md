@@ -309,6 +309,12 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 `qonnwolf-sites`（原 9-27 版）、`qonnwolfmcp`、`video_analysis/class-video-analysis`（原 9-24 版）三个项目用 `bash bin/qwb-init.sh <项目>` 升级。先在本仓库临时目录里对三份安装文件的拷贝试装，确认新版能读旧式 `qwb_worker 名字 herdr 参数…` 声明后再动真项目。结果：三个项目的 15 个运行脚本与母本逐字节相同（安装器自身不装进项目）；`config.sh`、`brief-include.md`、`dispatch-rules.json` 未动；`workers.sh` 只给 claude 行加了 `--add-dir 项目根`；Pi 扩展更新，旧文件留为 `qwb-watch.ts.bak`；`qwb-status.sh` 三处 rc=0；`qwb-lint.sh` 在 sites 与 class-video-analysis 通过，在 qonnwolfmcp 有 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动），升级前的旧版 lint 同样报这一条。改动均未提交，留给各项目自己审。新增的 `pi-sol-high` 等具名工人与 `qwb_family` 声明不会自动出现在已有的 `workers.sh` 里。升级后没有在这三个项目里实际派过票。
 
+### 已装项目第二次升级（2026-10-05，安装源 main @ c6524e0）
+
+`qonnwolfmcp` 与 `video_analysis/class-video-analysis` 升级到当前主干并换成五角色工人表：先在本仓临时目录对两个项目的配置副本试装，再动真项目。做法：备份 `config.sh`、`workers.sh`、`dispatch-rules.json` 到本仓 `.qwb-tmp/upgrade-2026-10-05/<项目>/`；`workers.sh` 与 `dispatch-rules.json` 换成当前模板，`config.sh` 只改 `QWB_WORKERS` 一行；再跑安装器（给三条 Claude 工人声明加上 `--add-dir 项目根`）。结果：两个项目的运行脚本与母本逐字节相同；`qwb-status.sh` 均 rc=0；`qwb-lint.sh` 在 class-video-analysis 通过，在 qonnwolfmcp 仍是升级前就有的那 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动）。改动均未提交，留给各项目自己审。两个项目的 `config.sh` 没有新增 `QWB_SILENT_END_MS`、`QWB_ROLE_PI_CONTROL`、`QWB_ROLE_CLAUDE_CONTROL` 三行（脚本对它们有默认值：收工未报告 60 秒、两个常驻职责开关默认关闭）。升级后没有在这两个项目里实际派过票。
+
+`qonnwolf-sites` 没有升级：它的主控当天仍在用旧工人表派工（`2026-10-05-web-cover.md`，09:40Z 派给 `codex`，状态 `blocked`、未结案），换表会去掉它正在用的工人名，留待该票结案并经 Rocky 确认时机后再做。
+
 ### 工具与角色调整（2026-10-05，main @ 4bdd2fd）
 
 Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 magpie）；独立审核「模型不一样即可」，不再要求换家族；角色定为主控（Claude Code opus 5.5 medium）、副主控（Claude Code opus 5.5 或 Pi astra low）、工人（Pi sol high，复杂架构 astra high 或 fable low）、门控（Pi astra low，工人是 astra 时用 sol high）、顾问（fable 或 astra high）。副主控即现有「规划」常驻职责，门控即「门禁」常驻职责，这两条路仍未在真机上跑过。
@@ -433,7 +439,7 @@ Rocky 当天定了五角色（主控、副主控、工人、门控、顾问）�
 - **F21** state 五值与状态行前缀的字面量仍散落多处。
 - 第 88 节（订阅回收测试）单节约 29 秒，是 smoke 现在最慢的一节。
 - `bin/qwb-wake.sh` 可见值守启动探测里的裸 `sleep 0.5` ×6（约 3 秒真等待）未动。
-- 已装过本工具的项目需要重跑安装才能拿到这些修复；三个已装项目的 `workers.sh`、`config.sh`、`dispatch-rules.json` 仍是旧工人表（含 codex），安装器不覆盖，需手工换成新表。
+- 已装项目：`qonnwolfmcp` 与 `class-video-analysis` 已在 2026-10-05 升级到 `c6524e0` 并换成五角色工人表；`qonnwolf-sites` 仍是 10-04 的版本与旧工人表（含 codex），原因见「已装项目第二次升级」。
 - 副主控（规划）与门控（门禁）常驻职责真机演练过八次：正常全链零介入走通（第六次），派工后修订走通（第四次），工人收工不回票的整条故障链自己走到结案（第八次）。尚未在真机上验证的：中止的工具调用不再算未完成（两次打断都没有复现那种记录）、门控派出的审核工人不回票时的升级、门控验收阶段来修订、等待到期重提。第八次演练主控记下的四条小问题（门铃摘要乱码、未结义务筛选的归属、状态页分不清挂钩模式、说明书缺 Claude 副主控启动样例）未核实、未开票。
 
 ## 返修任务
