@@ -205,6 +205,8 @@ if [[ "$wfound" -eq 0 ]]; then
   exit 1
 fi
 START_MS="${QWB_AGENT_START_MS:-30000}"
+# agent wait uses milliseconds; allow startup/TUI to submit before sending a fallback Enter.
+PROMPT_SUBMIT_WAIT_MS=5000
 WORKER_ARGV=(); PANE_COMMAND=""
 for i in "${!QWB_CONFIG_NAMES[@]}"; do
   [[ "${QWB_CONFIG_NAMES[i]}" == "$WORKER" ]] || continue
@@ -778,6 +780,19 @@ record_worker_activity() {
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: worker-activity op=$RUN_OP pane=$PANE evidence=$observation" >/dev/null
 }
 
+confirm_prompt_submitted() {
+  if herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout "$PROMPT_SUBMIT_WAIT_MS" >/dev/null 2>&1; then
+    return 0
+  fi
+  qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append \
+    "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) prompt-submit-enter op=$RUN_OP pane=$PANE" >/dev/null
+  deliver "herdr pane send-keys" herdr pane send-keys "$PANE" enter
+  if ! herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout "$PROMPT_SUBMIT_WAIT_MS" >/dev/null 2>&1; then
+    delivery_failed "提示词提交确认" 1 \
+      "提示词已投递但工人未开工（补回车后仍超时 ${PROMPT_SUBMIT_WAIT_MS}ms），pane=${PANE}；排查：herdr pane read ${PANE} --source visible；herdr pane process-info --pane ${PANE}；herdr agent get ${PANE}"
+  fi
+}
+
 case "$LAUNCH_MODE" in
   herdr)
     if [[ -n "$REUSE_PANE" ]]; then
@@ -785,12 +800,14 @@ case "$LAUNCH_MODE" in
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
       deliver "herdr agent prompt" herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
       printf '%s\n' "$DELIVER_OUT"
+      confirm_prompt_submitted
     else
       deliver "herdr agent start" qwb_start_worker "$NAME" "$PANE" "$WORKER_HARNESS" "$START_MS" "${WORKER_ARGV[@]+"${WORKER_ARGV[@]}"}"
       printf '%s\n' "$DELIVER_OUT"
       record_worker_activity
       deliver "herdr agent prompt" herdr agent prompt "$NAME" "$PROMPT"
       printf '%s\n' "$DELIVER_OUT"
+      confirm_prompt_submitted
     fi
     ;;
   pane-run)
@@ -809,9 +826,7 @@ case "$LAUNCH_MODE" in
     deliver "herdr agent rename" herdr agent rename "$PANE" "$NAME"
     deliver "herdr pane run（提示词）" herdr pane run "$PANE" "$PROMPT"
     printf '%s\n' "$DELIVER_OUT"
-    if ! herdr agent wait "$PANE" --until working --until "done" --until blocked --timeout 300 >/dev/null 2>&1; then
-      deliver "herdr pane send-keys" herdr pane send-keys "$PANE" enter
-    fi
+    confirm_prompt_submitted
     ;;
 esac
 

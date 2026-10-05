@@ -69,6 +69,8 @@ if ($verb eq 'workspace list') {
     out({root_pane=>{pane_id=>$gate?'gate-pane':'worker-'.$slug,tab_id=>$gate?'gate-tab':'tab-'.$slug,terminal_id=>'gate-terminal'}});
 } elsif ($verb eq 'agent get') {
     print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1;
+} elsif ($verb eq 'agent wait') {
+    out({type=>'agent_info',agent=>{agent_status=>'working'}});
 } elsif ($verb eq 'agent prompt') {
     out({type=>'prompt_sent'});
 } elsif ($verb eq 'agent start') {

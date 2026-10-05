@@ -31,6 +31,7 @@ case "$1 $2" in
   'agent get') printf '{"error":{"code":"agent_not_found"}}\n'; exit 1 ;;
   'tab create') printf '{"result":{"root_pane":{"pane_id":"test:worker","tab_id":"test:tab"}}}\n' ;;
   'agent start') printf '{"result":{"type":"agent_started"}}\n' ;;
+  'agent wait') printf '{"result":{"type":"agent_info","agent":{"agent_status":"working"}}}\n' ;;
   'agent prompt')
     if [[ "${TEST_FAIL_PROMPT:-0}" == 1 ]]; then
       HERDR_PANE_ID=test:worker bash "$TEST_ROOT/bin/qwb-ledger.sh" append --project "$TEST_PROJECT" --task "$TEST_TASK" --event-id worker-during-prompt -- 'working: 在失败投递前真实回报'

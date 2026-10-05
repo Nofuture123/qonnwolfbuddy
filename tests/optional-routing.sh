@@ -171,6 +171,7 @@ case "$1 $2" in
   'workspace list') echo '{"result":{"workspaces":[{"workspace_id":"wtest","focused":true}]}}';;
   'tab create') echo '{"result":{"root_pane":{"pane_id":"ptest","tab_id":"ttest"}}}';;
   'agent start'|'agent prompt') echo '{"result":{}}';;
+  'agent wait') echo '{"result":{"type":"agent_info","agent":{"agent_status":"working"}}}';;
   *) echo "unexpected herdr $*" >&2; exit 1;;
 esac
 SH

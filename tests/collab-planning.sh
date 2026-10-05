@@ -45,6 +45,7 @@ elif a[:2]==['tab','create']:
  label=a[a.index('--label')+1];pane='planner-pane' if label=='规划' else ('gate-pane' if label=='门禁' else 'worker-'+label)
  out({'root_pane':{'pane_id':pane,'tab_id':'tab-'+pane,'terminal_id':'terminal-'+pane}})
 elif a[:2]==['agent','get']: print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
+elif a[:2]==['agent','wait']: out({'type':'agent_info','agent':{'agent_status':'working'}})
 elif a[:2]==['agent','start']:
  v=a[a.index('--')+1:]; pane=a[a.index('--pane')+1]
  if '--session-id' in v:

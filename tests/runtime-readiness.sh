@@ -159,6 +159,9 @@ case "$1 $2" in
     if [[ "${QWB_STUB_FAIL:-}" == pane-prompt && "$4" != "'mock-agent'" ]]; then
       echo '{"error":{"code":"inject_failed"}}' >&2; exit 9
     fi
+    if [[ "$4" != "'mock-agent'" ]]; then
+      printf '%s\n' "${QWB_STUB_PROMPT_STATUS:-working}" > "$QWB_STUB_PROMPT_STATE"
+    fi
     echo '{"result":{"type":"ok"}}' ;;
   "workspace list")
     printf '{"result":{"workspaces":[{"workspace_id":"wT","focused":true,"worktree":{"repo_root":"%s"}}]}}\n' "$QWB_STUB_CWD" ;;
@@ -174,6 +177,19 @@ case "$1 $2" in
   "agent prompt")
     [[ -z "${QWB_STUB_APPEND:-}" ]] || printf 'working: concurrent-marker\n' >> "$QWB_STUB_APPEND"
     if [[ "${QWB_STUB_FAIL:-}" == prompt ]]; then echo '{"error":{"code":"inject_failed"}}' >&2; exit 9; fi
+    printf '%s\n' "${QWB_STUB_PROMPT_STATUS:-working}" > "$QWB_STUB_PROMPT_STATE"
+    echo '{"result":{"type":"ok"}}' ;;
+  "agent wait")
+    status="$(cat "$QWB_STUB_PROMPT_STATE" 2>/dev/null || echo working)"
+    case "$status" in
+      working|done|blocked)
+        [[ "$*" == *"--until $status"* ]] || exit 1
+        printf '{"result":{"type":"agent_info","agent":{"agent_status":"%s"}}}\n' "$status" ;;
+      *) echo '{"error":{"code":"timeout"}}' >&2; exit 1 ;;
+    esac ;;
+  "pane send-keys")
+    [[ "$3 $4" == 'wT:p1 enter' ]] || exit 7
+    [[ "${QWB_STUB_ENTER_STARTS:-0}" != 1 ]] || echo working > "$QWB_STUB_PROMPT_STATE"
     echo '{"result":{"type":"ok"}}' ;;
   "tab close") echo '{"result":{"type":"ok"}}' ;;
   *) echo '{"result":{"type":"ok"}}' ;;
@@ -211,6 +227,7 @@ EOF
 write_ticket
 export QWB_STUB_LOG="$TMP/herdr.log" QWB_STUB_CWD="$PROJECT" QWB_STUB_TASK="$TASK"
 export QWB_STUB_PID="$$" QWB_STUB_SESSION="$TMP/pi-session.jsonl"
+export QWB_STUB_PROMPT_STATE="$TMP/prompt-state"
 jq -cn --arg dir "$(cd "$PROJECT" && pwd -P)" '{type:"session",cwd:$dir}' > "$QWB_STUB_SESSION"
 reuse_proof() {
   jq -cn --arg session "$QWB_STUB_SESSION" --arg start "$(ps -p "$$" -o lstart= | perl -pe 's/^\s+|\s+$//g')" --argjson pid "$$" \
@@ -347,5 +364,86 @@ if [[ "$rc" -ne 0 ]] && ! grep -q '^dispatch:' "$TASK" \
 else
   bad "pane-run 提示词失败：rc=$rc"; printf '%s\n' "$out"; cat "$QWB_STUB_LOG"
 fi
+
+# 同一假 Herdr 状态机验证三条投递路径；timeout只模拟返回，不真睡。
+prepare_prompt_case() {
+  write_ticket
+  : > "$QWB_STUB_LOG"
+  echo idle > "$QWB_STUB_PROMPT_STATE"
+  printf '%s\n' 'qwb_worker pi herdr' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
+}
+check_prompt_success() {
+  local label="$1" enters="$2" waits="$3" op
+  op="$(sed -n 's/^dispatch: .*op_id=\([^ ]*\).*/\1/p' "$TASK" | tail -1)"
+  if [[ "$rc" -eq 0 && -n "$op" ]] && grep -q '^已派发：' "$TMP/prompt.out" \
+    && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq "$enters" ]] \
+    && [[ "$(grep -c '^agent wait wT:p1 --until working --until done --until blocked --timeout 5000$' "$QWB_STUB_LOG" || true)" -eq "$waits" ]] \
+    && [[ "$(grep -c '^working: .*prompt-submit-enter ' "$TASK" || true)" -eq "$enters" ]] \
+    && { [[ "$enters" -eq 0 ]] || grep -q "^working: .*prompt-submit-enter op=$op pane=wT:p1$" "$TASK"; }; then
+    ok "$label"
+  else
+    bad "${label}：rc=$rc"
+    cat "$TMP/prompt.out" "$TMP/prompt.err" "$QWB_STUB_LOG" "$TASK"
+  fi
+}
+for status in working done blocked; do
+  prepare_prompt_case
+  QWB_STUB_PROMPT_STATUS="$status" run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
+  check_prompt_success "prompt-submit 首次立即${status}：一次确认、不补Enter" 0 1
+done
+for reuse in 0 1; do
+  prepare_prompt_case
+  if [[ "$reuse" -eq 1 ]]; then
+    printf 'dispatch: historical worker=pi agent=qwb-case pane=wT:p1 dir=%s\n' "$(cd "$PROJECT" && pwd -P)" >> "$TASK"
+    reuse_proof
+  fi
+  QWB_STUB_REUSE="$reuse" QWB_STUB_PROMPT_STATUS=idle QWB_STUB_ENTER_STARTS=1 \
+    run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
+  check_prompt_success "prompt-submit reuse=${reuse}：卡住补一次Enter后二次确认" 1 2
+  if [[ "$reuse" -eq 1 ]] && grep -q '^agent start\|^tab create' "$QWB_STUB_LOG"; then
+    bad 'prompt-submit 续派错误新建端点'
+  fi
+done
+# 对照原agent prompt失败：检查票、冻结指纹、并发行与端点保留，而非只看返回码。
+prepare_prompt_case
+QWB_STUB_FAIL=prompt QWB_STUB_APPEND="$TASK" run_case > "$TMP/failure.out" 2> "$TMP/failure.err"; failure_rc=$?
+cp "$TASK" "$TMP/failure.ticket"
+for mode in herdr pane-run; do
+  prepare_prompt_case
+  reuse=0
+  if [[ "$mode" == pane-run ]]; then
+    reuse=1
+    printf '%s\n' 'qwb_worker pi pane-run mock-agent' 'qwb_worker codex herdr' > "$PROJECT/qwbuddy/workers.sh"
+  fi
+  QWB_STUB_REUSE="$reuse" QWB_STUB_PROMPT_STATUS=idle QWB_STUB_APPEND="$TASK" \
+    run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
+  if [[ "$rc" -ne 0 && "$failure_rc" -ne 0 && -d "$PROJECT" ]] \
+    && grep -q '提示词已投递但工人未开工.*pane=wT:p1' "$TMP/prompt.err" \
+    && grep -q 'herdr pane read wT:p1' "$TMP/prompt.err" \
+    && ! grep -q '^已派发：' "$TMP/prompt.out" \
+    && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq 1 ]] \
+    && [[ "$(grep -c '^agent wait wT:p1 --until working --until done --until blocked --timeout 5000$' "$QWB_STUB_LOG" || true)" -eq 2 ]] \
+    && [[ "$(grep -c '^working: .*prompt-submit-enter op=.* pane=wT:p1$' "$TASK" || true)" -eq 1 ]] \
+    && grep -q '^not-sent:' "$TASK" && ! grep -q '^dispatch:' "$TASK" \
+    && grep -q '^blocked: .*派发投递失败' "$TASK" \
+    && grep -q '^state: running$' "$TASK" && grep -q '^scenarios-fp:' "$TASK" \
+    && ! grep -q '^tab close' "$QWB_STUB_LOG"; then
+    ok "prompt-submit ${mode}：补Enter仍idle则失败，沿用not-sent与端点保留"
+  else
+    bad "prompt-submit ${mode}：idle被当成功或处置不符 rc=$rc"
+    cat "$TMP/prompt.out" "$TMP/prompt.err" "$QWB_STUB_LOG" "$TASK"
+  fi
+  if [[ "$mode" == herdr ]]; then
+    # 归一仅限随机op、时间、不同失败step/rc和新增补Enter记录，其余逐字节比。
+    for source in failure.ticket prompt-ticket; do
+      [[ "$source" != prompt-ticket ]] || cp "$TASK" "$TMP/$source"
+      perl -pe 's/20\d\d-[\dT:Z-]+/TIME/g; s/(?<=op_id=)[a-f0-9]{32}/OP/g; s/(?<=op=)[a-f0-9]{32}/OP/g; s/step=.* rc=\d+/step=FAILURE rc=FAILURE/; $_="" if /prompt-submit-enter/' \
+        "$TMP/$source" > "$TMP/$source.normalized"
+    done
+    cmp -s "$TMP/failure.ticket.normalized" "$TMP/prompt-ticket.normalized" \
+      && ok 'prompt-submit 首次idle与agent prompt失败票处置字节一致（动态字段与新增记录除外）' \
+      || { bad 'prompt-submit 首次idle与prompt失败处置不同'; diff -u "$TMP/failure.ticket.normalized" "$TMP/prompt-ticket.normalized"; }
+  fi
+done
 
 [[ "$FAILS" -eq 0 ]] && echo "RUNTIME READINESS PASS" || { echo "RUNTIME READINESS FAIL ($FAILS)"; exit 1; }
