@@ -274,6 +274,14 @@ close $output;
             assert working[:len(previous)]==previous and len(working)==len(previous)+2,working
             assert working[-2].startswith('working: gate-dispatch ') and working[-1].startswith('working: worker-activity '),working
             assert current['claim']=={'owner':'gate-pane','op_id':op} and '已派发：' in r.stdout,current['claim']
+            if kind=='review':
+                sent=native_calls((tmp/'native-calls.jsonl').read_text().splitlines()[mark:],p)
+                prompt=next(a[3] for a in sent if a[:2] in (['agent','prompt'],['pane','run']) and '你是独立审核者' in a[3])
+                command=f"bash {p}/qwbuddy/bin/qwb-ledger.sh append --project '{p}' --task '{ticket}' -- 'done: 内容'"
+                assert command in prompt and f'dispatch op_id={child}' in prompt, ('silent-end: 审核提示词缺完整回票命令/op',prompt)
+                assert all(word in prompt for word in ['Standards','Spec','覆盖场景','findings','原生会话路径','写完状态行再收工']),prompt
+                assert '\n' not in prompt
+                print('PASS silent-end 场景1：审核单行提示词明确原票done、完整append/op、两轴/覆盖/findings/原生路径',flush=True)
             print('PASS user_门禁派工提示词停输入框：补一次Enter成功，stdout含op/pane，原claim保留且无额外working/拒绝痕迹',flush=True)
     if os.environ.get('QWB_GATE_PROMPT_ONLY')=='1':
         prompt_enter(t,ca,'accept-A','reviewer','review','prompt-review-a')

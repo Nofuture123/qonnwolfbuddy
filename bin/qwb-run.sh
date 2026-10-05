@@ -727,7 +727,7 @@ PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完
 if [[ -n "$GATE_OP" ]]; then
   GATE_DIFF="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-diff "$GATE_OP" '')" || exit 1
   if [[ "$GATE_KIND" == review ]]; then
-    PROMPT="你是独立审核者，不写实现、不自派代理。唯一原票=${TASK_FILE}。按Standards+Spec两轴、最多3审点，核对原finding和新diff、必要直接调用者；输出实际原生session/model/family与证据，unknown/模型相同不伪填（审核者须与实现者模型不同、会话不同；family仅可选附记）。本票差异包（精确base/candidate/上轮reviewed head）：${GATE_DIFF}"
+    PROMPT="你是独立审核者，不写实现、不自派代理。唯一原票=${TASK_FILE}。按Standards+Spec两轴、最多3审点，核对原finding和新diff、必要直接调用者；输出实际原生session/model/family与证据，unknown/模型相同不伪填（审核者须与实现者模型不同、会话不同；family仅可选附记）。审核结论必须写成原票的一条 done: 行，写明Standards/Spec两轴结论、覆盖场景、findings、原生会话路径；只在窗口里说不算交付。已迁协议票只能用 bash ${PROJECT_ROOT}/qwbuddy/bin/qwb-ledger.sh append --project '${PROJECT_ROOT}' --task '${TASK_FILE}' -- 'done: 内容'（身份取本工人HERDR_PANE_ID，dispatch op_id=${RUN_OP}）；禁止裸追加或覆盖协作区。旧票按旧追加约定，不改别人的行，不改 state: 字段。写完状态行再收工。本票差异包（精确base/candidate/上轮reviewed head）：${GATE_DIFF}"
   else
     PROMPT="原票原范围返修，不新增产品或改变场景。先qwb-ledger read核对保留的原finding，成立项逐项修复并报告新attempt；三轮同根因无新证据由门禁转技术重诊。${PROMPT}"
   fi

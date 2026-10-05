@@ -758,14 +758,19 @@ qwb_tab_field() {
 #   其他查询失败 / 响应不合契约 → 无法判定：stderr 一行「无法确认工人状态」，返回 2（不当丢失，不猜）
 # 只应在有 herdr 且非 --dry-run 的路径调用（判定需要真实查询）。
 # 保留独立解析：只接 HASH pane，空标签仅是 unknown；不能套用值守的宽松三列契约。
+# 直接调用时额外留下本次 pane/status 快筛缓存；stdout 和退出码约定不变。
+# shellcheck disable=SC2034 # 三个缓存由 qwb-wake.sh 的 collect_worker_due 读取。
 worker_lost() {
   local f="$1" disp pane out v
+  QWB_WORKER_LOST_PANE=""; QWB_WORKER_AGENT_STATUS=""; QWB_WORKER_OBSERVED_PANE=""
   disp="$(grep '^dispatch:' "$f" 2>/dev/null | tail -1 || true)"
   [[ -n "$disp" ]] || return 1
   pane="$(printf '%s\n' "$disp" | grep -o 'pane=[^[:space:]]*' | head -1 | cut -d= -f2)"
   [[ -n "$pane" ]] || return 1
+  QWB_WORKER_OBSERVED_PANE="$pane"
   if ! out="$(herdr pane get "$pane" 2>&1)"; then
     if printf '%s\n' "$out" | grep -q 'pane_not_found'; then
+      QWB_WORKER_LOST_PANE="$pane"
       printf '%s\n' "$pane"
       return 0
     fi
@@ -777,11 +782,54 @@ worker_lost() {
     my $p = ($j && ref $j eq "HASH" && ref $j->{result} eq "HASH" && ref $j->{result}{pane} eq "HASH")
       ? $j->{result}{pane} : undef;
     exit 2 unless defined $p;
-    print((defined $p->{agent} && $p->{agent} ne "") ? "live" : "lost");
+    my $status=defined($p->{agent_status}) && !ref($p->{agent_status}) ? $p->{agent_status} : "";
+    print((defined $p->{agent} && $p->{agent} ne "") ? "live" : "lost", "\t", $status);
   ' 2>/dev/null || true)"
+  IFS=$'\t' read -r v QWB_WORKER_AGENT_STATUS <<< "$v"
   case "$v" in
     live) return 1 ;;
     lost) echo "无法确认工人状态（pane ${pane} 原生标签已退回，但原PID死亡未证明；保留现场）" >&2; return 2 ;;
     *)    echo "无法确认工人状态（herdr pane get ${pane} 响应不符合契约）" >&2; return 2 ;;
   esac
+}
+
+# 原生末条记录时间代表收工；缺证据不猜时间，也不拿票mtime代替。
+qwb_worker_silent_end() {
+  python3 -B - "$1" "$2" "$3" "$4" "$5" "$6" "$(dirname "${BASH_SOURCE[0]}")/qwb-herdr.sh" <<'PY'
+import datetime, hashlib, json, os, re, subprocess, sys
+from pathlib import Path
+project,task,data,source,now,threshold,helper=sys.argv[1:]
+s=json.loads(source); s.pop('silent_end',None)
+try:
+    d=json.loads(data); now=int(now); threshold=int(threshold)
+    if threshold<=0 or d['phase']!='running': raise ValueError('disabled/inactive')
+    dispatch=next(e for e in d['events'] if e['event_id']==s['dispatch'])
+    if any(e['op_id']==s['op'] and e['seq']>dispatch['seq'] and e['kind'] in ('done','blocked','needs-decision') for e in d['events']): raise ValueError('reported')
+    if (Path(project)/'qwbuddy/.posture.md').exists():
+        mode=subprocess.run(['bash',str(Path(helper).with_name('qwb-ledger.sh')),'mode-status','--project',project],capture_output=True,text=True,check=True)
+        if json.loads(mode.stdout)['mode'] in ('away','quiet'): raise ValueError('posture disabled')
+    bound=next(e['line'] for e in reversed(d['events']) if e['line'].startswith('working: worker-activity ') and re.search(r'\bpane='+re.escape(s['pane'])+r'(?:\s|$)',e['line']))
+    if not re.search(r'\bop='+re.escape(s['op'])+r'(?:\s|$)',bound): raise ValueError('old operation binding')
+    result=subprocess.run(['bash',helper,'activity','--project',project,'--task',task,'--pane',s['pane']],capture_output=True,text=True,check=True)
+    evidence=json.loads(result.stdout)
+    if evidence.get('activity')!='idle' or not evidence.get('session'): raise ValueError('idle/session unproven')
+    path=Path(evidence['session'])
+    with path.open('rb') as f:
+        stat=os.fstat(f.fileno()); pos=stat.st_size; tail=b''; last=None
+        while pos and last is None:
+            count=min(4096,pos); pos-=count; f.seek(pos); tail=f.read(count)+tail
+            lines=tail.split(b'\n'); complete=lines if pos==0 else lines[1:]
+            last=next((line for line in reversed(complete) if line.strip()),None)
+        record=json.loads(last) if last is not None else {}
+        if not isinstance(record,dict): raise ValueError('native end record not an object')
+    def epoch(stamp):
+        if not isinstance(stamp,str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z',stamp): raise ValueError('end time unknown')
+        return (datetime.datetime.fromisoformat(stamp.replace('Z','+00:00'))-datetime.datetime(1970,1,1,tzinfo=datetime.timezone.utc))//datetime.timedelta(milliseconds=1)
+    ended=epoch(record.get('timestamp'))
+    if not epoch(dispatch['at'])<=ended<=now or now-ended<threshold: raise ValueError('end not due')
+    s['silent_end']=hashlib.sha256(json.dumps([evidence,ended,stat.st_size,stat.st_mtime_ns,record],sort_keys=True).encode()).hexdigest()
+except (ValueError,KeyError,TypeError,OSError,StopIteration,IndexError,subprocess.SubprocessError):
+    pass
+print(json.dumps(s,ensure_ascii=False,sort_keys=True,separators=(',',':')))
+PY
 }

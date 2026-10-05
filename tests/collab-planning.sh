@@ -14,7 +14,7 @@ python3 -u -B - <<'PY'
 from process_fixture import TemporaryDirectory, register, release
 from roles_polish_fixture import baseline as polish_baseline, freeze_writer
 from prompt_file import native_calls  # prompt_file.py preserves the original route/body assertions.
-import contextlib, hashlib, json, os, shutil, signal, subprocess, tempfile, time
+import contextlib, hashlib, json, os, re, shutil, signal, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_PLANNING_ROOT'])
 fixture=os.environ.get('QWB_PLANNING_FIXTURE_DIR')
@@ -38,7 +38,7 @@ with manager as temp:
     if claude_planner:
         config=p/'qwbuddy/config.sh';config.write_text(config.read_text()+"\nQWB_ROLE_CLAUDE_CONTROL='verified'\nQWB_WORKERS='sol reviewer claude-opus-medium'\n")
         workers=p/'qwbuddy/workers.sh';workers.write_text(workers.read_text()+'qwb_worker claude-opus-medium herdr claude -- --model claude-opus-5-5 --effort medium --dangerously-skip-permissions\n')
-    (p/'.gitignore').write_text('tasks/\nqwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\n')
+    (p/'.gitignore').write_text('tasks/\nqwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\nqwbuddy/.posture.md\nqwbuddy/.posture.md.qwb-lock\n')
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
     (stub/'lsof').write_text('#!/bin/sh\nexit 1\n')
@@ -72,13 +72,13 @@ elif a[:2]==['pane','get']:
   print(json.dumps({'error':{'code':'pane_not_found'}}));sys.exit(1)
  if pane==os.environ.get('PL_BAD_WORKER'):
   print('invalid worker query');sys.exit(2)
- if pane=='up-worker':
+ if pane=='up-worker' and not s.get(pane,{}).get('session'):
   out({'pane':{'pane_id':pane,'agent':'pi','workspace_id':'ws'}});sys.exit()
  if pane=='planner-pane' and os.environ.get('PL_EXPIRE_PROOF'):
   counter=Path(os.environ['PL_EXPIRE_PROOF']); n=int(counter.read_text())+1 if counter.exists() else 1; counter.write_text(str(n))
   if n>=3:s.pop(pane,None)
  live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
- if live:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
+ if live:d.update(agent='pi',agent_status=s.get(pane,{}).get('status','idle'),agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
  if s.get(pane,{}).get('tool')=='claude':d.update(agent='claude',agent_session={'agent':'claude','source':'herdr:claude','kind':'id','value':s[pane]['sid']})
  out({'pane':d})
 elif a[:2]==['pane','process-info']:
@@ -606,8 +606,145 @@ file.write_text(json.dumps(s))
             finally:
                 for key in ['PL_GONE_WORKER','PL_BAD_WORKER','PL_EXPIRE_PROOF','PL_CLOCK','QWB_NOW_MS_CMD']: env.pop(key,None)
                 runtime_bin=saved_bin; script.write_bytes(original_script); ticket.write_bytes(original_ticket); native_path.write_bytes(native_bytes); config.write_bytes(config_bytes)
+        def silent_end_checks():
+            global runtime_bin
+            saved_bin=runtime_bin; runtime_bin=runtime
+            def silent_baseline(raw):
+                text=raw.decode()
+                text=re.sub(r'^  +# SILENT_END_BEGIN[^\n]*\n.*?^  +# SILENT_END_END\n','',text,flags=re.M|re.S)
+                text=text.replace('  worker_lost "$f" >/dev/null || true\n  lost="$QWB_WORKER_LOST_PANE"\n','  lost="$(worker_lost "$f")" || lost=""\n')
+                text=text.replace('my $s=decode_json(<STDIN>); exit !($s->{timer_due} || $s->{silent_end})','exit !decode_json(<STDIN>)->{timer_due}')
+                text=text.replace('if ($s->{lost} || $s->{silent_end}) { exit if @wakes }','if ($s->{lost}) { exit if @wakes }')
+                text,count=re.subn(r'        my \$g=\$d->\{gate\};\n        if \(\$s->\{silent_end\}.*?\n        \} elsif \(\$p','        if ($p',text,flags=re.S)
+                assert count==1,'silent-end gate routing baseline boundary changed'
+                return text.encode()
+            wake=runtime/'qwb-wake.sh'; wake_bytes=wake.read_bytes()
+            if os.environ.get('QWB_SILENT_END_BASELINE')=='1':wake.write_bytes(silent_baseline(wake_bytes))
+            writer=runtime/'qwb-ledger.sh'; writer_bytes=writer.read_bytes()
+            original_ticket=ticket.read_bytes(); config=p/'qwbuddy/config.sh'; config_bytes=config.read_bytes()
+            native=Path(env['PL_NATIVE']); native_bytes=native.read_bytes()
+            session=temp/'silent-end-session.jsonl'; clock=temp/'silent-end-clock'; now=temp/'silent-end-now'
+            now.write_text('#!/bin/sh\ncat "$PL_CLOCK"\n'); now.chmod(0o755)
+            env.update(PL_CLOCK=str(clock),QWB_NOW_MS_CMD=str(now))
+            writer.write_bytes(writer_bytes.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { open my $c,"<",$ENV{PL_CLOCK} or die $!; return scalar(<$c>)/1000 }').replace(b',gmtime)',b',gmtime(time()))'))
+            clock.write_text('4102444800000')
+            config.write_bytes(config_bytes+b'QWB_REWAKE_MS=1800000\nQWB_SILENT_END_MS=60000\n')
+            def advance(ms): clock.write_text(str(int(clock.read_text())+ms))
+            def native_session(status='idle',stamp='2100-01-01T00:00:00.000Z',pending=False,large=False):
+                records=[dict(type='session',id='silent-session',cwd=str(p)),dict(type='message',id='end',parentId='silent-session',timestamp=stamp,message=dict(role='assistant',content=[dict(type='toolCall',id='pending')] if pending else [dict(type='text',text='x'*10000)] if large else [],stopReason='stop'))]
+                session.write_text(''.join(json.dumps(row)+'\n' for row in records))
+                state=json.loads(native_bytes); state['up-worker']=dict(session=str(session),status=status); native.write_text(json.dumps(state))
+            def restore(snapshot):
+                ticket.write_bytes(snapshot);clock.write_text('4102444800000');native_session()
+            try:
+                native_session()
+                probe=cli('qwb-herdr.sh','activity','--task',ticket,'--pane','up-worker')
+                assert json.loads(probe.stdout)['activity']=='unknown',probe.stdout
+                evidence=json.loads(cli('qwb-herdr.sh','activity','--pane','up-worker').stdout)
+                assert evidence['activity']=='idle',evidence
+                call('append',name,'--',f'working: worker-activity op=up-dispatch pane=up-worker evidence={json.dumps(evidence)}')
+                base=ticket.read_bytes()
+                # 同一私有已派快照改为门控归属；身份/claim/门铃仍走公开入口。
+                state=read(name);state.pop('planning');state['ops']['up-dispatch']['owner']='ctl'
+                body=base.split(b'\n<!-- qwb-collab-v1\n')[0]
+                ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(state,ensure_ascii=False).encode()+b'\n-->\n')
+                # 临时Git自身的clean候选；不碰源码仓的任何worktree元数据。
+                candidate=temp/'silent-end-candidate';git('worktree','add','-q','--detach',str(candidate))
+                assignment={'candidate':str(candidate),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(payload('silent-end-environment.json',{})),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
+                call('gate-assign',name,'--','gate',payload('silent-end-gate.json',assignment))
+                call('claim',name,'--','silent-end-gate',actor='gate-pane')
+                state=read(name);state['ops']['up-dispatch']['owner']='gate-pane'
+                body=ticket.read_bytes().split(b'\n<!-- qwb-collab-v1\n')[0]
+                ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(state,ensure_ascii=False).encode()+b'\n-->\n')
+                routes,_=deliveries();assert not routes,routes
+                advance(59999);routes,_=deliveries();assert not routes,routes
+                advance(1);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='gate-pane' and '工人已收工但没有报告' in routes[0][3] and 'pane=up-worker op=up-dispatch' in routes[0][3] and '读审核工人的窗口或让它补写 done 行' in routes[0][3],('silent-end: 门控一分钟没有未报告门铃',routes)
+                for _ in range(2):routes,_=deliveries();assert not routes,routes
+                print('PASS silent-end 场景2：门控派工一分钟直达门控，窗口/op齐全、多轮只叫一次',flush=True)
+                native_session(status='working');advance(1000);routes,_=deliveries();assert not routes,routes
+                ended=time.strftime('%Y-%m-%dT%H:%M:%S.000Z',time.gmtime(int(clock.read_text())//1000))
+                native_session(stamp=ended,large=True)
+                advance(59999);routes,_=deliveries();assert not routes,routes
+                advance(1);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='gate-pane' and '没有报告' in routes[0][3],routes
+                routes,_=deliveries();assert not routes,routes
+                print('PASS silent-end 再次收工：重新满一分钟才叫一次；超过4096字节末记录可从尾部完整读取',flush=True)
+                restore(base)
+                routes,_=deliveries();assert not routes,routes
+                advance(59999);routes,_=deliveries();assert not routes,routes
+                advance(1);routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='planner-pane' and '工人已收工但没有报告' in routes[0][3] and 'pane=up-worker op=up-dispatch' in routes[0][3],('silent-end: 一分钟没有通知规划',routes)
+                for _ in range(3):advance(60000);routes,_=deliveries();assert not routes,routes
+                print('PASS silent-end 场景3：规划派工满一分钟只叫一次，跨进程重启不重叫',flush=True)
+                call('append',name,'--event-id','silent-end-late-done','--','done: 补写真实交付',actor='up-worker')
+                routes,_=deliveries();assert len(routes)==1 and 'source:silent-end-late-done' in routes[0][3] and all('没有报告' not in r[3] for r in routes),routes
+                print('PASS silent-end 场景6：门铃之后补写done恢复正常交付路由',flush=True)
+                restore(base)
+                call('append',name,'--event-id','silent-end-normal-done','--','done: 正常真实交付',actor='up-worker')
+                advance(60000);routes,_=deliveries();assert len(routes)==1 and 'source:silent-end-normal-done' in routes[0][3] and all('没有报告' not in r[3] for r in routes),routes
+                print('PASS silent-end 场景5：正常done只有原交付，无未报告门铃',flush=True)
+                for report in ['blocked','needs-decision']:
+                    restore(base);call('append',name,'--',report+': 工人有交代',actor='up-worker');advance(60000)
+                    routes,_=deliveries();assert routes and all('没有报告' not in r[3] for r in routes),routes
+                for mode in ['busy','unknown','pending','missing-time','future-time','old-time','stale-binding']:
+                    restore(base)
+                    if mode in ['busy','unknown']:native_session(status='working' if mode=='busy' else 'unverified')
+                    elif mode=='pending':native_session(pending=True)
+                    elif mode=='missing-time':native_session(stamp=None)
+                    elif mode=='future-time':native_session(stamp='2100-01-01T00:30:00.000Z')
+                    elif mode=='old-time':native_session(stamp='2000-01-01T00:00:00.000Z')
+                    else:
+                        rows=json.loads(native.read_text());rows['up-worker']['session']=str(temp/'unbound.jsonl');shutil.copy(session,temp/'unbound.jsonl');native.write_text(json.dumps(rows))
+                    advance(60000);mark=count();routes,_=deliveries();assert not routes,(mode,routes)
+                    if mode=='busy':
+                        calls=native_calls(log.read_text().splitlines()[mark:],p)
+                        probes=[a for a in calls if a[:2]==['pane','get'] and a[2]=='up-worker' or a[:2]==['pane','process-info'] and a[-1]=='up-worker']
+                        assert probes==[['pane','get','up-worker']],('working invoked activity instead of reusing pane get',probes)
+                        print('PASS silent-end 性能：working窗口仅一次pane get，零activity/process-info调用',flush=True)
+                    advance(1740000);routes,_=deliveries();assert len(routes)==1 and '工人无进展' in routes[0][3],(mode,routes)
+                print('PASS silent-end 场景4：busy/unknown/未配对工具/缺时间/未来/旧时间/旧绑定不误叫；30分钟原兜底保留',flush=True)
+                restore(base)
+                state=read(name);state.pop('planning');state['ops']['up-dispatch']['owner']='ctl'
+                body=base.split(b'\n<!-- qwb-collab-v1\n')[0]
+                ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(state,ensure_ascii=False).encode()+b'\n-->\n')
+                advance(60000);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='ctl' and '没有报告' in routes[0][3],routes
+                restore(base);rows=json.loads(native.read_text());rows.pop('planner-pane');native.write_text(json.dumps(rows))
+                advance(60000);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='ctl' and '没有报告' in routes[0][3],routes
+                print('PASS silent-end 场景3：无规划授权直接主控，规划身份失效沿原规则回主控',flush=True)
+                others_dir=temp/'silent-end-other-tasks';others_dir.mkdir()
+                others=[f for f in (p/'tasks').glob('*.md') if f!=ticket]
+                for f in others:f.rename(others_dir/f.name)
+                try:
+                    writer.write_bytes(writer.read_bytes().replace(b"$event=unpack('H*',$bytes);",b'$event=sprintf("%032x",$data->{seq});'))
+                    for case in ['disabled-idle','quiet','away','busy-short','unknown-short','lost','stalled']:
+                        restore(base)
+                        config.write_bytes(config_bytes+b'QWB_REWAKE_MS=1800000\n'+(b'QWB_SILENT_END_MS=0\n' if case=='disabled-idle' else b'QWB_SILENT_END_MS=60000\n'))
+                        if case in ['quiet','away']:cli('qwb-ledger.sh','mode-enter','--project',p,'--',case,'silent-end-authorized','fixture posture','no new authority')
+                        if case in ['busy-short','stalled']:native_session(status='working')
+                        if case=='unknown-short':native_session(status='unverified')
+                        if case=='lost':env['PL_GONE_WORKER']='up-worker'
+                        advance(1800000 if case=='stalled' else 60000)
+                        outputs=[]
+                        for version in ['baseline','candidate']:
+                            wake.write_bytes(silent_baseline(wake_bytes) if version=='baseline' else wake_bytes)
+                            ticket.write_bytes(base);log.write_bytes(b'')
+                            result=cli('qwb-wake.sh','--once','--pane','ctl')
+                            outputs.append((result.stdout.encode(),result.stderr.encode(),result.returncode,ticket.read_bytes()))
+                        assert outputs[0]==outputs[1],('silent-end byte mismatch',case,outputs)
+                        print('EVIDENCE silent-end byte-equivalence '+case,flush=True)
+                        env.pop('PL_GONE_WORKER',None)
+                        if case in ['quiet','away']:cli('qwb-ledger.sh','mode-exit','--project',p,'--','explicit','fixture explicit exit')
+                    print('PASS silent-end 场景7：关闭/quiet/away与busy/unknown/丢失/30分钟兜底，当前仅撤本票改动基线stdout/stderr/rc/票内容逐字节一致',flush=True)
+                finally:
+                    for f in others:(others_dir/f.name).rename(f)
+                    others_dir.rmdir();env.pop('PL_GONE_WORKER',None)
+            finally:
+                runtime_bin=saved_bin;wake.write_bytes(wake_bytes);writer.write_bytes(writer_bytes);ticket.write_bytes(original_ticket);config.write_bytes(config_bytes);native.write_bytes(native_bytes)
+                for key in ['PL_CLOCK','QWB_NOW_MS_CMD']:env.pop(key,None)
+        if os.environ.get('QWB_SILENT_END_ONLY')=='1':
+            silent_end_checks();return
         if os.environ.get('QWB_SILENCE_DELIVERY_ONLY')!='1': watch_checks()
         if os.environ.get('QWB_SILENCE_WATCH_ONLY')=='1': return
+        silent_end_checks()
         def exhausted_checks(gate=False):
             global runtime_bin
             saved_bin=runtime_bin; runtime_bin=runtime

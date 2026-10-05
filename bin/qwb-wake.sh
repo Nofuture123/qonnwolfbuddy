@@ -524,7 +524,7 @@ ts_epoch() {
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 # 已迁票的在途工人：沿用worker_lost；只读探针不会把unknown猜成死亡。
 collect_worker_due() {
-  local f="$1" st="$2" data="$3" out="$4" source lost="" now
+  local f="$1" st="$2" data="$3" out="$4" source lost="" now silent_working=0
   now="$(now_ms)"
   source="$(printf '%s' "$data" | perl -MJSON::PP -MTime::Local=timegm -MDigest::SHA=sha256_hex -0777 -e '
     my ($now,$retry,$quiet,$ownerfile)=@ARGV;
@@ -544,8 +544,17 @@ collect_worker_due() {
     print JSON::PP->new->canonical->utf8->encode({dispatch=>$e->{event_id},op=>$op,pane=>$d->{ops}{$op}{pane},timer_due=>$due ? 1 : 0});
   ' "$now" "${QWB_REWAKE_MS:-0}" "$POSTURE_QUIET" "$PROJECT_ROOT/qwbuddy/.controller.lock/owner")" || return 3
   [[ -n "$source" ]] || return 0
-  lost="$(worker_lost "$f")" || lost=""
-  if [[ -z "$lost" ]] && ! printf '%s' "$source" | perl -MJSON::PP -0777 -e 'exit !decode_json(<STDIN>)->{timer_due}'; then return 0; fi
+  worker_lost "$f" >/dev/null || true
+  lost="$QWB_WORKER_LOST_PANE"
+  # SILENT_END_BEGIN: reuse the existing pane query before any Python/activity work.
+  if [[ "$QWB_WORKER_AGENT_STATUS" == working ]] && printf '%s' "$source" | perl -MJSON::PP -0777 -e 'exit !(decode_json(<STDIN>)->{pane} eq $ARGV[0])' "$QWB_WORKER_OBSERVED_PANE"; then
+    silent_working=1
+  fi
+  if [[ -z "$lost" && "$silent_working" -eq 0 && "$POSTURE_QUIET" -eq 0 && "${QWB_SILENT_END_MS:-60000}" =~ ^[1-9][0-9]*$ ]]; then
+    source="$(qwb_worker_silent_end "$PROJECT_ROOT" "$f" "$data" "$source" "$now" "${QWB_SILENT_END_MS:-60000}")" || return 3
+  fi
+  # SILENT_END_END
+  if [[ -z "$lost" ]] && ! printf '%s' "$source" | perl -MJSON::PP -0777 -e 'my $s=decode_json(<STDIN>); exit !($s->{timer_due} || $s->{silent_end})'; then return 0; fi
   source="$(perl -MJSON::PP -e 'my $d=decode_json($ARGV[0]); $d->{lost}=$ARGV[1] ne "" ? 1 : 0; print JSON::PP->new->canonical->utf8->encode($d)' "$source" "$lost")"
   printf '%s\t%s\t-\t[qwb-worker] %s\t%s\n' "$f" "$st" "$source" "$lost" >> "$out"
 }
@@ -555,6 +564,13 @@ worker_due_row() {
   local f="$1" st="$2" summary="$3" target="$4" grant="$5" data now
   data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
   now="$(now_ms)"
+  # SILENT_END_BEGIN: recheck before recipient-specific deduplication/delivery.
+  if [[ "$summary" == *'"silent_end":'* ]]; then
+    [[ "$POSTURE_QUIET" -eq 0 && "${QWB_SILENT_END_MS:-60000}" =~ ^[1-9][0-9]*$ ]] || return 0
+    summary="[qwb-worker] $(qwb_worker_silent_end "$PROJECT_ROOT" "$f" "$data" "${summary#\[qwb-worker\] }" "$now" "${QWB_SILENT_END_MS:-60000}")" || return 3
+    [[ "$summary" == *'"silent_end":'* ]] || return 0
+  fi
+  # SILENT_END_END
   printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha1_hex,sha256_hex -MTime::Local=timegm -0777 -e '
     use utf8;
     my ($f,$st,$raw,$target,$grant,$now,$retry,$quiet,$ownerfile)=@ARGV;
@@ -569,8 +585,11 @@ worker_due_row() {
     open my $owner,"<",$ownerfile or die "worker owner read: $!\n"; my $owner_raw=<$owner> // ""; close $owner;
     my $owner_fp=sha256_hex($owner_raw);
     my $fp=sha1_hex(JSON::PP->new->canonical->utf8->encode(["worker-watch",$s->{dispatch},$s->{op},$s->{pane},$s->{lost} ? "lost" : $business->{seq},$target,$grant,$owner_fp]));
+    # SILENT_END_BEGIN
+    $fp=sha1_hex(JSON::PP->new->canonical->utf8->encode(["worker-silent-end",$s->{dispatch},$s->{op},$s->{pane},$s->{silent_end},$target,$grant,$owner_fp])) if $s->{silent_end};
+    # SILENT_END_END
     my @wakes=grep { $_->{kind} eq "wake" && $_->{line}=~/\bfp=\Q$fp\E(?:\s|$)/ } @{$d->{events}};
-    if ($s->{lost}) { exit if @wakes }
+    if ($s->{lost} || $s->{silent_end}) { exit if @wakes }
     else {
       exit if $quiet || $retry!~/^[1-9][0-9]*$/;
       exit if grep { !$_->{handled} && $_->{accepted} ne "" && $_->{owner_fp} eq $owner_fp && ($now<$_->{wait_until} || $now-$_->{activity_at}<$retry) } values %{$d->{handoffs} // {}};
@@ -578,6 +597,10 @@ worker_due_row() {
       exit if $now-$last<$retry;
     }
     $s->{payload}=$s->{lost} ? "工人丢失：pane=$s->{pane} op=$s->{op}；请派工者核查" : "工人无进展：".($now-$at)."ms（阈值${retry}ms）pane=$s->{pane} op=$s->{op}";
+    # SILENT_END_BEGIN
+    my $silent_hint=$d->{gate} && $target eq $d->{gate}{identity}{pane} && $d->{ops}{$s->{op}}{owner} eq $target ? "请读审核工人的窗口或让它补写 done 行" : "请读它的窗口或让它补写状态行";
+    $s->{payload}="工人已收工但没有报告：pane=$s->{pane} op=$s->{op}；${silent_hint}" if $s->{silent_end};
+    # SILENT_END_END
     print join("\t",$f,$st,$fp,"[qwb-worker] ".JSON::PP->new->canonical->utf8->encode($s),$s->{lost} ? $s->{pane} : ""),"\n";
   ' "$f" "$st" "$summary" "$target" "$grant" "$now" "${QWB_REWAKE_MS:-0}" "$POSTURE_QUIET" "$PROJECT_ROOT/qwbuddy/.controller.lock/owner"
 }
@@ -757,7 +780,10 @@ route_gate_due() {
         use utf8; binmode STDOUT, ":encoding(UTF-8)";
         my $d=decode_json(<STDIN>); my $s=decode_json(substr($ARGV[0],length("[qwb-worker] ")));
         my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef);
-        if ($p && $d->{ops}{$s->{op}}{owner} eq $p->{identity}{pane}) {
+        my $g=$d->{gate};
+        if ($s->{silent_end} && $g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $d->{ops}{$s->{op}}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
+          print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁";
+        } elsif ($p && $d->{ops}{$s->{op}}{owner} eq $p->{identity}{pane}) {
           print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
         }
       ' "$last")"
