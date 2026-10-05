@@ -14,6 +14,159 @@ if [[ $# -eq 0 ]]; then
   python3 -B "$ROOT/tests/herdr-batch.py"
   exit "$?"
 fi
+# Delayed Pi startup binding through the same public dispatch/reuse entries.
+if [[ "${1:-}" == reuse-binding ]]; then
+python3 -B - "$ROOT" <<'PY'
+from process_fixture import TemporaryDirectory
+from contextlib import ExitStack
+import json, os, shutil, subprocess, sys, time
+from pathlib import Path
+ROOT=Path(sys.argv[1]).resolve()
+prefix=(ROOT/'tests/worktree-space.py').read_text().split("with tempfile.TemporaryDirectory(prefix='s-')")[0]
+exec(prefix.replace('ROOT = Path(__file__).resolve().parents[1]','ROOT = Path(sys.argv[1]).resolve()'))
+BASE='57d6e7af4a3f901af73d0472efb3bf076a162f48'
+old={name:subprocess.check_output(['git','-C',str(ROOT),'show',BASE+':bin/'+name])
+     for name in ('qwb-run.sh','qwb-herdr.sh')}
+with TemporaryDirectory(prefix='s-') as d, ExitStack() as processes:
+    os.environ['TMPDIR']=d
+    b=Path(d); repo,ticket,state,log,env=project(b)
+    children=[]
+    for _ in range(2):
+        child=subprocess.Popen([sys.executable,'-u','-c','import sys; print("ready",flush=True); sys.stdin.readline()'],
+                               cwd=repo,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        processes.callback(lambda owned=child: (owned.terminate() if owned.poll() is None else None,
+            owned.wait(timeout=10),owned.stdin.close(),owned.stdout.close()))
+        assert child.stdout.readline().strip()=='ready'; children.append(child)
+    active=b/'startup.json'; shape=b/'shape.json'; session=b/'pi.jsonl'
+    shape.write_text(json.dumps(dict(pid=children[0].pid,session=str(session))))
+    native_stub=STUB.replace('if args[:2] == ["status", "--json"]:', r'''active=Path(os.environ['QWB_BINDING_ACTIVE'])
+shape=json.loads(Path(os.environ['QWB_BINDING_SHAPE']).read_text())
+s=json.loads(active.read_text()) if active.exists() else None
+tool=os.environ.get('QWB_BINDING_TOOL','pi')
+if args[:2]==['agent','start']:
+    s=dict(queries=0,prompts=0,started=__import__('time').monotonic()); active.write_text(json.dumps(s))
+    out({'type':'agent_started','agent':dict(agent=tool,name='qwb-case',agent_status='idle',pane_id='wRoot:p1',
+        tab_id='wRoot:t1',workspace_id='wRoot',cwd=str(root),foreground_cwd=str(root),interactive_ready=True)})
+elif args[:2]==['agent','get'] and s is not None:
+    out({'type':'agent_info','agent':dict(name='qwb-case',agent=tool,agent_status='idle',pane_id='wRoot:p1',
+        workspace_id='wRoot',cwd=str(root))})
+elif args[:2]==['pane','get'] and args[2]=='wRoot:p1' and s is not None:
+    s['queries']+=1; active.write_text(json.dumps(s))
+    p=dict(pane_id='wRoot:p1',tab_id='wRoot:t1',workspace_id='wRoot',agent=tool,agent_status='idle',
+        cwd=str(root),foreground_cwd=str(root))
+    if tool=='pi' and mode!='no-session' and (mode=='persisted' or s['queries']>3):
+        p['agent_session']=dict(agent='pi',source='herdr:pi',kind='path',value=shape['session'])
+    out({'type':'pane_info','pane':p})
+elif args[:2]==['pane','process-info'] and args[3]=='wRoot:p1' and s is not None:
+    pid=shape['pid']; out({'type':'pane_process_info','process_info':dict(pane_id='wRoot:p1',shell_pid=42,
+        foreground_process_group_id=pid,foreground_processes=[dict(pid=pid,argv0=tool,cwd=str(root))])})
+elif args[:2]==['tab','create']:
+    out({'root_pane':dict(pane_id='wRoot:p1',tab_id='wRoot:t1')})
+elif args[:2]==['agent','prompt']:
+    with log.open('a') as f: f.write(json.dumps(['prompt-ticket',Path(os.environ['QWB_BINDING_TICKET']).read_text()])+'\n')
+    if tool=='pi' and mode!='no-session':
+        Path(shape['session']).write_text('\n'.join(map(json.dumps,[dict(type='session',cwd=str(root)),
+            dict(type='message',id='end',message=dict(role='assistant',content=[],stopReason='stop'))]))+'\n')
+    if tool=='pi': s['queries']=max(3,s['queries'])
+    s['prompts']+=1; s['prompt_at']=__import__('time').monotonic()
+    active.write_text(json.dumps(s)); out({'type':'ok'})
+elif args[:2] == ["status", "--json"]:''')
+    (b/'stub/herdr').write_text(native_stub)
+    # Deterministic legacy receipts let unchanged contracts compare raw bytes, including timestamps/operation IDs.
+    with (repo/'qwbuddy/bin/qwb-lib.sh').open('a') as f: f.write('\nqwb_op_id() { printf binding-fixture; }\n')
+    date=b/'stub/date'; date.write_text('#!/bin/sh\ncase "$*" in *%s*) printf "1791169873\\n";; *) printf "2026-10-05T03:11:13Z\\n";; esac\n'); date.chmod(0o755)
+    env=env|{'QWB_BINDING_ACTIVE':str(active),'QWB_BINDING_SHAPE':str(shape),'QWB_BINDING_TICKET':str(ticket),
+             'QWB_TEST_WT':str(repo)}
+    dispatch=['/bin/bash',str(repo/'qwbuddy/bin/qwb-run.sh'),'--project',str(repo),'--task','case','--worker','pi','--here']
+    def install(baseline=False):
+        for name,data in old.items():
+            (repo/'qwbuddy/bin'/name).write_bytes(data if baseline else (ROOT/'bin'/name).read_bytes())
+    def reset(mode='delayed',tool='pi'):
+        ticket.write_text(TASK); active.unlink(missing_ok=True); session.unlink(missing_ok=True)
+        state.write_text(str(repo)); log.write_text(''); shape.write_text(json.dumps(dict(pid=children[0].pid,session=str(session))))
+        (repo/'qwbuddy/config.sh').write_text("QWB_WORKERS='pi'\nQWB_WORKSPACE='wRoot'\n")
+        (repo/'qwbuddy/workers.sh').write_text('qwb_worker pi herdr '+tool+' --\n')
+        if mode=='persisted':
+            session.write_text(json.dumps(dict(type='session',cwd=str(repo)))+'\n'+json.dumps(dict(type='message',id='end',message=dict(role='assistant',content=[],stopReason='stop')))+'\n')
+        return env|{'QWB_TEST_MODE':mode,'QWB_BINDING_TOOL':tool}
+    def run(e):
+        started=time.monotonic(); result=call(*dispatch,env=e); elapsed=time.monotonic()-started
+        return result,elapsed
+    def evidence():
+        line=next(x for x in reversed(ticket.read_text().splitlines()) if x.startswith('working: worker-activity '))
+        return line,json.loads(line.split(' evidence=',1)[1])
+    def capture(result):
+        return result.returncode,result.stdout,result.stderr,ticket.read_bytes(),log.read_bytes()
+    baseline=bool(os.environ.get('QWB_REUSE_BINDING_BASELINE'))
+    install(baseline); e=reset(); first,elapsed=run(e)
+    assert first.returncode==0,(first.stdout,first.stderr)
+    line,proof=evidence(); snapshot=ticket.read_bytes()
+    prompts=[x for x in map(json.loads,log.read_text().splitlines()) if x[0]=='prompt-ticket']
+    assert len(prompts)==1 and line in prompts[0][1],prompts
+    initial_queries=json.loads(active.read_text())['queries']
+    again,_=run(e)
+    print('DELAYED baseline='+str(baseline)+' first_rc='+str(first.returncode)+' evidence='+json.dumps(proof)+
+          ' reuse_rc='+str(again.returncode)+' stderr='+repr(again.stderr),flush=True)
+    assert again.returncode==0,(again.stdout,again.stderr)
+    assert proof['activity']=='unknown' and proof['proof']=='native-pid+unpersisted-session' and proof['session']==str(session),proof
+    assert initial_queries==4,initial_queries
+    assert any(x[:2]==['agent','prompt'] and '这是返工/续派' in x[3] for x in map(json.loads,log.read_text().splitlines()))
+    assert json.loads(active.read_text())['queries']==6,'reuse must not wait or rebind'
+    print('PASS user_正常路径_首次派发后续派原工人成功: delayed native session, truthful pre-prompt binding, reuse prompt delivered',flush=True)
+    # Every refusal uses the same settled ticket/native process and compares baseline raw outputs/calls.
+    for fault in ('pid','pid_start','session','pending-tool','in-round','legacy'):
+        results=[]
+        for use_old in (True,False):
+            install(use_old); ticket.write_bytes(snapshot); log.write_text('')
+            data=dict(pid=children[0].pid,session=str(session))
+            settled=[dict(type='session',cwd=str(repo)),dict(type='message',id='end',message=dict(role='assistant',content=[],stopReason='stop'))]
+            if fault=='pid': data['pid']=children[1].pid
+            if fault=='session':
+                alternate=b/'other.jsonl'; alternate.write_text('\n'.join(map(json.dumps,settled))+'\n'); data['session']=str(alternate)
+            if fault in ('pid_start','legacy'):
+                modified=dict(proof)
+                if fault=='pid_start': modified['pid_start']='older native incarnation'
+                else: modified.pop('session')
+                ticket.write_text(snapshot.decode().replace(line,line.split(' evidence=',1)[0]+' evidence='+json.dumps(modified)))
+            if fault=='pending-tool': settled[-1]['message']=dict(role='assistant',content=[dict(type='toolCall',id='pending',name='bash')],stopReason='toolUse')
+            if fault=='in-round': settled[-1]['message']=dict(role='user',content='still processing')
+            session.write_text('\n'.join(map(json.dumps,settled))+'\n'); shape.write_text(json.dumps(data))
+            before=ticket.read_bytes(); result,elapsed=run(e)
+            assert result.returncode!=0 and ticket.read_bytes()==before,(fault,result.stdout,result.stderr)
+            calls=list(map(json.loads,log.read_text().splitlines()))
+            assert not any(x[:2] in (['agent','prompt'],['pane','run'],['pane','send-keys'],['agent','start'],['tab','create']) for x in calls),calls
+            results.append(capture(result)); print('REFUSAL',fault,'baseline=',use_old,'stderr=',repr(result.stderr),flush=True)
+        if fault=='legacy':
+            assert results[0][0:2]==results[1][0:2] and results[0][3:]==results[1][3:],fault
+            for text in ('派发时记录未绑定会话','换一个工人名','确认原工人已停下','关闭其 pane 再派'):
+                assert text in results[1][2],(text,results[1][2])
+        else: assert results[0]==results[1],(fault,results)
+        print('PASS user_失败路径_'+fault+': zero delivery; '+('actionable legacy refusal' if fault=='legacy' else 'baseline raw stdout/stderr/rc/ticket/calls identical'),flush=True)
+    for mode,tool in (('persisted','pi'),('persisted','claude')):
+        results=[]
+        for use_old in (True,False):
+            install(use_old); e=reset(mode,tool)
+            first,elapsed=run(e); assert first.returncode==0,(first.stdout,first.stderr)
+            one=capture(first); _,observed=evidence()
+            again,elapsed=run(e); two=capture(again)
+            if tool=='pi': assert again.returncode==0,(again.stdout,again.stderr)
+            else:
+                assert observed['activity']=='unknown' and 'session' not in observed,observed
+                assert again.returncode!=0 and again.stderr=='错误：本代真实活动为 unknown，不凭Herdr idle复用或中断\n',again.stderr
+                assert json.loads(active.read_text())['queries']==3,'Claude must not wait'
+            results.append((one,two))
+        assert results[0]==results[1],(mode,tool,results)
+        print('PASS user_正常路径_'+('会话文件已落盘时的行为不变' if tool=='pi' else '非Pi工人现状不变')+': baseline raw stdout/stderr/rc/ticket/calls identical',flush=True)
+    install(); e=reset('no-session'); first,elapsed=run(e); line,proof=evidence()
+    assert first.returncode==0 and 'session' not in proof,(first.stdout,first.stderr,proof)
+    assert '会话未绑定' in ticket.read_text() and '日后不可续派' in ticket.read_text(),ticket.read_text()
+    # The new bound starts after agent start; preflight/locks before native startup have their own costs.
+    startup=json.loads(active.read_text()); wait=startup['prompt_at']-startup['started']
+    assert 10<=wait<=12,(wait,elapsed)
+    print('PASS user_正常路径_会话绑定超时仍派发: elapsed='+str(round(elapsed,3))+'s wait='+str(round(wait,3))+'s, unbound receipt plus working notice, prompt delivered',flush=True)
+PY
+exit 0
+fi
 # Explicit missing-writer proof: exercise both independent public guards and partial receipts.
 if [[ "${1:-}" != finish-equivalence ]]; then
 python3 -B - "$ROOT" <<'PY'

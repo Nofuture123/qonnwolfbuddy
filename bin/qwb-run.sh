@@ -428,6 +428,10 @@ validate_reuse() {
   local observed
   REUSE_ACTIVITY="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$ag_pane" --dir "$expected_dir" --task "$TASK_FILE")" || return 1
   observed="$(printf '%s' "$REUSE_ACTIVITY" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{activity}')" || return 1
+  if [[ "$observed" == unknown ]] && printf '%s' "$REUSE_ACTIVITY" | perl -MJSON::PP -0777 -e 'exit((decode_json(<STDIN>)->{conflict}//"") eq "startup session not recorded; refuse stale idle" ? 0 : 1)'; then
+    echo "错误：派发时记录未绑定会话，拒绝续派；请换一个工人名（--name）重新派发，或确认原工人已停下后关闭其 pane 再派" >&2
+    return 1
+  fi
   [[ "$observed" == idle ]] || { echo "错误：本代真实活动为 ${observed}，不凭Herdr idle复用或中断" >&2; return 1; }
 }
 if [[ -z "$PANE" && "$LAUNCH_MODE" == "herdr" ]]; then
@@ -770,11 +774,27 @@ deliver() {   # $1=步骤名，其余=命令；输出留在 DELIVER_OUT
 }
 
 record_worker_activity() {
-  local observation
+  local observation deadline left
   # A reuse dispatch is a delivery op, not a new native start: bind its already verified incarnation.
   observation="$REUSE_ACTIVITY"
   if [[ -z "$observation" ]]; then
+    if [[ "$WORKER_HARNESS" == pi ]]; then deadline=$(( $(now_ms) + 10000 )); fi
     observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
+    if [[ "$WORKER_HARNESS" == pi ]]; then
+      # interactive_ready precedes Herdr's native session path; never fabricate idle while waiting.
+      while ! printf '%s' "$observation" | perl -MJSON::PP -0777 -e 'exit(decode_json(<STDIN>)->{session} ? 0 : 1)'; do
+        left=$(( deadline - $(now_ms) ))
+        (( left > 0 )) || break
+        (( left > 500 )) && left=500
+        sleep_ms "$left"
+        (( $(now_ms) < deadline )) || break
+        observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
+      done
+      if ! printf '%s' "$observation" | perl -MJSON::PP -0777 -e 'exit(decode_json(<STDIN>)->{session} ? 0 : 1)'; then
+        qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append \
+          "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) 会话未绑定 op=$RUN_OP pane=${PANE}；等待10秒仍无Pi会话路径，本工人日后不可续派" >/dev/null
+      fi
+    fi
   fi
   # Evidence stays in the sole MD truth, tagged to this dispatch operation; unknown is not fabricated idle.
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append "working: worker-activity op=$RUN_OP pane=$PANE evidence=$observation" >/dev/null

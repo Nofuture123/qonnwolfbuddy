@@ -353,6 +353,7 @@ try:
             task=Path(a.task).resolve(); require(task.parent==root/'tasks' and not Path(a.task).is_symlink(),'activity ticket outside project')
             records=re.findall(r'^working: worker-activity op=(\S+) pane=(\S+) evidence=(.+)$',task.read_text(),re.M)
             records=[json.loads(x[2]) for x in records if x[1]==a.pane]
+            require(not (records and observed.get('session') and not records[-1].get('session')),'startup session not recorded; refuse stale idle')
             require(records and observed.get('pid') and all(observed.get(k)==records[-1].get(k) for k in ('pid','pid_start','session')),'startup incarnation/session not bound; refuse stale idle')
         print(json.dumps(observed))
     else: presentation()

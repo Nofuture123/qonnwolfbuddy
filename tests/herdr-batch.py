@@ -11,7 +11,7 @@ import sys
 root = Path(__file__).resolve().parents[1]
 source = (root / 'tests/collab-herdr.sh').read_text()
 blocks = re.findall(r'^python3 -B - "\$ROOT" <<\x27PY\x27\n(.*?)^PY\n?', source, re.M | re.S)
-assert len(blocks) == 8, 'update the explicit suite count when adding a Herdr suite'
+assert len(blocks) == 9, 'update the explicit suite count when adding a Herdr suite'
 scope = Path(os.environ['QWB_TEST_SCOPE_DIR'])
 
 def run(index):
