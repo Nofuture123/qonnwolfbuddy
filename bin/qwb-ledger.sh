@@ -351,6 +351,15 @@ sub scenario {
   }
   $block =~ s/\n+\z//; return $block;
 }
+my $scenario_name=qr/^###\s+(user_[^\s]+)\s*$/m;
+sub scenario_names { return $_[0] =~ /$scenario_name/g }
+sub require_scenario_names {
+  my $s=scenario(shift);
+  for my $title ($s =~ /^(###(?:[^\S\n][^\n]*)?)$/mg) {
+    fail("场景标题须为 ### user_名字；不合规标题：$title；示例：### user_正常路径_保存") unless $title =~ $scenario_name;
+  }
+  fail('场景块须至少一个 ### user_名字 标题；示例：### user_正常路径_保存') unless scenario_names($s);
+}
 sub scenarios_ok {
   my ($s,$heading)=@_; $heading //= qr/\A## 验收场景\n/;
   # Align failure keywords with dispatch gates: bin/qwb-run.sh:286 and bin/qwb-lint.sh:212.
@@ -1077,6 +1086,7 @@ if ($cmd eq 'land-authorize') {
   for my $path (map { "$bindir/qwb-$_.sh" } qw(lib run wake worktree ledger send role)) { my $s=read_file($path); $installed{$path}=sha256_hex($s) }
   $data={schema=>1,rev=>0,seq=>0,spec_rev=>0,phase=>'blocked',claim=>undef,workers=>{},questions=>{},events=>[],ops=>{},migration=>{task_sha256=>sha256_hex(''),confirm=>{map { $_=>'new ticket: no previous writers' } qw(run wake worktree worker controller old-fds external-actions)},installed=>\%installed}};
   fail('新票必须自带可验证场景') unless defined($r->{scenarios}) && scenarios_ok($r->{scenarios});
+  require_scenario_names($r->{scenarios});
   my $report=<<'REPORT';
 只在本票的工作副本里改动并提交；全部完成后工作区须干净。
 往主账本绝对路径报告 `working:` / `done:`（写明提交号、跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票的 `working:` 只记进度，不会叫醒主控；需要主控处理时写 `blocked:` 或 `needs-decision:`，全部完成写 `done:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。
@@ -1404,8 +1414,8 @@ REPORT
   fail('工人授权须显式配置名，不用auto') if grep { !id_ok($_) || $_ eq 'auto' } values %{$b->{workers}};
   fail('候选/attempt/policy/环境非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && string_ok($b->{candidate}) && string_ok($b->{environment}) && $b->{base}=~/\A[0-9a-f]{40,64}\z/ && ref($b->{required}) eq 'HASH' && keys(%{$b->{required}});
   my $scenarios=scenario($body);
-  my @scenarios=$scenarios =~ /^###\s+(user_[^\s]+)\s*$/mg;
-  fail('需要冻结的命名场景') unless @scenarios;
+  my @scenarios=scenario_names($scenarios);
+  fail('需要冻结的命名场景；场景标题须为 ### user_名字；带规划授权的票由主控向规划发修订请求，规划执行 plan-revision 加 revise；其余已迁票由主控 revise-scenarios') unless @scenarios;
   my %covered;
   for my $g (keys %{$b->{required}}) {
     fail('门/场景映射非法') unless $g=~/\A(fast|full)\z/ && ref($b->{required}{$g}) eq 'ARRAY' && @{$b->{required}{$g}};
@@ -1643,6 +1653,7 @@ REPORT
   fail('应用修订须CAS/明确source，不能覆盖在途claim') unless $expect ne '' && @args==1 && $args[0] eq $r->{source}{event} && !$data->{claim} && $r->{spec_rev}==$data->{spec_rev};
   fail('已验收历史不改') if accepted_history();
   fail('gate尚未显式交出旧验收标准') if $data->{gate} && (!$p->{revision_handoff} || $p->{revision_handoff}{spec_rev}!=$data->{spec_rev});
+  require_scenario_names($r->{scenarios});
   push @{$p->{revisions}},{spec_rev=>$data->{spec_rev},spec=>$p->{spec},constraints=>$p->{constraints},scenarios=>scenario($body),needs=>$p->{needs},source=>$r->{source},gate=>$data->{gate}};
   spec_replace($r->{spec},$r->{constraints},$r->{scenarios});
   $p->{spec}=$r->{spec}; $p->{constraints}=$r->{constraints}; $p->{needs}=$r->{needs}; graph_check('start',0);
@@ -1650,7 +1661,7 @@ REPORT
   $line="working: spec-revised source=$r->{source}{event} spec_rev=$data->{spec_rev} previous-evidence-retained-invalid"; append_body($line);
 } elsif ($cmd eq 'revise' || $cmd eq 'revise-scenarios') {
   fail('gate持旧spec或已验收历史，只能登记plan-revision并显式handoff') if $data && ($data->{gate} || $data->{phase} eq 'verified' || ($data->{claim} && $data->{claim}{owner} ne $actor));
-  fail('规划票修订须使用持久plan-revision/CAS') if $planner || ($data && $data->{planning});
+  fail('规划票修订须使用持久plan-revision/CAS；主控在承载该请求的入口票上用 qwb-send.sh send 给规划发修订请求，由规划执行 plan-revision 与 revise') if $planner || ($data && $data->{planning});
   my ($old,$new,$reason);
   if ($cmd eq 'revise-scenarios') {
     fail('规格修订必须给expect') if $expect eq '';

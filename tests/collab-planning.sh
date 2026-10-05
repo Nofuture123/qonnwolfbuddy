@@ -106,6 +106,9 @@ file.write_text(json.dumps(s))
         return '\n'.join(line for line in rows if int(line.split(None,4)[0]) in children)+'\n'
     step=0
     runtime_bin=ROOT/'bin'
+    if os.environ.get('QWB_SCENARIO_NAMES_BASELINE')=='1':
+        runtime_bin=temp/'scenario-baseline-bin'; shutil.copytree(ROOT/'bin',runtime_bin)
+        (runtime_bin/'qwb-ledger.sh').write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh']))
     def cli(script,*args,ok=True,actor='ctl',extra=None):
         global step
         step+=1; verb=str(args[0]) if args else 'status'; label=f'{step:03}-{verb}'
@@ -217,6 +220,112 @@ file.write_text(json.dumps(s))
     before=intake.read_bytes()
     call('append','intake.md','--','working: spec-resolved: planner grant cannot answer spec',actor='planner-pane',ok=False)
     assert intake.read_bytes()==before
+    def scenario_name_checks():
+        # 复用本文件的02/03身份、进程登记和失效关闭fakeHerdr；逐场景恢复原票。
+        selected=os.environ.get('QWB_SCENARIO_NAMES_ONLY')
+        initial={f:f.read_bytes() for f in (p/'tasks').glob('*.md')}
+        target=p/'tasks/B.md'
+        b_request=dict(request,package_id='B')
+        environment=temp/'scenario-environment'; environment.write_text('private dependencies\n')
+        binding={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
+        assignment=payload('scenario-gate.json',binding)
+        def create(block=scenarios):
+            return call('new','B.md','--',payload('scenario-new.json',dict(b_request,scenarios=block)),actor='planner-pane')
+        def reject_new(block,bad):
+            r=call('new','B.md','--',payload('scenario-new.json',dict(b_request,scenarios=block)),actor='planner-pane',ok=False)
+            assert r.returncode==255 and r.stdout=='' and not target.exists(),r
+            assert '### user_' in r.stderr and '示例：### user_正常路径_保存' in r.stderr and bad in r.stderr,r.stderr
+        def invalid_new():
+            reject_new(scenarios.replace('### user_good','### 单行内容').replace('### user_failure','### 失败路径'),'### 单行内容')
+            reject_new(scenarios.replace('### user_good\n','').replace('### user_failure\n',''),'至少一个')
+            for title in ['### user_', '###', '### user_bad extra']:
+                reject_new(scenarios.replace('### user_good',title),title)
+            # 场景外的user_标题不能充当门控冻结名。
+            reject_new(scenarios.replace('### user_good\n','').replace('### user_failure\n','')+'\n## 报告要求\n### user_later','至少一个')
+        def mixed_new(): reject_new(scenarios.replace('### user_failure','### 失败路径'),'### 失败路径')
+        def valid_gate():
+            create(); call('start-claim','B.md','--','scenario-worker','sol',actor='planner-pane')
+            call('dispatch','B.md','--','scenario-worker','scenario-pane',f'dispatch: 2099 op_id=scenario-worker worker=sol agent=scenario-worker pane=scenario-pane dir={p}',actor='planner-pane')
+            call('append','B.md','--','done: fixture clean candidate delivered',actor='scenario-pane')
+            call('release','B.md','--','scenario-worker',actor='planner-pane')
+            assert git('status','--porcelain=v1','--untracked-files=all')==''
+            call('gate-assign','B.md','--','gate',assignment)
+            assert read('B.md')['gate']['binding']['required']==binding['required']
+        def revision(block):
+            change=cli('qwb-send.sh','send','--task',intake,'--corr','scenario-change','--attempt','1','--text','请求规划修订B的场景标题').stdout.strip()
+            r={'source_task':'intake.md','source_event':change,'spec':'修订B','constraints':'单机，不联网','scenarios':block,'needs':b_request['needs']}
+            call('plan-revision','B.md','--expect',read('B.md')['rev'],'--',payload('scenario-revision.json',r),actor='planner-pane')
+            return change
+        def invalid_revision():
+            create(); change=revision(scenarios.replace('### user_failure','### 失败路径'))
+            before=target.read_bytes()
+            r=call('revise','B.md','--expect',read('B.md')['rev'],'--',change,actor='planner-pane',ok=False)
+            assert r.returncode!=0 and r.stdout=='' and target.read_bytes()==before,r
+            assert '### 失败路径' in r.stderr and '示例：### user_正常路径_保存' in r.stderr,r.stderr
+        def refusal_routes():
+            create(); before=target.read_bytes()
+            old_bin=temp/'scenario-refusal-bin'; shutil.copytree(ROOT/'bin',old_bin)
+            old_script=old_bin/'qwb-ledger-old.sh'
+            old_script.write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh']))
+            args=['--expect',str(read('B.md')['rev']),'--',scenarios,'修正命名']
+            old_result=cli(str(old_script),'revise-scenarios','--project',p,'--task',target,*args,ok=False)
+            r=call('revise-scenarios','B.md',*args,ok=False)
+            assert r.returncode==old_result.returncode and r.stdout==old_result.stdout=='' and target.read_bytes()==before,(old_result,r)
+            assert old_result.stderr=='账本拒绝：规划票修订须使用持久plan-revision/CAS\n',old_result.stderr
+            revise_route=r.stderr.startswith('账本拒绝：规划票修订须使用持久plan-revision/CAS') and all(s in r.stderr for s in ['主控','入口票','qwb-send.sh send','规划','plan-revision','revise'])
+            old=before.replace(b'### user_good', '### 单行内容'.encode()).replace(b'### user_failure', '### 失败路径'.encode())
+            target.write_bytes(old)
+            old_result=cli(str(old_script),'gate-assign','--project',p,'--task',target,'--','gate',assignment,ok=False)
+            r=call('gate-assign','B.md','--','gate',assignment,ok=False)
+            assert r.returncode==old_result.returncode and r.stdout==old_result.stdout=='' and target.read_bytes()==old,(old_result,r)
+            assert old_result.stderr=='账本拒绝：需要冻结的命名场景\n',old_result.stderr
+            gate_route=r.stderr.startswith('账本拒绝：需要冻结的命名场景') and all(s in r.stderr for s in ['### user_名字','主控','规划','plan-revision','revise','其余已迁票','revise-scenarios'])
+            assert revise_route and gate_route,('revise-route',revise_route,'gate-route',gate_route)
+        def byte_equivalence():
+            # 同bindir/依赖字节；只冻结观察副本的时钟与event_id，完整对比CLI结果与票字节。
+            byte_bin=temp/'scenario-byte-bin'; shutil.copytree(ROOT/'bin',byte_bin)
+            versions=[]
+            for label,raw in [('old',subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh'])),('new',(ROOT/'bin/qwb-ledger.sh').read_bytes())]:
+                assert raw.count(b'use Time::HiRes qw(time);')==1 and raw.count(b',gmtime)')==2
+                script=byte_bin/('qwb-ledger-'+label+'.sh')
+                script.write_bytes(raw.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { 2099000000 }').replace(b',gmtime)',b',gmtime(2099000000))'))
+                versions.append(script)
+            def compare(verb,*args,actor='ctl',expect=None):
+                before={f:f.read_bytes() for f in (p/'tasks').glob('*.md')}; results=[]
+                try:
+                    for script in versions:
+                        extra=['--expect',str(expect)] if expect is not None else []
+                        r=cli(str(script),verb,'--project',p,'--task',target,'--event-id','scenario-'+verb,*extra,'--',*args,actor=actor)
+                        results.append((r.returncode,r.stdout.encode(),r.stderr.encode(),target.read_bytes()))
+                        for f in (p/'tasks').glob('*.md'):
+                            if f not in before: f.unlink()
+                        for f,raw in before.items(): f.write_bytes(raw)
+                    assert results[0]==results[1],(verb,results)
+                    target.write_bytes(results[1][3])
+                except BaseException:
+                    for f,raw in before.items(): f.write_bytes(raw)
+                    raise
+            compare('new',payload('scenario-new.json',b_request),actor='planner-pane')
+            change=revision(scenarios)
+            compare('revise',change,actor='planner-pane',expect=read('B.md')['rev'])
+            compare('gate-assign','gate',assignment)
+            assert read('B.md')['spec_rev']==1 and read('B.md')['gate']['binding']['required']==binding['required']
+        checks=[('invalid-new',invalid_new),('mixed-new',mixed_new),('valid-gate',valid_gate),('invalid-revision',invalid_revision),('refusal-routes',refusal_routes),('byte-equivalence',byte_equivalence)]
+        failed=0
+        for name,check in checks:
+            if selected and selected not in ('all',name): continue
+            try:
+                check(); print('PASS scenario-names '+name,flush=True)
+            except AssertionError as error:
+                failed+=1; print('FAIL scenario-names '+name+': '+repr(error),flush=True)
+            finally:
+                for f in (p/'tasks').glob('*.md'):
+                    if f not in initial: f.unlink()
+                for f,raw in initial.items(): f.write_bytes(raw)
+        assert not failed, ('scenario-names failures',failed)
+    scenario_name_checks()
+    if os.environ.get('QWB_SCENARIO_NAMES_ONLY'):
+        raise SystemExit(0)
     def upward_checks():
         # 真实公开开票/授权/派发；不启动工人模型。所有native操作都经过本文件fake Herdr。
         name='Up.md'; ticket=p/'tasks'/name; intake_name='UpIntake.md'
