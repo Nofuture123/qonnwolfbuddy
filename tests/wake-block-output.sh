@@ -215,7 +215,7 @@ if baseline:
             results.append((r.stdout,r.stderr,r.returncode,normalized(ticket.read_bytes()),calls.read_bytes()))
         assert results[0]==results[1],(name,results)
         print('BYTE_COMPARE '+name+' stdout/stderr/rc/wake/calls identical')
-    # 已迁协作票：公开迁移、真实 working/done handoff 均由固定旧脚本与新脚本分别读写。
+    # 已迁协作票只对未命中A/B/C的真实动作做字节比较；纯working静默由planning用例验证。
     ticket.write_text('state: running\n'); proof=p/'migration-regression.json'
     proof.write_text(json.dumps({'task_sha256':hashlib.sha256(ticket.read_bytes()).hexdigest(),
        'confirm':{k:'fixture stopped; no external actions' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}}))
@@ -223,7 +223,7 @@ if baseline:
         r=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-ledger.sh'),args[0],'--project',str(p),'--task',str(ticket),*args[1:]],env=env,capture_output=True,timeout=30)
         assert r.returncode==0,(args,r.stdout,r.stderr)
     ledger('migrate','--',str(proof))
-    ledger('append','--event-id','progress','--','working: 已迁票保留持久交接')
+    ledger('append','--event-id','spec-resolution','--','working: spec-resolved: 已迁票保留真实规格处置交接')
     ledger('append','--event-id','completion','--','done: 已迁票完整成果')
     raw=ticket.read_bytes(); results=[]
     for source in [baseline.read_bytes(),current]:
@@ -231,7 +231,7 @@ if baseline:
         r=run('--block','--max-ms','100',rc=2)
         results.append((r.stdout,r.stderr,r.returncode,normalized(ticket.read_bytes()),calls.read_bytes()))
     assert results[0]==results[1],('collab',results)
-    assert b'progress' in results[1][0] and b'completion' in results[1][0]
+    assert b'spec-resolution' in results[1][0] and b'completion' in results[1][0]
     # 已迁票 dry-run 仍沿基线判定，末行 working 不适用本票新规则。
     ledger('append','--event-id','tail-progress','--','working: 成果后仍有进展')
     raw=ticket.read_bytes(); dry_results=[]

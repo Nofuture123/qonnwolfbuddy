@@ -1030,9 +1030,11 @@ record_transport() {
   [[ "$summary" == '[qwb-handoff] '* ]] || return 0
   # 确认严格绑定collect_due的旧批次；并发到达的新事件不得被这次传输消费。
   while IFS=$'\t' read -r id mode role pane retry; do
-    local args=()
-    if [[ "$mode" != normal ]]; then args=(--mode "$mode" --route-role "$role" --route-pane "$pane" --retry-ms "$retry"); fi
-    bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" "${args[@]}" >/dev/null || return 1
+    if [[ "$mode" == normal ]]; then
+      bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" >/dev/null || return 1
+    else
+      bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" --mode "$mode" --route-role "$role" --route-pane "$pane" --retry-ms "$retry" >/dev/null || return 1
+    fi
   done < <(printf '%s' "${summary#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
     binmode STDOUT, ":encoding(UTF-8)";
     for my $h (@{decode_json(<STDIN>)}) {
