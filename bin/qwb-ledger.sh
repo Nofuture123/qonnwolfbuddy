@@ -91,7 +91,7 @@ if [[ "$CMD" == test-request ]]; then
   TEST_IDENTITY="$(qwb_gate_identity "$ROOT" "${3:-}" '测试体系')" || exit 1
 fi
 PROGRESS_CLASSIFIER=''
-if [[ "$CMD" == handoff-* ]]; then PROGRESS_CLASSIFIER="$(qwb_task_obligations_json --progress-classifier)"; fi
+if [[ "$CMD" == handoff-* || "$CMD" == release ]]; then PROGRESS_CLASSIFIER="$(qwb_task_obligations_json --progress-classifier)"; fi
 exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$PROGRESS_CLASSIFIER" "$@" <<'PERL'
 # Keep native refusal diagnostics at the baseline 8d897cd Perl source positions.
 #line 1
@@ -634,9 +634,14 @@ sub new_handoff {
 }
 # 只求值qwb-lib内的固定分类定义，数据从参数传入，绝不求值payload。
 my $pure_progress;
-if ($cmd =~ /\Ahandoff-/) {
+if ($cmd =~ /\Ahandoff-/ || $cmd eq 'release') {
   $pure_progress=eval $progress_classifier;
   fail('纯进度分类不可用') unless ref($pure_progress) eq 'CODE';
+}
+sub gate_release_source { $pure_progress->($data,$_[0],undef,'release') }
+sub gate_release_payload {
+  my ($e,$v)=@_;
+  return "门禁已交还 claim；op=$e->{op_id}；结论=$v->{event_id}；$v->{line}；下一步：claim，accepted 时 land-authorize；rediagnose 先技术重诊。";
 }
 sub gate_assignment_handoff {
   my $h=shift; my $e=$data->{events}[$h->{source_seq}-1];
@@ -724,6 +729,8 @@ sub ensure_planner_result {
 }
 sub planner_controller_hint {
   my $h=shift;
+  my $e=$data->{events}[$h->{source_seq}-1];
+  return '门禁已交还；下一步：claim，accepted 时 land-authorize' if $h->{event_id} eq source_id($e->{event_id}) && $h->{corr} eq $h->{event_id} && gate_release_source($e);
   return '' unless planner_manages_handoffs();
   my $g=$data->{gate};
   return '' if grep { source_id($_->{event_id}) eq $h->{event_id} } values %{$data->{test_requests} // {}};
@@ -731,7 +738,6 @@ sub planner_controller_hint {
   return '门禁 rediagnose；下一步：主控安排技术重诊' if $g && $g->{verdict} eq 'rediagnose';
   my $original=$data->{handoffs}{source_id($h->{source_event})} // $data->{handoffs}{$h->{source_event}};
   return '规划办理结果；下一步：主控读回结果' if $original && planner_result_source($original) && $h->{event_id} eq planner_result_id($original) && $h->{corr} eq $h->{event_id} && $h->{attempt} eq '1' && $h->{payload} eq planner_result_payload($original);
-  my $e=$data->{events}[$h->{source_seq}-1];
   return '迁入核查；下一步：主控核对旧义务' if $e->{kind} eq 'migrate';
   my $worker_source=worker_handoff_source($h);
   return '工人已交付；下一步：主控安排门禁' if $worker_source && $worker_source->{kind} eq 'done';
@@ -1485,10 +1491,10 @@ REPORT
     my $added=0;
     for my $e (@{$data->{events}}) {
       # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
-      next unless $e->{kind} eq 'migrate' || $e->{kind} eq 'gate-assign' || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      next unless $e->{kind} eq 'migrate' || $e->{kind} eq 'gate-assign' || gate_release_source($e) || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
       my $id=source_id($e->{event_id});
       next if exists $data->{handoffs}{$id};
-      my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{kind} eq 'gate-assign' ? gate_assignment_payload($e) : $e->{line};
+      my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{kind} eq 'gate-assign' ? gate_assignment_payload($e) : gate_release_source($e) ? gate_release_payload($e,gate_release_source($e)) : $e->{line};
       $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$payload); $added++;
     }
     # 旧版本已由规划handled的工人问题可恢复上行；与正常handled使用同一幂等键。
@@ -1797,6 +1803,11 @@ if ($data) {
   if ($cmd eq 'gate-assign') {
     my $e=$data->{events}[-1]; my $id=source_id($event);
     $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,gate_assignment_payload($e));
+  }
+  if ($cmd eq 'release' && (my $v=gate_release_source($data->{events}[-1]))) {
+    my $e=$data->{events}[-1]; my $id=source_id($event);
+    $line=gate_release_payload($e,$v); $e->{line}="working: $line"; append_body($e->{line});
+    $data->{handoffs}{$id}=new_handoff($id,$id,'1',$e,$line);
   }
   if ($handoff_return) {
     $data->{handoffs}{$event}=new_handoff($event,$handoff_return->[0],$handoff_return->[1],$data->{events}[-1],$handoff_return->[2]);

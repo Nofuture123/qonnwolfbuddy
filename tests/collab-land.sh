@@ -24,7 +24,7 @@ with TemporaryDirectory(prefix='qwb-land-') as tmp:
     integration=tmp/'integration.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
     (p/'qwbuddy/config.sh').write_text(f"QWB_WORKERS='sol reviewer'\nQWB_WORKSPACE='ws'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='{integration}'\nQWB_GATE_FAST='test -f product.txt'\nQWB_GATE_FULL='test -s product.txt'\n")
     (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_family openai-codex/gpt-6.1-sol gpt\nqwb_family openai-codex/gpt-6-astra gpt\nqwb_family anthropic/claude-opus-4-6 claude\n')
-    (p/'tasks').mkdir(); (p/'.gitignore').write_text('qwbuddy/.roles/\nqwbuddy/.controller.lock/\n.worktrees/\ntasks/*.qwb-*\n')
+    (p/'tasks').mkdir(); (p/'.gitignore').write_text('qwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\n.worktrees/\ntasks/*.qwb-*\n')
     (p/'product.txt').write_text('seed\n'); (p/'tasks/live.md').write_text('live seed\n')
     def git(*args,at=p): return subprocess.check_output(['git','-C',str(at),*args],text=True).strip()
     git('init','-qb','main'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
@@ -137,8 +137,9 @@ exec "$LAND_REAL_MV" "$@"
     atexit.register(close_api)
     env['LAND_SOCKET']=sockpath
     runtime=ROOT/'bin'
+    notify_runtime=False
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
-        r=subprocess.run(['bash',str(runtime/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
+        r=subprocess.run(['bash',str(p/'qwbuddy/bin'/script if notify_runtime else runtime/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))
         assert (r.returncode==0)==ok,(r.returncode,r.stdout,r.stderr)
         return r
@@ -151,7 +152,10 @@ exec "$LAND_REAL_MV" "$@"
             fact['candidate_binding']={k:l['context'][k] for k in ['candidate','head','tree','base','spec_rev','scenarios_fp','policy']}
             print('EVIDENCE '+json.dumps({'phase':d['phase'],'claim':d['claim'],'land':fact,'actual_main':git('rev-parse','main')},ensure_ascii=False))
         return d
-    def accepted(name,base=None,change='product.txt',actor='ctl',check_environment=False):
+    def accepted(name,base=None,change='product.txt',actor='ctl',check_environment=False,gate_actor=None):
+        global notify_runtime
+        # gate_actor additionally exercises the release notification; actor alone only changes the gate identity.
+        notify=gate_actor=='gate-pane'; actor=gate_actor or actor
         base=base or git('rev-parse','main'); c=p/'.worktrees'/name
         git('worktree','add','-qb',name,str(c),base)
         (c/change).write_text(name+'\n'); git('add',change,at=c);git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm',name,at=c)
@@ -181,8 +185,47 @@ exec "$LAND_REAL_MV" "$@"
             assert result.stderr=='账本拒绝：缺当前两轴通过审核\n' and t.read_bytes()==before,(result.stdout,result.stderr)
             print('PASS changed gate PATH refuses gate-verdict with unchanged ticket')
         ledger('gate-verdict',t,op,'accepted',actor=actor)
-        ledger('release',t,op,actor=actor); op='land-'+name;ledger('claim',t,op)
+        if notify:
+            # Main has already consumed the verdict: release must independently wake it.
+            for h in json.loads(call('qwb-send.sh','pending','--task',t).stdout):
+                hid=h['event_id'];hop='notify-'+hashlib.sha256(hid.encode()).hexdigest()
+                ref=p/'qwbuddy/.roles'/('result-'+hop+'.json')
+                ref.write_text(json.dumps(dict(event_id=hid,op_id=hop,outcome='applied',evidence='public readback before release')))
+                for verb in ['received','accept','prepared','handled']:
+                    args=['--task',t,'--event',hid]
+                    if verb!='received':args+=['--op',hop]
+                    if verb=='handled':args+=['--result-ref',ref]
+                    call('qwb-send.sh',verb,*args)
+            scripts={s:(p/'qwbuddy/bin'/s).read_bytes() for s in ['qwb-ledger.sh','qwb-lib.sh','qwb-send.sh','qwb-wake.sh']}
+            notify_runtime=True
+            try:
+                if os.environ.get('QWB_NOTIFY_BASELINE')=='1':
+                    for s in scripts:(p/'qwbuddy/bin'/s).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/'+s]))
+                ledger('release',t,op,actor=actor)
+                native=Path(env['LAND_NATIVE_LOG']);native.write_text('')
+                call('qwb-wake.sh','--once','--pane','ctl')
+                routes=[a for a in map(json.loads,native.read_text().splitlines()) if isinstance(a,list) and a[:2]==['pane','run']]
+                print('EVIDENCE notify D release',routes,flush=True)
+                assert len(routes)==1 and routes[0][2]=='ctl' and 'claim' in routes[0][3] and 'land-authorize' in routes[0][3], 'released acceptance has no controller doorbell'
+                d=read(t);release=d['events'][next(i for i,e in enumerate(d['events']) if e['kind']=='release' and e['op_id']==op)]
+                hid='source:'+release['event_id']
+                assert hid in d['handoffs'] and d['handoffs'][hid]['transport_count']==1 and d['claim'] is None
+                call('qwb-wake.sh','--once','--pane','ctl')
+                assert read(t)['handoffs'][hid]['transport_count']==1
+                print('PASS notify D：accepted通知已办理后release仍独立门铃一次，摘要给claim/land-authorize，重启去重且claim已释放',flush=True)
+            finally:
+                for s,raw in scripts.items():(p/'qwbuddy/bin'/s).write_bytes(raw)
+                notify_runtime=False
+        else:ledger('release',t,op,actor=actor)
+        op='land-'+name;ledger('claim',t,op)
         return t,c,op,base,git('rev-parse','HEAD',at=c)
+    if os.environ['QWB_LAND_CASE']=='all' or os.environ.get('QWB_NOTIFY_ONLY')=='D':
+        t,c,op,m,head=accepted('notify-release',gate_actor='gate-pane')
+        ledger('land-authorize',t,op,'notify-release-auth','main','fixture explicit land after release','tasks/notify-release.md')
+        assert read(t)['land']['after']==head
+        if os.environ.get('QWB_NOTIFY_ONLY')=='D':raise SystemExit(0)
+        # Restore only this private scenario before unrelated legacy land fixtures.
+        git('worktree','remove',str(c));git('branch','-D','notify-release');t.unlink()
     def dead_generation():
         child=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
                                stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)

@@ -387,8 +387,17 @@ qwb_task_obligations_json() {
   # 同一段可信本地分类供义务读模与ledger due复用；不从账本执行代码。
   # shellcheck disable=SC2016 # Perl变量必须原样传入两个消费者。
   local progress='sub {
-    my ($d,$e,$h)=@_;
+    my ($d,$e,$h,$mode)=@_;
     return 0 unless $e;
+    if (($mode // "") eq "release") {
+      my $g=$d->{gate};
+      return unless $g && $e->{kind} eq "release" && $e->{actor} eq $g->{identity}{pane};
+      my ($claim)=grep { $_->{seq}<$e->{seq} && $_->{kind} eq "claim" && $_->{actor} eq $e->{actor} && $_->{op_id} eq $e->{op_id} } reverse @{$d->{events}};
+      return unless $claim;
+      my ($verdict)=grep { $_->{seq}>$claim->{seq} && $_->{seq}<$e->{seq} && $_->{kind} eq "gate-verdict" } reverse @{$d->{events}};
+      return $verdict if $verdict && $verdict->{actor} eq $e->{actor} && $verdict->{line}=~/^working: gate-verdict verdict=(accepted|rediagnose) /;
+      return;
+    }
     if ($h) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
       return 0 unless $h->{event_id} eq $id && $h->{corr} eq $id && $h->{source_event} eq $e->{event_id};
