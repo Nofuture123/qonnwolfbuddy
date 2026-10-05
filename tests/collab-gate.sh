@@ -107,7 +107,7 @@ print $output $json->encode($s);
 close $output;
 ''')
     for f in stub.iterdir(): f.chmod(0o755)
-    env=os.environ|{'PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','GATE_PROJECT':str(p),'GATE_NATIVE_PID':str(os.getpid()),'GATE_NATIVE_STATE':str(state),'GATE_NATIVE_LOG':str(tmp/'native-calls.jsonl'),'GATE_CANDIDATES':json.dumps(list(map(str,[ca,cb,cc])))}
+    env=os.environ|{'LC_ALL':'','PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','GATE_PROJECT':str(p),'GATE_NATIVE_PID':str(os.getpid()),'GATE_NATIVE_STATE':str(state),'GATE_NATIVE_LOG':str(tmp/'native-calls.jsonl'),'GATE_CANDIDATES':json.dumps(list(map(str,[ca,cb,cc])))}
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
         argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else ROOT/'bin'/script)]
         argv += ['--project',str(p),verb,*map(str,args)] if script=='qwb-run.sh' else [verb,'--project',str(p),*map(str,args)]
@@ -142,6 +142,10 @@ close $output;
     brequest=json.loads(request.read_text());brequest['candidate']=str(cb);request.write_text(json.dumps(brequest))
     call('qwb-ledger.sh','gate-assign','--task',bt,'--','gate',request)
     call('qwb-ledger.sh','claim','--task',bt,'--','accept-B',actor='gate-pane')
+    direct=call('qwb-ledger.sh','gate-context','--task',t,'--','accept-A',actor='gate-pane').stdout
+    wrapped=call('qwb-ledger.sh','gate-context','--task',t,'--','accept-A',actor='gate-pane',extra={'LC_ALL':'C'}).stdout
+    assert direct==wrapped,('wrapper LC_ALL changes gate context',direct,wrapped)
+    print('PASS 门控直接采样与包装脚本LC_ALL=C上下文逐字节一致；后续实际run审核/返修沿用同一环境')
     def prompt_enter(ticket,candidate,op,worker,kind,name):
         clock=tmp/'prompt-clock'; clock.write_text('0\n')
         now=tmp/'prompt-now.sh'; now.write_text('#!/bin/sh\ncat "$GATE_PROMPT_CLOCK"\n'); now.chmod(0o755)

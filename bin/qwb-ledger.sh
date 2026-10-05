@@ -779,7 +779,7 @@ sub spec_body {
 }
 #line 572
 sub gate_context {
-  my $observe=shift // 0;
+  my ($observe,$environment_sha256)=@_; $observe //= 0;
   my $g=$data->{gate} // fail('未授权门禁'); my $b=$g->{binding};
   fail('规格/场景已变；原收据失效，交主控重授权') unless $observe || $data->{spec_rev}==$b->{spec_rev} && scen_fp($body) eq $b->{scenarios_fp};
   my $spec=spec_body($body);
@@ -798,20 +798,26 @@ sub gate_context {
     fail('必需门未配置') if $cmd eq '';
     $commands{$name}=sha256_hex($cmd);
   }
-  my %environment=map { $_=>($ENV{$_} // '') } qw(PATH LANG LC_ALL LC_CTYPE CI NODE_ENV BASH_ENV SHELLOPTS);
-  $environment{dependency}=sha256_hex($envbody);
-  fail('相关工具环境无法绑定相对/空PATH目录') if grep { !m{\A/} } split /:/,($ENV{PATH} // ''),-1;
-  for my $tool (qw(git bash perl python3 shellcheck herdr date ps shasum)) {
-    my ($path)=grep { -f $_ && -x $_ } map { "$_/$tool" } split /:/,($ENV{PATH} // '');
-    if (defined $path) {
-      $path=realpath($path) // fail("环境工具路径未知: $tool");
-      open my $binary,'<',$path or fail("环境工具不可读: $tool"); binmode $binary;
-      my $digest=Digest::SHA->new(256); $digest->addfile($binary); close $binary;
-      $environment{"tool:$tool"}=$digest->hexdigest;
-    } else { $environment{"tool:$tool"}='missing' }
+  # land只沿用已通过审核的执行环境；门控各步仍现场采样全部环境/工具。
+  unless (defined $environment_sha256) {
+    # 包装脚本按字节解析而设置LC_ALL=C；摘要与版本输出使用同一语言环境。
+    local $ENV{LC_ALL}='C';
+    my %environment=map { $_=>($ENV{$_} // '') } qw(PATH LANG LC_ALL LC_CTYPE CI NODE_ENV BASH_ENV SHELLOPTS);
+    $environment{dependency}=sha256_hex($envbody);
+    fail('相关工具环境无法绑定相对/空PATH目录') if grep { !m{\A/} } split /:/,($ENV{PATH} // ''),-1;
+    for my $tool (qw(git bash perl python3 shellcheck herdr date ps shasum)) {
+      my ($path)=grep { -f $_ && -x $_ } map { "$_/$tool" } split /:/,($ENV{PATH} // '');
+      if (defined $path) {
+        $path=realpath($path) // fail("环境工具路径未知: $tool");
+        open my $binary,'<',$path or fail("环境工具不可读: $tool"); binmode $binary;
+        my $digest=Digest::SHA->new(256); $digest->addfile($binary); close $binary;
+        $environment{"tool:$tool"}=$digest->hexdigest;
+      } else { $environment{"tool:$tool"}='missing' }
+    }
+    $environment{git}=capture('git','--version');
+    $environment{bash}=capture('bash','--version'); $environment{system}=capture('uname','-sm');
+    $environment_sha256=sha256_hex($json->encode(\%environment));
   }
-  $environment{git}=capture('git','--version');
-  $environment{bash}=capture('bash','--version'); $environment{system}=capture('uname','-sm');
   # 配置是可信shell，但采样放在source之后，不能把配置副作用之前的HEAD冒充当前对象。
   my $head=capture('git','-C',$c,'rev-parse','HEAD'); my $tree=capture('git','-C',$c,'rev-parse','HEAD^{tree}');
   fail('候选已变但未登记新attempt') unless $observe || ($head eq $b->{head} && $tree eq $b->{tree});
@@ -824,7 +830,7 @@ sub gate_context {
     $policy{test_policy_sha256}=test_policy($b->{policy});
     fail('策略内容已变；保留旧版，显式修订后重授权') unless $observe || $policy{test_policy_sha256} eq $b->{test_policy_sha256};
   }
-  return {%policy,task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>sha256_hex($json->encode(\%environment))};
+  return {%policy,task=>text($file),project=>text($root),candidate=>$b->{candidate},attempt=>$b->{attempt},base=>$b->{base},workers=>$b->{workers},worker_profiles=>$b->{worker_profiles},workers_sha256=>sha256_hex($worker_config),head=>$head,tree=>$tree,status=>$dirty eq '' ? 'clean' : 'dirty',dirty_sha256=>sha256_hex($dirty),spec_rev=>$data->{spec_rev},spec_sha256=>sha256_hex(encode('UTF-8',$spec)),scenarios_fp=>scen_fp($body),policy=>$b->{policy},required=>$b->{required},config=>text($conf),config_sha256=>sha256_hex($cfg),commands=>\%commands,environment_sha256=>$environment_sha256};
 }
 # land复用已accept的04证据；不授门禁新权限，不在main锁里跑门/审核。
 sub last_spec_event {
@@ -834,7 +840,8 @@ sub last_spec_event {
 }
 #line 621
 sub land_ready {
-  my $c=gate_context(); my $g=$data->{gate};
+  my $g=$data->{gate};
+  my $c=gate_context(0,$g && $g->{verdict} eq 'accepted' && @{$g->{reviews}} ? $g->{reviews}[-1]{review}{context}{environment_sha256} : undef);
   fail('未验收或验收条件已变') unless $g->{verdict} eq 'accepted' && $c->{status} eq 'clean' && @{$g->{reviews}} && $json->encode($g->{reviews}[-1]{review}{context}) eq $json->encode($c);
   for my $id (keys %{$g->{dispatches}}) {
     fail('仍有在途审核/返修') if child_in_flight($id);
@@ -994,7 +1001,7 @@ if ($cmd eq 'land-authorize') {
     land_md_snapshot($l); $l->{stage}='prepared'; $l->{prepared_at}=int(time()*1000);
   } elsif ($cmd eq 'land-apply') {
     fail('须先prepared') unless $l->{stage}=~/\A(prepared|landed)\z/;
-    # 重采环境/命令在main锁外；锁内只复核固定OID、工作现场、owner和执行ff。
+    # 重采候选/命令在main锁外；锁内只复核固定OID、工作现场、owner和执行ff。
     my $c=land_ready(); fail('land候选/验收条件已变') unless $json->encode($c) eq $json->encode($l->{context});
     my $common=capture('git','-C',$root,'rev-parse','--path-format=absolute','--git-common-dir');
     $land_guard=safe_open("$common/qwb-land-main.lock",O_RDWR|O_CREAT);

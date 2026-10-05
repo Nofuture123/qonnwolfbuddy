@@ -136,8 +136,9 @@ exec "$LAND_REAL_MV" "$@"
         api.close(); thread.join(timeout=20)
     atexit.register(close_api)
     env['LAND_SOCKET']=sockpath
+    runtime=ROOT/'bin'
     def call(script,verb,*args,actor='ctl',ok=True,extra=None):
-        r=subprocess.run(['bash',str(ROOT/'bin'/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
+        r=subprocess.run(['bash',str(runtime/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))
         assert (r.returncode==0)==ok,(r.returncode,r.stdout,r.stderr)
         return r
@@ -150,7 +151,7 @@ exec "$LAND_REAL_MV" "$@"
             fact['candidate_binding']={k:l['context'][k] for k in ['candidate','head','tree','base','spec_rev','scenarios_fp','policy']}
             print('EVIDENCE '+json.dumps({'phase':d['phase'],'claim':d['claim'],'land':fact,'actual_main':git('rev-parse','main')},ensure_ascii=False))
         return d
-    def accepted(name,base=None,change='product.txt'):
+    def accepted(name,base=None,change='product.txt',actor='ctl',check_environment=False):
         base=base or git('rev-parse','main'); c=p/'.worktrees'/name
         git('worktree','add','-qb',name,str(c),base)
         (c/change).write_text(name+'\n'); git('add',change,at=c);git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm',name,at=c)
@@ -159,15 +160,28 @@ exec "$LAND_REAL_MV" "$@"
         ledger('migrate',t,m)
         environment=tmp/'environment';environment.write_text('fixture v1\n')
         req=tmp/'assignment.json';req.write_text(json.dumps({'candidate':str(c),'base':base,'attempt':'1','policy':'v1','environment':str(environment),'required':{'full':['user_success','user_reject']},'workers':{'review':'reviewer','rework':'sol'}}))
-        ledger('gate-assign',t,'gate',req); op='accept-'+name;ledger('claim',t,op)
+        ledger('gate-assign',t,'gate',req); op='accept-'+name;ledger('claim',t,op,actor=actor)
         report=tmp/(name+'-full.json')
-        call('qwb-test.sh','full','--project',c,'--task',t,'--ledger-project',p,'--op',op,'--report',report)
+        call('qwb-test.sh','full','--project',c,'--task',t,'--ledger-project',p,'--op',op,'--report',report,actor=actor)
         def session(sid,model,provider,family,effort):
             f=tmp/(sid+'.jsonl');f.write_text('\n'.join(json.dumps(x) for x in [{'type':'session','id':sid,'cwd':str(p)},{'type':'model_change','modelId':model,'provider':provider},{'type':'thinking_level_change','thinkingLevel':effort}])+'\n')
             return {'model':model,'family':family,'session':sid,'evidence':str(f)}
         review=tmp/(name+'-review.json');review.write_text(json.dumps({'context':json.loads(report.read_text())['after'],'implementer':session('impl-'+name,'gpt-6.1-sol','openai-codex','gpt','high'),'reviewer':session('rev-'+name,'claude-opus-4-6','anthropic','claude','low'),'standards':'pass','spec':'pass','covered':['user_success','user_reject'],'findings':[]}))
-        ledger('gate-review',t,op,review);ledger('gate-verdict',t,op,'accepted')
-        ledger('release',t,op); op='land-'+name;ledger('claim',t,op)
+        changed={'PATH':env['PATH']+':'+str(tmp)}
+        if check_environment:
+            before=t.read_bytes()
+            for verb,evidence,message in [('gate-receipt',report,'收据对象/规格/策略/命令/配置/环境不匹配'),('gate-review',review,'审核不是当前精确对象')]:
+                result=ledger(verb,t,op,evidence,actor=actor,extra=changed,ok=False)
+                assert result.stderr=='账本拒绝：'+message+'\n' and t.read_bytes()==before,(result.stdout,result.stderr)
+                print('PASS changed gate PATH refuses '+verb+' with unchanged ticket')
+        ledger('gate-review',t,op,review,actor=actor)
+        if check_environment:
+            before=t.read_bytes()
+            result=ledger('gate-verdict',t,op,'accepted',actor=actor,extra=changed,ok=False)
+            assert result.stderr=='账本拒绝：缺当前两轴通过审核\n' and t.read_bytes()==before,(result.stdout,result.stderr)
+            print('PASS changed gate PATH refuses gate-verdict with unchanged ticket')
+        ledger('gate-verdict',t,op,'accepted',actor=actor)
+        ledger('release',t,op,actor=actor); op='land-'+name;ledger('claim',t,op)
         return t,c,op,base,git('rev-parse','HEAD',at=c)
     def dead_generation():
         child=subprocess.Popen(['python3','-u','-c',"import os,sys; print(os.getpid(),flush=True); sys.stdin.readline()"],
@@ -179,6 +193,76 @@ exec "$LAND_REAL_MV" "$@"
             return {'pid':pid,'pid_start':start}
         finally:
             if child.poll() is None: child.terminate(); child.wait(timeout=20)
+    if os.environ['QWB_LAND_CASE']=='env-digest':
+        env['LC_ALL']='';env['LANG']='en_US.UTF-8'
+        t,c,op,m,head=accepted('env-digest',actor='gate-pane',check_environment=True)
+        approved=read(t)['gate']['reviews'][-1]['review']['context']
+        other={'PATH':env['PATH']+':'+str(tmp),'LANG':'C'}
+        ref='auth-env'
+        ledger('land-authorize',t,op,ref,'main','different controller environment','tasks/env-digest.md','tasks/live.md',extra=other)
+        assert read(t)['land']['context']==approved
+        call('qwb-worktree.sh','land','env-digest','--op',op,'--auth-ref',ref,extra=other)
+        d=read(t)
+        assert git('rev-parse','main')==head and d['phase']=='verified' and not c.exists()
+        assert d['land']['stage']=='closed' and d['land']['context']==approved
+        print('PASS different controller PATH/LANG and wrapper LC_ALL land exact accepted candidate')
+        sys.exit(0)
+    if os.environ['QWB_LAND_CASE']=='env-compat':
+        t,c,op,m,head=accepted('env-compat',check_environment=True)
+        snapshot=tmp/'env-snapshot';shutil.copytree(p,snapshot)
+        runtime=tmp/'env-bin';shutil.copytree(ROOT/'bin',runtime)
+        native=Path(env['LAND_NATIVE_STATE']);saved_native=native.read_bytes()
+        old=subprocess.check_output([real_git,'-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh']).decode()
+        new=(ROOT/'bin/qwb-ledger.sh').read_text()
+        evidence=[]
+        for version,source in [('base',old),('current',new)]:
+            shutil.rmtree(p);shutil.copytree(snapshot,p);native.write_bytes(saved_native)
+            source=source.replace("$event=unpack('H*',$bytes);",'$event=sprintf("%032x",$data->{seq});')
+            source=source.replace('int(time()*1000)','1791158400000')
+            source=source.replace("at=>strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)","at=>'2026-10-05T00:00:00Z'")
+            (runtime/'qwb-ledger.sh').write_text(source)
+            results=[]
+            def record(script,verb,*args,**kw):
+                result=call(script,verb,*args,**kw)
+                results.append((result.returncode,result.stdout,result.stderr,t.read_bytes()))
+                return result
+            ref='auth-compat'
+            # Freeze only clock/event entropy; compare real public CLI output and ticket bytes.
+            record('qwb-ledger.sh','gate-receipt','--task',t,'--',op,tmp/'env-compat-full.json')
+            record('qwb-ledger.sh','gate-review','--task',t,'--',op,tmp/'env-compat-review.json')
+            record('qwb-ledger.sh','gate-verdict','--task',t,'--',op,'accepted')
+            record('qwb-ledger.sh','land-authorize','--task',t,'--',op,ref,'main','same environment','tasks/env-compat.md','tasks/live.md')
+            authorized=t.read_bytes()
+            for stage in ['land-authorize','land-prepare','land-apply']:
+                t.write_bytes((snapshot/'tasks/env-compat.md').read_bytes() if stage=='land-authorize' else authorized)
+                if stage=='land-apply':ledger('land-prepare',t,op,ref)
+                clean=t.read_bytes()
+                for mutation,message in [('dirty','未验收或验收条件已变'),('spec','规格正文已变'),('scenarios','规格/场景已变；原收据失效，交主控重授权'),('commit','候选已变但未登记新attempt')]:
+                    before_head=git('rev-parse','HEAD',at=c)
+                    if mutation=='dirty':(c/'dirty.txt').write_text('dirty\n')
+                    elif mutation=='spec':t.write_text(t.read_text().replace('# env-compat','# revised spec',1))
+                    elif mutation=='scenarios':t.write_text(t.read_text().replace('Given candidate','Given changed candidate',1))
+                    else:
+                        # A real descendant; restore only this private fixture ref afterwards.
+                        tree=git('rev-parse','HEAD^{tree}',at=c)
+                        changed=git('-c','user.name=Test','-c','user.email=test@invalid','commit-tree',tree,'-p',before_head,'-m','changed candidate',at=c)
+                        git('update-ref','refs/heads/env-compat',changed,before_head)
+                    before=t.read_bytes()
+                    args=[op,ref,'main','same environment','tasks/env-compat.md','tasks/live.md'] if stage=='land-authorize' else [op,ref]
+                    result=record('qwb-ledger.sh',stage,'--task',t,'--',*args,ok=False)
+                    assert result.stderr=='账本拒绝：'+message+'\n' and t.read_bytes()==before and git('rev-parse','main')==m,(mutation,result.stderr)
+                    if mutation=='dirty':(c/'dirty.txt').unlink()
+                    elif mutation=='commit':git('update-ref','refs/heads/env-compat',before_head,changed)
+                    t.write_bytes(clean)
+            t.write_bytes(authorized)
+            record('qwb-worktree.sh','land','env-compat','--op',op,'--auth-ref',ref)
+            assert read(t)['phase']=='verified' and git('rev-parse','main')==head and not c.exists()
+            evidence.append(results)
+            print('EVIDENCE '+version+' byte transcript sha256='+hashlib.sha256(repr(results).encode()).hexdigest())
+        assert evidence[0]==evidence[1],[(i,a[:3],b[:3]) for i,(a,b) in enumerate(zip(*evidence)) if a!=b]
+        print('PASS base/current gate and official land stdout/stderr/rc/ticket bytes identical')
+        print('PASS base/current dirty/spec/scenarios/new commit refused at authorize/prepare/apply; main unchanged')
+        sys.exit(0)
     if os.environ['QWB_LAND_CASE']=='agent-shapes':
         t,c,op,m,head=accepted('agent-shapes')
         ledger('dispatch',t,op,'worker-pane',f'dispatch: op_id={op} worker=sol pane=worker-pane dir={c}')
@@ -440,4 +524,8 @@ exec "$LAND_REAL_MV" "$@"
         if failure=='endpoint':(p/'qwbuddy/.controller.lock/owner').write_text('2099 ctl\n')
 PY
 # Run the new matrix in its own supervised project, preserving the original status/land fixtures.
-if [[ "${1:-all}" == all ]]; then bash "$0" agent-shapes; fi
+if [[ "${1:-all}" == all ]]; then
+  bash "$0" agent-shapes
+  bash "$0" env-digest
+  bash "$0" env-compat
+fi
