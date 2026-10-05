@@ -346,8 +346,12 @@ exec "$LAND_REAL_MV" "$@"
         snapshot=tmp/'env-snapshot';shutil.copytree(p,snapshot)
         runtime=tmp/'env-bin';shutil.copytree(ROOT/'bin',runtime)
         native=Path(env['LAND_NATIVE_STATE']);saved_native=native.read_bytes()
-        old=subprocess.check_output([real_git,'-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh']).decode()
         new=(ROOT/'bin/qwb-ledger.sh').read_text()
+        # Baseline is today's writer with only the accepted-environment reuse reverted, so later
+        # unrelated writer changes cannot invalidate this same-environment comparison.
+        reuse="my $c=gate_context(0,$g && $g->{verdict} eq 'accepted' && @{$g->{reviews}} ? $g->{reviews}[-1]{review}{context}{environment_sha256} : undef);"
+        assert new.count(reuse)==1
+        old=new.replace(reuse,'my $c=gate_context();')
         evidence=[]
         for version,source in [('base',old),('current',new)]:
             shutil.rmtree(p);shutil.copytree(snapshot,p);native.write_bytes(saved_native)

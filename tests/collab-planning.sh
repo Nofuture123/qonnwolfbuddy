@@ -341,7 +341,11 @@ file.write_text(json.dumps(s))
             # 同bindir/依赖字节；只冻结观察副本的时钟与event_id，完整对比CLI结果与票字节。
             byte_bin=temp/'scenario-byte-bin'; shutil.copytree(ROOT/'bin',byte_bin)
             versions=[]
-            for label,raw in [('old',subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/qwb-ledger.sh'])),('new',(ROOT/'bin/qwb-ledger.sh').read_bytes())]:
+            # Baseline is today's writer with only the scenario-name checks removed, so later
+            # unrelated writer changes cannot invalidate this comparison.
+            current=(ROOT/'bin/qwb-ledger.sh').read_bytes(); check=b'  require_scenario_names($r->{scenarios});\n'
+            assert current.count(check)==2
+            for label,raw in [('old',current.replace(check,b'')),('new',current)]:
                 assert raw.count(b'use Time::HiRes qw(time);')==1 and raw.count(b',gmtime)')==2
                 script=byte_bin/('qwb-ledger-'+label+'.sh')
                 script.write_bytes(raw.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { 2099000000 }').replace(b',gmtime)',b',gmtime(2099000000))'))
