@@ -745,7 +745,8 @@ file.write_text(json.dumps(s))
         # 用公开04收据/审核/verdict走到accepted；私有true门不等于仓库全门。
         environment=temp/'up-environment'; environment.write_text('private fixture dependencies\n')
         assignment={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
-        call('gate-assign',name,'--','gate',payload('up-gate.json',assignment))
+        gate_assignment=call('gate-assign',name,'--','gate',payload('up-gate.json',assignment)).stdout.strip()
+        reject_planner('source:'+gate_assignment)
         call('claim',name,'--','up-gate',actor='gate-pane')
         exhausted_checks(gate=True)
         call('append',name,'--event-id','up-rework-done','--','done: 门禁接返修成果',actor='up-worker')
@@ -779,9 +780,14 @@ file.write_text(json.dumps(s))
         others=[f for f in (p/'tasks').glob('*.md') if f!=ticket]
         for f in others: f.rename(other_dir/f.name)
         runtime=p/'qwbuddy/bin'
-        originals={s:(runtime/s).read_bytes() for s in ['qwb-ledger.sh','qwb-wake.sh']}
+        notify_compare=os.environ.get('QWB_NOTIFY_COMPARE')=='1'
+        compare_base='4b1f2e2' if notify_compare else '44ab8ac'
+        originals={s:(runtime/s).read_bytes() for s in ['qwb-ledger.sh','qwb-wake.sh']+(['qwb-send.sh','qwb-lib.sh'] if notify_compare else [])}
         snapshots={}
         def frozen_ticket(data):
+            if notify_compare:
+                # Old already-claimed grants never had A notifications; this is outside A.
+                data['handoffs']={key:h for key,h in data['handoffs'].items() if data['events'][h['source_seq']-1]['kind']!='gate-assign'}
             body=original.split(b'\n<!-- qwb-collab-v1\n')[0]
             return body+b'\n<!-- qwb-collab-v1\n'+json.dumps(data,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()+b'\n-->\n'
         for case in ['plain','pending','rework','test-request']:
@@ -807,7 +813,7 @@ file.write_text(json.dumps(s))
                 outputs=[]
                 for version in ['baseline','candidate']:
                     for script in originals:
-                        raw=subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/'+script]) if version=='baseline' else (ROOT/'bin'/script).read_bytes()
+                        raw=subprocess.check_output(['git','-C',str(ROOT),'show',compare_base+':bin/'+script]) if version=='baseline' else (ROOT/'bin'/script).read_bytes()
                         if script=='qwb-ledger.sh':
                             raw=raw.replace(b'my $now=int(time()*1000);',b'my $now=4102444800000;')
                             raw=raw.replace(b"strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)",b"'2099-01-01T00:00:00Z'")
@@ -825,13 +831,13 @@ file.write_text(json.dumps(s))
                         for key,value in observed.items(): (evidence/(case+'-'+version+'.'+key)).write_bytes(value)
                 for key in outputs[0]:
                     candidate=outputs[1][key]
-                    if case=='live' and key=='herdr':
+                    if case=='live' and key=='herdr' and not notify_compare:
                         lines=candidate.splitlines(keepends=True)
                         probes=[i for i,line in enumerate(lines) if json.loads(line)==['pane','get','up-worker']]
                         assert len(probes)==1, ('只允许一次新增工人只读探针',probes)
                         candidate=b''.join(line for i,line in enumerate(lines) if i!=probes[0])
                     assert outputs[0][key]==candidate, ('P6 byte mismatch',case,key,outputs[0][key],candidate)
-                print('PASS upward P6逐字节 '+case+': stdout/stderr/rc/票/Herdr一致'+('（仅允许一次新增工人只读探针）' if case=='live' else ''))
+                print('PASS upward P6逐字节 '+case+': stdout/stderr/rc/票/Herdr一致'+('（仅允许一次新增工人只读探针）' if case=='live' and not notify_compare else ''))
         finally:
             ticket.write_bytes(original); native_path.write_bytes(native_bytes)
             for script,raw in originals.items(): (runtime/script).write_bytes(raw)
@@ -1015,11 +1021,21 @@ file.write_text(json.dumps(s))
                 result=cli(str(script),verb,'--project',p,'--task',task,'--event-id','ticket-body-byte-check','--',*args)
                 results.append((result.returncode,result.stdout.encode(),result.stderr.encode(),task.read_bytes()))
                 task.write_bytes(raw)
-            assert results[0]==results[1], (verb,'stdout/stderr/rc/写后票字节不一致')
+            if verb=='gate-assign':
+                assert results[0][:3]==results[1][:3], 'gate-assign changed stdout/stderr/rc'
+                old_body,old_json=results[0][3].split(b'\n<!-- qwb-collab-v1\n');new_body,new_json=results[1][3].split(b'\n<!-- qwb-collab-v1\n')
+                old_data=json.loads(old_json.split(b'\n-->')[0]);new_data=json.loads(new_json.split(b'\n-->')[0])
+                added=new_data['handoffs'].pop('source:ticket-body-byte-check')
+                expected=dict(event_id='source:ticket-body-byte-check',corr='source:ticket-body-byte-check',attempt='1',recipient='controller',source_event='ticket-body-byte-check',source_seq=new_data['seq'],source_actor='ctl',payload='门禁待接手；授权=ticket-body-byte-check；请先 claim，再按原交接协议读取成果。',transport_count=0,transport_at=0,received='',accepted='',owner_fp='',op_id='',activity_at=0,wait_until=0,wait_reason='',prepared=0,handled=0,result_ref='',result_sha256='')
+                assert added==expected, added
+                if 'handoffs' not in old_data:
+                    assert not new_data['handoffs'];del new_data['handoffs']
+                assert new_body==old_body and new_data==old_data, 'gate-assign changed facts beyond its authorized A handoff'
+            else:assert results[0]==results[1], (verb,'stdout/stderr/rc/写后票字节不一致')
         finally: task.write_bytes(raw)
     byte_compare('read')
     byte_compare('gate-assign','gate',assignment)
-    print('PASS user_其余行为字节对照：固定d66d77c与当前read/gate-assign成功的stdout/stderr/rc/写后票字节相同（观察副本固定时钟与event-id）')
+    print('PASS user_其余行为字节对照：固定d66d77c的read逐字节一致；gate-assign仅新增A授权交接，stdout/stderr/rc/正文/其余事实均不变')
     tracked=p/'qwbuddy/config.sh'; tracked_bytes=tracked.read_bytes()
     scratch=p/'未提交 payload.json'; scratch.write_text('{}\n')
     tracked.write_bytes(tracked_bytes+b'\n# uncommitted fixture\n')

@@ -194,13 +194,15 @@ for value in [0,None,'quiet']:
         r=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-role.sh'),'mode','exit','--project',str(p),'--','explicit','结束静音测试'],env=env,capture_output=True,timeout=30)
         assert r.returncode==0,(r.stdout,r.stderr)
 print('PASS user_失败路径_兜底关闭与静默模式: zero/unset/quiet suppress progress, done remains immediate')
-# 7: 同一安装路径依次跑固定旧脚本和当前脚本，保留原始字节，只归一 wake 时间戳。
+# 7: 同一安装路径依次跑固定旧脚本和当前脚本，冻结私有writer时间/ID后比较完整字节。
 if baseline:
-    def normalized(raw):
-        if b'<!-- qwb-collab-v1\n' in raw:
-            # 本场景比较公开 wake 行；协作区内部 event_id/时钟由 writer 每次独立生成。
-            raw=b'\n'.join(line for line in raw.splitlines() if line.startswith(b'wake:'))
-        return re.sub(rb'(?m)^wake: \S+',b'wake: TIME',raw)
+    # Freeze only the private writer: compare full task bytes, not normalized wake lines.
+    writer=p/'qwbuddy/bin/qwb-ledger.sh'; writer_original=writer.read_bytes()
+    fixed=writer_original.replace(b'my $now=int(time()*1000);',b'my $now=4102444800000;')
+    fixed=fixed.replace(b"strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)",b"'2099-01-01T00:00:00Z'")
+    fixed=fixed.replace(b"$event=unpack('H*',$bytes);",b'$event=substr(sha256_hex("$cmd:$data->{seq}"),0,32);')
+    assert fixed!=writer_original
+    writer.write_bytes(fixed)
     samples=[('new',b'state: running\n'),
              ('blocked',b'state: blocked\nworking: waiting\n'),
              ('decision',b'state: needs-decision\nworking: waiting\n'),
@@ -212,9 +214,9 @@ if baseline:
         for source in [baseline.read_bytes(),current]:
             wake.write_bytes(source); ticket.write_bytes(raw); clock.write_text(str(start)); calls.write_bytes(b'')
             r=run('--once','--pane','ctl',extra={'REG_LOST':'1'} if name=='lost' else None)
-            results.append((r.stdout,r.stderr,r.returncode,normalized(ticket.read_bytes()),calls.read_bytes()))
+            results.append((r.stdout,r.stderr,r.returncode,ticket.read_bytes(),calls.read_bytes()))
         assert results[0]==results[1],(name,results)
-        print('BYTE_COMPARE '+name+' stdout/stderr/rc/wake/calls identical')
+        print('BYTE_COMPARE '+name+' stdout/stderr/rc/full-ticket/calls identical')
     # 已迁协作票只对未命中A/B/C的真实动作做字节比较；纯working静默由planning用例验证。
     ticket.write_text('state: running\n'); proof=p/'migration-regression.json'
     proof.write_text(json.dumps({'task_sha256':hashlib.sha256(ticket.read_bytes()).hexdigest(),
@@ -229,7 +231,7 @@ if baseline:
     for source in [baseline.read_bytes(),current]:
         wake.write_bytes(source); ticket.write_bytes(raw); clock.write_text(str(start)); calls.write_bytes(b'')
         r=run('--block','--max-ms','100',rc=2)
-        results.append((r.stdout,r.stderr,r.returncode,normalized(ticket.read_bytes()),calls.read_bytes()))
+        results.append((r.stdout,r.stderr,r.returncode,ticket.read_bytes(),calls.read_bytes()))
     assert results[0]==results[1],('collab',results)
     assert b'spec-resolution' in results[1][0] and b'completion' in results[1][0]
     # 已迁票 dry-run 仍沿基线判定，末行 working 不适用本票新规则。
@@ -239,8 +241,8 @@ if baseline:
         wake.write_bytes(source); ticket.write_bytes(raw); calls.write_bytes(b'')
         r=run('--dry-run'); dry_results.append((r.stdout,r.stderr,r.returncode,ticket.read_bytes(),calls.read_bytes()))
     assert dry_results[0]==dry_results[1], 'collab dry-run changed'
-    wake.write_bytes(current)
-    print('PASS user_正常路径_其余情况逐字节不变: new/blocked/needs-decision/invalid/UTF8/collab stdout/stderr/rc/wake/calls')
+    wake.write_bytes(current); writer.write_bytes(writer_original)
+    print('PASS user_正常路径_其余情况逐字节不变: new/blocked/needs-decision/invalid/UTF8/collab stdout/stderr/rc/full-ticket/calls')
 else:
     print('SKIP fixed-baseline byte comparison; set QWB_TEST_WAKE_BASELINE for acceptance')
 PY

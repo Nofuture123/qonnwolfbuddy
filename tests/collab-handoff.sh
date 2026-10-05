@@ -66,6 +66,15 @@ def reject(cmd):
     assert Path(T).read_bytes()==before,'拒绝请求改变票'
 def proof(e,op,name='result.json',outcome='applied'):
     path=P+'/'+name; Path(path).write_text(json.dumps(dict(event_id=e,op_id=op,outcome=outcome,evidence='fixture public readback; no external action'))); return path
+# Classification must remain a read model: absent optional objects must stay absent.
+classifier=call(['bash','-c','. "$1"; qwb_task_obligations_json --progress-classifier','classifier',ROOT+'/bin/qwb-lib.sh'])
+call(['perl','-MJSON::PP','-MDigest::SHA=sha256_hex','-e',r'''
+my $classify=eval $ARGV[0];die $@ if $@;
+my $e={kind=>'gate-verdict',event_id=>'v',seq=>1,actor=>'gate',op_id=>'',spec_rev=>0,line=>'working: gate-verdict verdict=accepted attempt=1 head=abcdef tokens=unknown'};
+my $d={events=>[$e],handoffs=>{}};my $json=JSON::PP->new->canonical;my $before=$json->encode($d);
+for my $mode ('source','release','') { $classify->($d,$e,undef,$mode); die 'classifier mutated optional objects' unless $json->encode($d) eq $before }
+''',classifier])
+print('PASS notify E分类只读：缺失land等可选字段不因分类自动变成null或对象',flush=True)
 E=next(h['event_id'] for h in pending() if h['source_event']=='completion')
 send('received','--event',E); send('received','--event',E)
 assert not next(h for h in pending() if h['event_id']==E)['handled']

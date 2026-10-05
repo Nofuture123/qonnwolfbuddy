@@ -389,18 +389,35 @@ qwb_task_obligations_json() {
   local progress='sub {
     my ($d,$e,$h,$mode)=@_;
     return 0 unless $e;
-    if (($mode // "") eq "release") {
-      my $g=$d->{gate};
-      return unless $g && $e->{kind} eq "release" && $e->{actor} eq $g->{identity}{pane};
+    my $released;
+    if ($e->{kind} eq "release" && $d->{gate} && $e->{actor} eq $d->{gate}{identity}{pane}) {
       my ($claim)=grep { $_->{seq}<$e->{seq} && $_->{kind} eq "claim" && $_->{actor} eq $e->{actor} && $_->{op_id} eq $e->{op_id} } reverse @{$d->{events}};
-      return unless $claim;
-      my ($verdict)=grep { $_->{seq}>$claim->{seq} && $_->{seq}<$e->{seq} && $_->{kind} eq "gate-verdict" } reverse @{$d->{events}};
-      return $verdict if $verdict && $verdict->{actor} eq $e->{actor} && $verdict->{line}=~/^working: gate-verdict verdict=(accepted|rediagnose) /;
-      return;
+      if ($claim) {
+        my ($verdict)=grep { $_->{seq}>$claim->{seq} && $_->{seq}<$e->{seq} && $_->{kind}=~/^(gate-(verdict|candidate|review|receipt)|test-request|ci-assign)$/ } reverse @{$d->{events}};
+        $released=$verdict if $verdict && $verdict->{kind} eq "gate-verdict" && $verdict->{actor} eq $e->{actor} && $verdict->{line}=~/^working: gate-verdict verdict=(accepted|rediagnose) /;
+      }
+    }
+    return $released if ($mode // "") eq "release";
+    my $self=$e->{kind}=~/^(land-(authorize|prepare|apply|close)|recover-claim)$/;
+    if (($mode // "") eq "source") {
+      return !$self && ($e->{kind}=~/^(migrate|gate-assign)$/ || $released || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/));
     }
     if ($h) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
       return 0 unless $h->{event_id} eq $id && $h->{corr} eq $id && $h->{source_event} eq $e->{event_id};
+    }
+    return 1 if $self;
+    my $verdict=$e->{kind} eq "gate-verdict" ? $e : $released;
+    if ($verdict) {
+      my @lands=@{$d->{land_history} // []};
+      push @lands,$d->{land} if $d->{land};
+      for my $l (@lands) {
+        my $c=$l->{context};
+        my ($attempt,$head)=$verdict->{line}=~/^working: gate-verdict verdict=accepted attempt=(\S+) head=([0-9a-f]+) /;
+        if (defined($head) && $head eq $c->{head} && $attempt eq $c->{attempt} && $verdict->{spec_rev}==$c->{spec_rev}) {
+          return 1 if grep { $_->{seq}>$e->{seq} && $_->{actor} eq $l->{caller} && $_->{op_id} eq $l->{op_id} && $_->{kind}=~/^land-(authorize|apply)$/ && $_->{line}=~/^working: land-(?:authorized|reauthorized) op_id=\Q$l->{op_id}\E auth_ref=\Q$l->{auth_ref}\E / } @{$d->{events}};
+        }
+      }
     }
     if ($e->{kind} eq "gate-assign") {
       my $g=$d->{gate};
@@ -425,7 +442,7 @@ qwb_task_obligations_json() {
     print "handoff=$_ " for sort grep { !$h->{$_}{handled} && !$progress->($d,$d->{events}[$h->{$_}{source_seq}-1],$h->{$_}) } keys %$h;
     for my $e (@{$d->{events}}) {
       my $id="source:".(length($e->{event_id})<=153 ? $e->{event_id} : sha256_hex($e->{event_id}));
-      print "source=$e->{event_id} " if ($e->{kind} eq "migrate" || $e->{kind} eq "gate-assign" || ($e->{kind}!~/^(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/^(working|done|blocked|needs-decision):/)) && !exists $h->{$id} && !$progress->($d,$e);
+      print "source=$e->{event_id} " if $progress->($d,$e,undef,"source") && !exists $h->{$id} && !$progress->($d,$e);
     }
   ' "$progress"
 }

@@ -1,6 +1,6 @@
-# 协作通知缺口 A–E 设计（待主控确认）
+# 协作通知缺口 A–E 设计（主控已确认）
 
-基点：`4b1f2e2f7a0f4a2a26997467d9baa894c2dd1914`。唯一规格：主账本 `tasks/2026-10-05-collab-notify-gaps.md` 及末尾最新裁决；05:25:45Z 主控已接受三点补充前提，以下完整方案仍待确认。
+基点：`4b1f2e2f7a0f4a2a26997467d9baa894c2dd1914`。唯一规格：主账本 `tasks/2026-10-05-collab-notify-gaps.md` 及末尾最新裁决；05:25:45Z 接受三点补充前提，05:27:43Z 确认完整方案；B原话办结规则写入主控/规划说明，D摘要明确claim、land-authorize命令名。
 
 ## 已核对前提与边界
 - 仅已迁票；未迁旧票的扫描、输出、票字节、Herdr 写序列保持不变。不增 watcher、不写角色 inbox、不动 claim/权限/验收条件/五值 state。
@@ -50,7 +50,7 @@
 - 对上述动作不新派生 source handoff；旧已生成交接不删除、不伪填 handled，仅在 due、义务读模与 land-close 的有效未结判断中排除。完整 pending/read 保留历史事实及原 handled 值。
 - 其他现有自派生候选按职责保留：plan-assign/authorize、new、plan-needs/artifact/land、plan-ready/start-claim、plan-revision/revise/revise-scenarios、revision-handoff、test-request/reply、answer/resume；它们有规划就绪/依赖/规格/测试/恢复接力，不能仅因写入者当前也是主控就全吞。
 - 普通 working 沿用前票静默；spec-resolved、done、blocked、needs-decision、question、not-sent、显式 send 与规划上行保留。gate-review/receipt/candidate/dispatch 等本已不派生，维持排除。
-- gate-verdict 是真通知，保留；当前 accepted 结论及对应 D release 通知，在同票后续成功 land-authorize 后视为已处理，无须再手工四步。按 land.context 的 spec/attempt/head、授权事件顺序和原结论/释放链绑定，不以“存在任意 land”吞历史或新结论。
+- gate-verdict 是真通知，保留；当前 accepted 结论及对应 D release 通知，在同票后续成功 land-authorize 后视为已处理，无须再手工四步。按当前 land 或 land_history 中该次授权 context 的 spec/attempt/head、授权事件顺序和原结论/释放链绑定；换候选不复活已由旧匹配授权满足的通知，不以“存在任意 land”吞历史或新结论。
 - 仅对自动来源的精确结论/释放交接应用上述满足判定；其他 blocked、待答/待 resume 问题、未办理请求不受 land 授权影响。land-close 保留原两类拒绝文本和其余收尾检查。
 - land-close 的未结检查复用分类，覆盖已有 handoff 与尚未 materialize 的真实 source；排除本已静默纯进度，关闭自身也不造新待办；verified 后 status 应已结。
 

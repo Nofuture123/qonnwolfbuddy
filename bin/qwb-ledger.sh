@@ -91,7 +91,7 @@ if [[ "$CMD" == test-request ]]; then
   TEST_IDENTITY="$(qwb_gate_identity "$ROOT" "${3:-}" '测试体系')" || exit 1
 fi
 PROGRESS_CLASSIFIER=''
-if [[ "$CMD" == handoff-* || "$CMD" == release ]]; then PROGRESS_CLASSIFIER="$(qwb_task_obligations_json --progress-classifier)"; fi
+if [[ "$CMD" == handoff-* || "$CMD" == release || "$CMD" == land-close ]]; then PROGRESS_CLASSIFIER="$(qwb_task_obligations_json --progress-classifier)"; fi
 exec perl - "$CMD" "$ROOT" "$TASK" "$ACTOR" "$EXPECT" "$EVENT" "$LEGACY" "$BINDIR" "$IDENTITY" "$TEST_IDENTITY" "$PROGRESS_CLASSIFIER" "$@" <<'PERL'
 # Keep native refusal diagnostics at the baseline 8d897cd Perl source positions.
 #line 1
@@ -634,7 +634,7 @@ sub new_handoff {
 }
 # 只求值qwb-lib内的固定分类定义，数据从参数传入，绝不求值payload。
 my $pure_progress;
-if ($cmd =~ /\Ahandoff-/ || $cmd eq 'release') {
+if ($cmd =~ /\Ahandoff-/ || $cmd eq 'release' || $cmd eq 'land-close') {
   $pure_progress=eval $progress_classifier;
   fail('纯进度分类不可用') unless ref($pure_progress) eq 'CODE';
 }
@@ -730,6 +730,7 @@ sub ensure_planner_result {
 sub planner_controller_hint {
   my $h=shift;
   my $e=$data->{events}[$h->{source_seq}-1];
+  return '门禁授权待接手；下一步：绑定门禁 claim' if gate_assignment_handoff($h);
   return '门禁已交还；下一步：claim，accepted 时 land-authorize' if $h->{event_id} eq source_id($e->{event_id}) && $h->{corr} eq $h->{event_id} && gate_release_source($e);
   return '' unless planner_manages_handoffs();
   my $g=$data->{gate};
@@ -1077,8 +1078,9 @@ if ($cmd eq 'land-authorize') {
       if (!defined $physical) { my $parent=realpath(dirname(encode('UTF-8',$path))); $physical="$parent/".basename(encode('UTF-8',$path)) if defined $parent }
       fail('候选Space仍存在，不能verified') if defined($physical) && $physical eq $c;
     }
-    fail('收尾义务/用户问题仍未结') if grep { !$_->{handled} } values %{$data->{handoffs} // {}};
+    fail('收尾义务/用户问题仍未结') if grep { !$_->{handled} && !$pure_progress->($data,$data->{events}[$_->{source_seq}-1],$_) } values %{$data->{handoffs} // {}};
     fail('收尾问题未恢复') if grep { $_->{resumed} eq '' } values %{$data->{questions}};
+    fail('收尾义务/用户问题仍未结') if grep { $pure_progress->($data,$_,undef,'source') && !exists($data->{handoffs}{source_id($_->{event_id})}) && !$pure_progress->($data,$_) } @{$data->{events}};
     $l->{stage}='closed'; $l->{closed_at}=int(time()*1000); $data->{claim}=undef; $data->{ops}{$op}{status}='released'; field('state','verified');
   }
   $line="working: $cmd op_id=$op auth_ref=$l->{auth_ref} main=$l->{main} before=$l->{before} after=$l->{after} stage=$l->{stage} tokens=unknown"; append_body($line);
@@ -1491,7 +1493,8 @@ REPORT
     my $added=0;
     for my $e (@{$data->{events}}) {
       # 真实状态正文包括answer/resume、失败补偿与恢复/规格处置；排除自身收据，避免通知自激。
-      next unless $e->{kind} eq 'migrate' || $e->{kind} eq 'gate-assign' || gate_release_source($e) || ($e->{kind} !~ /\A(?:handoff-|ci-|gate-(?!verdict))/ && $e->{line}=~/\A(working|done|blocked|needs-decision):/);
+      next unless $pure_progress->($data,$e,undef,'source');
+      next if $e->{kind} eq 'gate-assign' && $pure_progress->($data,$e);
       my $id=source_id($e->{event_id});
       next if exists $data->{handoffs}{$id};
       my $payload=$e->{kind} eq 'migrate' ? "接班核查迁入前正文与旧义务；state=$data->{phase}" : $e->{kind} eq 'gate-assign' ? gate_assignment_payload($e) : gate_release_source($e) ? gate_release_payload($e,gate_release_source($e)) : $e->{line};

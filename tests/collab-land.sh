@@ -138,8 +138,9 @@ exec "$LAND_REAL_MV" "$@"
     env['LAND_SOCKET']=sockpath
     runtime=ROOT/'bin'
     notify_runtime=False
-    def call(script,verb,*args,actor='ctl',ok=True,extra=None):
-        r=subprocess.run(['bash',str(p/'qwbuddy/bin'/script if notify_runtime else runtime/script),verb,'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
+    notify_bin=p/'qwbuddy/bin'
+    def call(script,verb=None,*args,actor='ctl',ok=True,extra=None):
+        r=subprocess.run(['bash',str(notify_bin/script if notify_runtime else runtime/script),*([] if verb is None else [verb]),'--project',str(p),*map(str,args)],env=env|{'HERDR_PANE_ID':actor}|(extra or {}),capture_output=True,text=True)
         print(f'RC={r.returncode} {script} {verb} '+ ' '.join(map(str,args)))
         assert (r.returncode==0)==ok,(r.returncode,r.stdout,r.stderr)
         return r
@@ -162,6 +163,16 @@ exec "$LAND_REAL_MV" "$@"
         t=p/'tasks'/f'{name}.md';t.write_text('# '+name+'\nstate: running\n## 验收场景\n### user_success\nGiven candidate\nWhen land\nThen success\n### user_reject\nGiven dirty\nWhen land\nThen reject\n')
         m=tmp/'migration.json';m.write_text(json.dumps({'task_sha256':hashlib.sha256(t.read_bytes()).hexdigest(),'confirm':{k:'fixture stopped; no external actions' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}}))
         ledger('migrate',t,m)
+        # Migration review is a real controller obligation, independent of acceptance/land.
+        for h in json.loads(call('qwb-send.sh','pending','--task',t).stdout):
+            hid=h['event_id'];hop='migrate-'+name
+            ref=p/'qwbuddy/.roles'/(hop+'.json')
+            ref.write_text(json.dumps(dict(event_id=hid,op_id=hop,outcome='applied',evidence='fixture stopped; old obligations checked')))
+            for verb in ['received','accept','prepared','handled']:
+                args=['--task',t,'--event',hid]
+                if verb!='received':args+=['--op',hop]
+                if verb=='handled':args+=['--result-ref',ref]
+                call('qwb-send.sh',verb,*args)
         environment=tmp/'environment';environment.write_text('fixture v1\n')
         req=tmp/'assignment.json';req.write_text(json.dumps({'candidate':str(c),'base':base,'attempt':'1','policy':'v1','environment':str(environment),'required':{'full':['user_success','user_reject']},'workers':{'review':'reviewer','rework':'sol'}}))
         ledger('gate-assign',t,'gate',req); op='accept-'+name;ledger('claim',t,op,actor=actor)
@@ -196,6 +207,13 @@ exec "$LAND_REAL_MV" "$@"
                     if verb!='received':args+=['--op',hop]
                     if verb=='handled':args+=['--result-ref',ref]
                     call('qwb-send.sh',verb,*args)
+            before_pending=t.read_bytes()
+            ledger('gate-review',t,op,review,actor=gate_actor)
+            ledger('release',t,op,actor=gate_actor)
+            pending_state=read(t)
+            pending_release=next(e for e in reversed(pending_state['events']) if e['kind']=='release')
+            assert 'source:'+pending_release['event_id'] not in pending_state['handoffs'], 'old accepted verdict leaked through newer pending review'
+            t.write_bytes(before_pending)
             scripts={s:(p/'qwbuddy/bin'/s).read_bytes() for s in ['qwb-ledger.sh','qwb-lib.sh','qwb-send.sh','qwb-wake.sh']}
             notify_runtime=True
             try:
@@ -219,10 +237,83 @@ exec "$LAND_REAL_MV" "$@"
         else:ledger('release',t,op,actor=actor)
         op='land-'+name;ledger('claim',t,op)
         return t,c,op,base,git('rev-parse','HEAD',at=c)
-    if os.environ['QWB_LAND_CASE']=='all' or os.environ.get('QWB_NOTIFY_ONLY')=='D':
+    if (os.environ['QWB_LAND_CASE']=='all' and not os.environ.get('QWB_NOTIFY_ONLY')) or os.environ.get('QWB_NOTIFY_ONLY')=='E':
+        original_bin=notify_bin
+        if os.environ.get('QWB_NOTIFY_BASELINE')=='1':
+            notify_bin=tmp/'notify-baseline-bin';shutil.copytree(ROOT/'bin',notify_bin)
+            for s in ['qwb-ledger.sh','qwb-lib.sh','qwb-send.sh','qwb-wake.sh']:
+                (notify_bin/s).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','4b1f2e2:bin/'+s]))
+            notify_runtime=True
+        try:
+            t,c,op,m,head=accepted('notify-close')
+            ledger('land-authorize',t,op,'notify-close-auth','main','fixture explicit close','tasks/notify-close.md')
+            ledger('land-prepare',t,op,'notify-close-auth');ledger('land-apply',t,op,'notify-close-auth')
+            ledger('append',t,'working: ordinary controller progress')
+            call('qwb-send.sh','pending','--task',t)
+            if os.environ.get('QWB_NOTIFY_BASELINE')!='1':
+                current=read(t)
+                self_kinds=['land-authorize','land-prepare','land-apply','land-close','recover-claim']
+                assert not any(current['events'][h['source_seq']-1]['kind'] in self_kinds for h in current['handoffs'].values())
+                # Old installed writers already materialized these actions; retain their audit bytes.
+                sample=next(h for h in current['handoffs'].values() if not h['handled'])
+                for e in current['events']:
+                    if e['kind'] not in self_kinds:continue
+                    hid='source:'+e['event_id']
+                    current['handoffs'][hid]=dict(sample,event_id=hid,corr=hid,source_event=e['event_id'],source_seq=e['seq'],source_actor=e['actor'],payload=e['line'])
+                body=t.read_bytes().split(b'\n<!-- qwb-collab-v1\n')[0]
+                t.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(current,ensure_ascii=False,separators=(',',':')).encode()+b'\n-->\n')
+            git('worktree','remove',str(c));git('branch','-d','notify-close')
+            before_close=t.read_bytes()
+            result=ledger('land-close',t,op,'notify-close-auth')
+            d=read(t);assert d['phase']=='verified' and d['land']['stage']=='closed'
+            status=call('qwb-status.sh')
+            assert '[已结]' in next(line for line in status.stdout.splitlines() if 'notify-close.md' in line),status.stdout
+            assert all(not h['handled'] for h in d['handoffs'].values() if d['events'][h['source_seq']-1]['kind'] in ['land-authorize','land-prepare','land-apply'])
+            closed=t.read_bytes()
+            t.write_bytes(before_close)
+            mismatch=read(t);mismatch['land']['context']['attempt']='unrelated-attempt'
+            body=t.read_bytes().split(b'\n<!-- qwb-collab-v1\n')[0]
+            t.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(mismatch,ensure_ascii=False,separators=(',',':')).encode()+b'\n-->\n')
+            denied=ledger('land-close',t,op,'notify-close-auth',ok=False)
+            assert '收尾义务/用户问题仍未结' in denied.stderr
+            t.write_bytes(before_close)
+            call('qwb-send.sh','send','--task',t,'--corr','notify-fake-self','--attempt','1','--text','working: land-close this is a real explicit request')
+            denied=ledger('land-close',t,op,'notify-close-auth',ok=False)
+            assert '收尾义务/用户问题仍未结' in denied.stderr
+            for problem in ['blocked','question','unread-question','answered']:
+                t.write_bytes(before_close)
+                if problem=='blocked':
+                    ledger('dispatch',t,op,'notify-worker',f'dispatch: op_id={op} worker=sol pane=notify-worker dir={c}')
+                    ledger('append',t,'blocked: real worker action remains',actor='notify-worker')
+                    call('qwb-send.sh','pending','--task',t)
+                else:
+                    ledger('question',t,'notify-user','real user decision required')
+                    # Handle notification, but never answer/resume merely by handling it.
+                    questions=[] if problem=='unread-question' else json.loads(call('qwb-send.sh','pending','--task',t).stdout)
+                    for h in questions:
+                        if not h['payload'].startswith('needs-decision:'):continue
+                        hid=h['event_id'];hop='notify-question'
+                        ref=p/'qwbuddy/.roles/notify-question.json';ref.write_text(json.dumps(dict(event_id=hid,op_id=hop,outcome='applied',evidence='question read; still unresolved')))
+                        for verb in ['received','accept','prepared','handled']:
+                            args=['--task',t,'--event',hid]
+                            if verb!='received':args+=['--op',hop]
+                            if verb=='handled':args+=['--result-ref',ref]
+                            call('qwb-send.sh',verb,*args)
+                    if problem=='answered':ledger('answer',t,'notify-user','real answer; not resumed')
+                snapshot=t.read_bytes();denied=ledger('land-close',t,op,'notify-close-auth',ok=False)
+                expected='收尾义务/用户问题仍未结' if problem=='blocked' else '收尾问题未恢复'
+                assert expected in denied.stderr and t.read_bytes()==snapshot,(problem,denied.stderr)
+            t.write_bytes(closed)
+            print('PASS notify E：四步落地无自办交接，纯进度不挡close，verified已结；真实工人blocked/未答/未恢复仍原文拒绝',flush=True)
+        finally:
+            notify_runtime=False;notify_bin=original_bin
+        if os.environ.get('QWB_NOTIFY_ONLY')=='E':raise SystemExit(0)
+        t.unlink()
+    if (os.environ['QWB_LAND_CASE']=='all' and not os.environ.get('QWB_NOTIFY_ONLY')) or os.environ.get('QWB_NOTIFY_ONLY')=='D':
         t,c,op,m,head=accepted('notify-release',gate_actor='gate-pane')
         ledger('land-authorize',t,op,'notify-release-auth','main','fixture explicit land after release','tasks/notify-release.md')
         assert read(t)['land']['after']==head
+        assert not any('已交还' in h['payload'] for h in json.loads(call('qwb-send.sh','pending','--task',t,'--due').stdout)), 'land-authorize did not satisfy matching release notice'
         if os.environ.get('QWB_NOTIFY_ONLY')=='D':raise SystemExit(0)
         # Restore only this private scenario before unrelated legacy land fixtures.
         git('worktree','remove',str(c));git('branch','-D','notify-release');t.unlink()
