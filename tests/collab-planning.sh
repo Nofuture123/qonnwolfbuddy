@@ -86,7 +86,7 @@ file.write_text(json.dumps(s))
         global step
         step+=1; verb=str(args[0]) if args else 'status'; label=f'{step:03}-{verb}'
         argv=['bash',str(ROOT/'bin'/script),*map(str,args)]
-        if script!='qwb-ledger.sh': argv+=['--project',str(p)]
+        if Path(script).name not in ('qwb-ledger.sh','qwb-ledger-old.sh','qwb-ledger-new.sh'): argv+=['--project',str(p)]
         if diagnostic: print(f'DIAG start {label} actor={actor}',flush=True)
         target=verb in ('gate-assign','plan-revision','revision-handoff')
         bound=20 if target else 90
@@ -156,6 +156,18 @@ file.write_text(json.dumps(s))
     req=payload('new.json',request); call('new','A.md','--',req)
     before=(p/'tasks/A.md').read_bytes(); call('new','A.md','--',req)
     assert (p/'tasks/A.md').read_bytes()==before
+    def worker_report(task):
+        body=(p/'tasks'/task).read_bytes().decode().split('\n<!-- qwb-collab-v1\n',1)[0]
+        assert '\n## 报告要求\n' in body, 'new生成票缺少固定报告要求'
+        return body.rsplit('\n## 报告要求\n',1)[1].split('\nworking:',1)[0]
+    template_report=(ROOT/'templates/TASK.md').read_text()
+    report_a=worker_report('A.md')
+    expected_report=template_report.split('<!-- qwb-worker-report:start -->\n',1)[1].split('\n<!-- qwb-worker-report:end -->',1)[0]
+    assert report_a==expected_report, (report_a,expected_report)
+    assert all(word in report_a for word in ['工作副本','提交','干净','done:','提交号','原始结果','state:'])
+    call('new','A.md','--',payload('override-report.json',dict(request,report_requirements='不用提交')),ok=False)
+    assert (p/'tasks/A.md').read_bytes()==before
+    print('PASS user_规划票固定报告：模板逐字相同；提交/clean/done提交号与检查/state；未知同名请求字段拒绝且重放票字节不变')
     a=read('A.md'); assert a['planning']['source']['text']=='原话：A接口v1；B用此接口；C独立'
     assert a['planning']['packages']=={'A':'A.md','B':'B.md','C':'C.md'}
     conflicting=dict(request,package_id='A',packages={'A':'other.md'})
@@ -259,6 +271,13 @@ file.write_text(json.dumps(s))
     crequest=dict(request,package_id='C',spec='独立C')
     call('new','C.md','--',payload('C.json',crequest),actor='planner-pane')
     call('new','C.md','--',temp/'C.json',actor='planner-pane')
+    assert worker_report('B.md')==worker_report('C.md')==report_a
+    private_payload=p/'qwbuddy/.roles/planner.work/request.json'; private_payload.parent.mkdir()
+    private_payload.write_bytes((temp/'C.json').read_bytes())
+    replay=(p/'tasks/C.md').read_bytes()
+    call('new','C.md','--',private_payload,actor='planner-pane')
+    assert (p/'tasks/C.md').read_bytes()==replay and git('status','--porcelain=v1','--untracked-files=all')==''
+    print('PASS user_规划授权开票报告相同且角色私有载荷可公开重放，候选保持clean')
     call('new','unauthorized.md','--',payload('unauthorized.json',dict(request,package_id='evil',packages={'evil':'unauthorized.md'})),actor='planner-pane',ok=False)
     call('plan-authorize','A.md','--',payload('approval.json',approval))
     mark=count(); run('B.md',ok=False,actor='planner-pane'); no_dispatch_since(mark)
@@ -316,7 +335,55 @@ file.write_text(json.dumps(s))
     # gate持claim期间登记修订不改旧正文；gate必须显式handoff，不能仅release绕过。
     environment=temp/'environment'; environment.write_text('fixture dependencies v1\n')
     binding={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
-    assignment=payload('gate.json',binding); call('gate-assign','B.md','--','gate',assignment)
+    assignment=payload('gate.json',binding)
+    # 固定旧实现的真实拒绝与成功对照；只在私有fixture观察副本冻结时钟/事件ID。
+    byte_bin=temp/'byte-bin'; shutil.copytree(ROOT/'bin',byte_bin)
+    scripts=[]
+    for label,source_bytes in [('old',subprocess.check_output(['git','-C',str(ROOT),'show','d66d77c:bin/qwb-ledger.sh'])),('new',(ROOT/'bin/qwb-ledger.sh').read_bytes())]:
+        assert source_bytes.count(b'use Time::HiRes qw(time);')==1 and source_bytes.count(b',gmtime)')==2
+        script=byte_bin/('qwb-ledger-'+label+'.sh')
+        script.write_bytes(source_bytes.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { 2099000000 }').replace(b',gmtime)',b',gmtime(2099000000))'))
+        scripts.append(script)
+    def byte_compare(verb,*args):
+        task=p/'tasks/B.md'; raw=task.read_bytes(); results=[]
+        try:
+            for script in scripts:
+                result=cli(str(script),verb,'--project',p,'--task',task,'--event-id','ticket-body-byte-check','--',*args)
+                results.append((result.returncode,result.stdout.encode(),result.stderr.encode(),task.read_bytes()))
+                task.write_bytes(raw)
+            assert results[0]==results[1], (verb,'stdout/stderr/rc/写后票字节不一致')
+        finally: task.write_bytes(raw)
+    byte_compare('read')
+    byte_compare('gate-assign','gate',assignment)
+    print('PASS user_其余行为字节对照：固定d66d77c与当前read/gate-assign成功的stdout/stderr/rc/写后票字节相同（观察副本固定时钟与event-id）')
+    tracked=p/'qwbuddy/config.sh'; tracked_bytes=tracked.read_bytes()
+    scratch=p/'未提交 payload.json'; scratch.write_text('{}\n')
+    tracked.write_bytes(tracked_bytes+b'\n# uncommitted fixture\n')
+    extra_paths=[]
+    try:
+        raw_b=(p/'tasks/B.md').read_bytes()
+        for task,route in [('B.md','由规划在预算内续派原工人'),('A.md','由主控续派原工人')]:
+            raw=(p/'tasks'/task).read_bytes()
+            rejected=call('gate-assign',task,'--','gate',assignment,ok=False)
+            assert rejected.returncode==255 and rejected.stdout==''
+            assert rejected.stderr.startswith('账本拒绝：授权候选必须clean\n'), rejected.stderr
+            assert all(word in rejected.stderr for word in ['qwbuddy/config.sh','未提交 payload.json','原副本提交后重试',route]), rejected.stderr
+            if task=='B.md': assert 'plan-authorize' in rejected.stderr and '预算不足' in rejected.stderr
+            assert (p/'tasks'/task).read_bytes()==raw
+        old_rejected=cli(str(scripts[0]),'gate-assign','--project',p,'--task',p/'tasks/B.md','--','gate',assignment,ok=False)
+        assert old_rejected.returncode==255 and old_rejected.stdout=='' and old_rejected.stderr=='账本拒绝：授权候选必须clean\n', old_rejected
+        assert (p/'tasks/B.md').read_bytes()==raw_b
+        for index in range(11):
+            extra=p/f'probe-{index:02}.json'; extra_paths.append(extra); extra.write_text('{}\n')
+        capped=call('gate-assign','B.md','--','gate',assignment,ok=False)
+        listed=capped.stderr.split('Git状态）：\n',1)[1].split('\n另有',1)[0].splitlines()
+        assert len(listed)==10 and '\n另有3条未列出。\n' in capped.stderr, capped.stderr
+        assert (p/'tasks/B.md').read_bytes()==raw_b
+        print('PASS user_候选dirty拒绝给出路：rc255/原前缀；tracked与中文空格untracked路径；规划/主控各续派原工人，票字节不变')
+    finally:
+        tracked.write_bytes(tracked_bytes); scratch.unlink()
+        for extra in extra_paths: extra.unlink()
+    call('gate-assign','B.md','--','gate',assignment)
     call('claim','B.md','--','accept-B',actor='gate-pane')
     context=call('gate-context','B.md','--','accept-B',actor='gate-pane').stdout
     change=source('change-B','原话：B接口升级；C不变')
@@ -336,6 +403,8 @@ file.write_text(json.dumps(s))
     assert revised['planning']['revisions'][0]['gate']['binding']['spec_rev']==0
     assert revised['planning']['source']['text']=='原话：A接口v1；B用此接口；C独立' and revised['planning']['revisions'][0]['source']['text']=='原话：B接口升级；C不变'
     assert read('C.md')==c_running
+    assert worker_report('B.md')==report_a
+    print('PASS user_修订规格保留报告：plan-revision/revision-handoff/revise成功，固定报告要求逐字节不变')
     call('gate-context','B.md','--','handoff-B',actor='gate-pane',ok=False)
     mark=count(); run('B.md',actor='planner-pane',ok=False); no_dispatch_since(mark)
     # 已verified历史不重写；新需求须后续票，拒绝时原MD逐字节保持。

@@ -991,7 +991,12 @@ if ($cmd eq 'land-authorize') {
   for my $path (map { "$bindir/qwb-$_.sh" } qw(lib run wake worktree ledger send role)) { my $s=read_file($path); $installed{$path}=sha256_hex($s) }
   $data={schema=>1,rev=>0,seq=>0,spec_rev=>0,phase=>'blocked',claim=>undef,workers=>{},questions=>{},events=>[],ops=>{},migration=>{task_sha256=>sha256_hex(''),confirm=>{map { $_=>'new ticket: no previous writers' } qw(run wake worktree worker controller old-fds external-actions)},installed=>\%installed}};
   fail('新票必须自带可验证场景') unless defined($r->{scenarios}) && scenarios_ok($r->{scenarios});
-  $body="# 任务书：$r->{package_id}\nstate: blocked\n## 原始意图\n$source->{text}\n## 工程规格\n$r->{spec}\n## 必要约束\n$r->{constraints}\n$r->{scenarios}\n";
+  my $report=<<'REPORT';
+只在本票的工作副本里改动并提交；全部完成后工作区须干净。
+往主账本绝对路径报告 `working:` / `done:`（写明提交号、跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票的 `working:` 只记进度，不会叫醒主控；需要主控处理时写 `blocked:` 或 `needs-decision:`，全部完成写 `done:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。
+最后打印 `DONE <commit sha>` 或 `STOP <原因>`。**不要改本文件的 `state:` 字段。**
+REPORT
+  $body="# 任务书：$r->{package_id}\nstate: blocked\n## 原始意图\n$source->{text}\n## 工程规格\n$r->{spec}\n## 必要约束\n$r->{constraints}\n$r->{scenarios}\n## 报告要求\n$report";
   $data->{planning}={request_id=>$r->{request_id},package_id=>$r->{package_id},packages=>$r->{packages},source=>$source,intent=>$r->{intent},spec=>$r->{spec},constraints=>$r->{constraints},paths=>$r->{paths},needs=>$r->{needs},authority=>$controller ? undef : $grant,authorization=>$controller ? undef : $grant->{authorization},creation_sha256=>$sha,artifacts=>{},ready=>{},revisions=>[],pending_revision=>undef,revision_handoff=>undef,landed=>undef};
   graph_check('start',0);
   field('scenarios-fp',scen_fp($body)); $line="working: planned request=$r->{request_id} package=$r->{package_id} source=$r->{source_event}"; append_body($line);
@@ -1343,7 +1348,14 @@ if ($cmd eq 'land-authorize') {
   $b->{head}=capture('git','-C',encode('UTF-8',$b->{candidate}),'rev-parse','HEAD');
   $b->{tree}=capture('git','-C',encode('UTF-8',$b->{candidate}),'rev-parse','HEAD^{tree}');
   $data->{gate}={identity=>$identity,binding=>$b,receipts=>[],reviews=>[],findings=>{},verdict=>'pending',rounds=>[],dispatches=>{}};
-  my $c=gate_context(); fail('授权候选必须clean') unless $c->{status} eq 'clean';
+  my $c=gate_context();
+  unless ($c->{status} eq 'clean') {
+    my @paths=split /\n/,text(capture('git','-C',encode('UTF-8',$b->{candidate}),'-c','core.quotepath=false','status','--porcelain=v1','--untracked-files=all'));
+    my $remaining=@paths>10 ? "\n另有".(@paths-10).'条未列出。' : '';
+    splice @paths,10 if @paths>10;
+    my $route=$data->{planning} && $data->{planning}{authority} ? '带规划授权的票由规划在预算内续派原工人；预算不足由主控用 plan-authorize 追加。' : '未带规划授权的票由主控续派原工人。';
+    fail("授权候选必须clean\n未提交或未跟踪路径（最多10条，Git状态）：\n".join("\n",@paths).$remaining."\n让实现者在原副本提交后重试；$route");
+  }
   $line="working: gate-authorized actor=$identity->{actor} candidate=$b->{candidate} attempt=$b->{attempt}"; append_body($line);
 } elsif ($cmd =~ /\Ahandoff-/) {
   fail('交接仅支持已迁票') unless $data;

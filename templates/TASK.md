@@ -73,12 +73,14 @@ Then  <可见结果及不得发生的副作用>
 
 ## 4. 报告要求
 
-往主账本绝对路径报告 `working:` / `done:`（含跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票的 `working:` 只记进度，不会叫醒主控；需要主控处理时写 `blocked:` 或 `needs-decision:`，全部完成写 `done:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。
+<!-- qwb-worker-report:start -->
+只在本票的工作副本里改动并提交；全部完成后工作区须干净。
+往主账本绝对路径报告 `working:` / `done:`（写明提交号、跑了什么命令与原始结果）/ `blocked:` / `needs-decision:`。未迁旧票的 `working:` 只记进度，不会叫醒主控；需要主控处理时写 `blocked:` 或 `needs-decision:`，全部完成写 `done:`。未迁旧票仍按旧追加约定；已迁票只能调用 `qwb-ledger.sh append --project <主项目根> --task <绝对路径> -- 'working: 内容'`，不得裸追加、改协作区或 state。身份取已绑定工人的 HERDR_PANE_ID；越权由writer拒绝。
+最后打印 `DONE <commit sha>` 或 `STOP <原因>`。**不要改本文件的 `state:` 字段。**
+<!-- qwb-worker-report:end -->
 
 使用者问题用 `qwb-ledger.sh question --project <根> --task <票> -- <key> <内容>` 打开；key不变。只有主控基于真实答复及证据写 `answer`，之后写 `resume`，普通 working/done 不解除未结义务。规格疑点仍遵守以下两行约定，问题key不能代替 spec-resolved。
 若生成质量门报告，附报告路径并核对运行前后 HEAD、工作区状态、门退出码、实际验收对象与命令；工作区脏、环境或依赖变化、关键场景未覆盖时，写明差异与待验收项，不直接复用旧报告。安装包或线上版本须另附身份与实际验证证据。
-最后打印 `DONE <commit sha>` 或 `STOP <原因>`。**不要改本文件的 `state:` 字段。**
-
 疑点两行约定（工人或主控认为**票本身有缺陷**时用，不是实现遇到困难）：
 
 ```

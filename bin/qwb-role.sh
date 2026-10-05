@@ -348,7 +348,12 @@ def main():
                 charter_text = charter_source.read_text()
                 workspace_script = '. "$1"; if [[ "$2" == "$3" ]]; then resolve_workspace "$2"; else qwb_is_project_worktree "$2" "$3" || exit 1; qwb_worktree_space "$2" "$3"; fi'
                 workspace = run(['bash','-c',workspace_script,'qwb-role',str(bindir/'qwb-lib.sh'),str(root),directory]).stdout.strip()
-                require(workspace, '须有唯一已登记workspace，不回退focused默认窗口')
+                if not workspace:
+                    choices = [w['workspace_id'] for w in herdr('workspace','list').get('workspaces',[])
+                               if isinstance(w,dict) and isinstance(w.get('workspace_id'),str) and w['workspace_id']]
+                    raise Refusal('须有唯一已登记workspace，不回退focused默认窗口\n'
+                                  '请在 qwbuddy/config.sh 把 QWB_WORKSPACE 填成本项目主工作区的 id。\n'
+                                  '当前 herdr workspace list 可选 id：'+(', '.join(choices) or '（无）'))
                 r = dict(version=1,actor=a.actor,root=str(root),role=a.role,scope='single-project',
                          kind='on-demand' if a.role=='CI' else 'standing',
                          allowed_actions=['status','proposal','test'] if a.role=='测试体系' else (['status','proposal','new','revise','dispatch-authorized'] if a.role=='规划' else ['status','proposal']),

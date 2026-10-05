@@ -45,7 +45,8 @@ with log.open('a') as f:f.write(json.dumps(a)+'\\n')
 def out(r): print(json.dumps({'result':r}))
 def err(): print('io_error',file=sys.stderr); sys.exit(9)
 mode=os.environ.get('ROLE_FAKE_MODE','')
-if a[:2]==['workspace','list']:out({'workspaces':[{'workspace_id':'w1','worktree':{'repo_root':os.environ['ROLE_PROJECT'],'is_linked_worktree':False}}]})
+if a[:2]==['workspace','list']:
+ out({'workspaces':[{'active_tab_id':'w1:t1','agent_status':'idle','focused':True,'label':'drill-main','number':1,'pane_count':1,'tab_count':1,'workspace_id':'w1'}]} if mode=='workspace-no-worktree' else {'workspaces':[{'workspace_id':'w1','worktree':{'repo_root':os.environ['ROLE_PROJECT'],'is_linked_worktree':False}}]})
 elif a[:2]==['tab','create']:
  s['cwd']=a[a.index('--cwd')+1];out({'root_pane':{'pane_id':'w1:pRole','tab_id':'w1:tRole','terminal_id':'term-role','workspace_id':'w1'}})
 elif a[:2]==['agent','start']:
@@ -136,6 +137,20 @@ print('Thu Oct  1 00:00:00 2099')
     assert old.returncode==0 and json.loads(old.stdout)['actual_model']=='openai-codex/gpt-6.1-sol', (old.stdout,old.stderr)
     print('PASS 起点bea487d的真实角色start接受相同无provider声明（有意收紧对照）')
     workers.write_text(original_workers)
+    config=p/'qwbuddy/config.sh'; config_bytes=config.read_bytes()
+    config.write_text(config.read_text().replace("QWB_WORKSPACE='w1'", "QWB_WORKSPACE=''"))
+    try:
+        before=[x.name for x in (p/'qwbuddy/.roles').iterdir()] if (p/'qwbuddy/.roles').exists() else []
+        offset=len(log.read_text().splitlines()) if log.exists() else 0
+        rejected=call('qwb-role.sh','start','--actor','no-workspace','--role','门禁','--worker','sol','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':'workspace-no-worktree'})
+        assert rejected.returncode==1 and rejected.stdout=='', (rejected.returncode,rejected.stdout,rejected.stderr)
+        assert rejected.stderr.startswith('拒绝: 须有唯一已登记workspace，不回退focused默认窗口\n'), rejected.stderr
+        assert all(word in rejected.stderr for word in ['qwbuddy/config.sh','QWB_WORKSPACE','主工作区','w1']), rejected.stderr
+        assert before==[x.name for x in (p/'qwbuddy/.roles').iterdir()]
+        calls=[json.loads(line) for line in log.read_text().splitlines()[offset:]]
+        assert not any(a[:2] in (['tab','create'],['agent','start'],['pane','run']) for a in calls), calls
+        print('PASS user_无workspace角色启动：真机无worktree形态，rc1/原前缀/config改法/w1，无角色记录或新tab')
+    finally: config.write_bytes(config_bytes)
     # F1: delivered first launch has no registered PID; a foreground shell can hide a live/background Pi.
     rejected=call('qwb-role.sh','start','--actor','gate','--role','门禁','--worker','sol','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':'launch-failed'})
     assert rejected.returncode!=0 and json.loads(state.read_text())['live']
@@ -153,6 +168,16 @@ print('Thu Oct  1 00:00:00 2099')
     assert first['pane'] == second['pane'] == 'w1:pRole'
     assert first['incarnation'] == second['incarnation'] == 1
     assert json.loads(state.read_text())['starts'] == 1
+    byte_bin=Path(tmp)/'byte-bin'; shutil.copytree(root/'bin',byte_bin)
+    (byte_bin/'qwb-role.sh').write_bytes(subprocess.check_output(['git','-C',str(root),'show','d66d77c:bin/qwb-role.sh']))
+    snapshots={f:f.read_bytes() for f in (p/'qwbuddy/.roles').iterdir() if f.is_file()}
+    results=[]
+    for script in (byte_bin/'qwb-role.sh',root/'bin/qwb-role.sh'):
+        result=subprocess.run(['bash',str(script),'start','--project',str(p),'--actor','gate','--role','门禁','--worker','sol','--dir',str(p)],env=env,capture_output=True,timeout=30)
+        results.append((result.returncode,result.stdout,result.stderr))
+        assert snapshots=={f:f.read_bytes() for f in (p/'qwbuddy/.roles').iterdir() if f.is_file()}
+    assert results[0]==results[1] and results[0][0]==0, results
+    print('PASS user_其余行为字节对照：固定d66d77c与当前role start成功重放stdout/stderr/rc/角色记录字节相同')
     assert list((p/'tasks').iterdir()) == [p/'tasks/lessons'], 'idle role must not manufacture tasks'
     assert not any(json.loads(x)[:2] == ['agent','prompt'] for x in log.read_text().splitlines())
     role_status = subprocess.run(['git','-C',str(p),'status','--short','--untracked-files=all'],capture_output=True,text=True)
