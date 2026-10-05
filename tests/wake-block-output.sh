@@ -108,7 +108,8 @@ def config(value=1800000):
 def reset(last='working: 正在推进',fp_last='working: 先前进度',stamp='2000-01-01T00:00:00Z',state='running'):
     config(); clock.write_text(str(start)); calls.write_bytes(b'')
     fp=hashlib.sha1((state+'\n'+fp_last).encode()).hexdigest()
-    ticket.write_text(f'state: {state}\ndispatch: fixture pane=worker dir={p}\n{last}\nwake: {stamp} state={state} fp={fp}\n')
+    ticket.write_text(f'state: {state}\ndispatch: fixture pane=worker dir={p}\n{last}\n'
+                      +(f'wake: {stamp} state={state} fp={fp}\n' if stamp is not None else ''))
 def append(line):
     with ticket.open('a') as f: f.write(line+'\n')
 def run(*args,rc=0,extra=None):
@@ -123,6 +124,22 @@ def timeout():
     r=run('--block','--max-ms','100',rc=124)
     assert not r.stdout and b'--block' in r.stderr,(r.stdout,r.stderr)
     return r
+# 返修1: 首次进度尚无 wake 行，mtime 新鲜；所有入口都不叫、不写行。
+reset(stamp=None); before=ticket.read_bytes()
+r=run('--once','--pane','ctl'); assert '进度行不叫醒'.encode() in r.stdout
+assert '进度行不叫醒'.encode() in run('--dry-run').stdout
+timeout(); assert count()==0 and ticket.read_bytes()==before and not delivered()
+print('PASS repair_无wake新鲜进度不叫醒: once/dry-run/block; zero delivery/write')
+# 返修2: 尚无 wake 行但 mtime 已超期，兜底只叫一次。
+reset(stamp=None); subprocess.run(['touch','-t','200001010000',str(ticket)],check=True)
+run('--once','--pane','ctl'); assert count()==1 and len(delivered())==1
+before=ticket.read_bytes(); timeout(); assert ticket.read_bytes()==before and len(delivered())==1
+print('PASS repair_无wake超期进度兜底一次: old mtime; first wake then dedup')
+# 返修3: 确实存在 wake 行但时间戳非法（含空值），mtime 新鲜仍立即叫。
+for stamp in ['GARBAGE','']:
+    reset(stamp=stamp); run('--once','--pane','ctl'); assert count()==2 and len(delivered())==1
+    before=ticket.read_bytes(); timeout(); assert ticket.read_bytes()==before
+print('PASS repair_已有wake非法时间仍超期: invalid/empty timestamp; immediate wake then dedup')
 # 1: 连续三次进度；once、dry-run、block 均保留原票字节和投递数。
 reset(stamp=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(start//1000)))
 for n in range(3):

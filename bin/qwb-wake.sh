@@ -22,7 +22,7 @@ usage() {
      投递成功才逐票写 wake 行，失败一行都不写（下轮重试）。
 兜底重叫：仅对 state=running 生效——fp 未变或上述 working: 进度票，距票文件修改时间与最近一条
      wake: 时间戳中较晚者 ≥ config.sh 的 QWB_REWAKE_MS（>0 才启用，quiet 下关闭）→ 再叫一次；
-     工人写进度会推迟兜底，blocked/needs-decision 指纹未变即跳过；wake 时间戳解析失败按超期处理。
+     工人写进度会推迟兜底，blocked/needs-decision 指纹未变即跳过；进度票无 wake 行时只取文件修改时间，已有 wake 行的时间戳解析失败才按超期处理。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
 等待：一个共用订阅连接覆盖全部登记工人及角色，收到subscription_started后再level reconcile。
      事件只加速MD读回，不消费业务事实；断流/无能力每至多1秒扫描并重连，如实报缺口。
@@ -591,9 +591,10 @@ collect_due() {
       we=skip
       if [[ "$POSTURE_QUIET" -eq 0 && "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
         we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
-        if [[ -n "$we" && "$legacy" -eq 1 ]]; then
+        if [[ -n "$we" && "$legacy" -eq 1 ]] \
+          || { [[ "$progress" -eq 1 ]] && ! grep -q '^wake:' "$f"; }; then
           mtime="$(perl -e 'print((stat($ARGV[0]))[9] // 0)' "$f")"
-          (( mtime <= we )) || we="$mtime"
+          if [[ -z "$we" ]] || (( mtime > we )); then we="$mtime"; fi
         fi
         if [[ -z "$we" ]] || (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
           we=""
