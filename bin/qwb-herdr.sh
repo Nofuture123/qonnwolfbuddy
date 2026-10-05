@@ -197,7 +197,7 @@ def activity(pane,directory=None):
                 if role in ('assistant','toolResult') and isinstance(content,str): content=[dict(type='text',text=content)]
                 m=dict(m,content=content)  # Only content changes; retain role/call ID/stop metadata.
             if role: last=m
-            if role=='assistant':
+            if role=='assistant' and m.get('stopReason')!='aborted':
                 outstanding.update(c['id'] for c in m.get('content',[]) if isinstance(c,dict) and c.get('type')=='toolCall' and c.get('id'))
             elif role=='toolResult': outstanding.discard(m.get('toolCallId'))
         active=bool(outstanding) or info.get('agent_status') in ('working','blocked')

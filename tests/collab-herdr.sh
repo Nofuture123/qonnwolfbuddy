@@ -837,13 +837,42 @@ else: sys.exit(9)
     failed=dict(type='message',id='failed',parentId=None,message=dict(role='assistant',stopReason='error',errorMessage='WebSocket closed 1012',content=[dict(type='toolCall',id='ghost',name='bash')]))
     finish=dict(type='message',id='finish',parentId='failed',message=dict(role='assistant',stopReason='stop',content=[]))
     omission=dict(type='context_edit',id='omit',parentId='finish',targetId='failed',replacement=None)
-    def observe(entries,wanted,pending):
+    def observe(entries,wanted,pending,script=helper):
         session.write_text('\n'.join(json.dumps(x) for x in [header,*entries])+'\n'); before=session.read_bytes()
-        got=run(*helper,'activity','--project',str(root),'--pane','wTask:p1','--dir',str(wt),env=busyenv)
+        got=run(*script,'activity','--project',str(root),'--pane','wTask:p1','--dir',str(wt),env=busyenv)
         assert got.returncode==0,(got.stdout,got.stderr)
         data=json.loads(got.stdout)
         assert (data['activity'],data.get('pending_tools'))==(wanted,pending),(wanted,pending,data)
         assert session.read_bytes()==before,'activity rewrote append-only native history'
+        return got.returncode,got.stdout,got.stderr
+    # Native samples: abort before execution leaves no result; interrupt during execution pairs it.
+    aborted=dict(type='message',id='aborted',parentId='result',message=dict(role='assistant',stopReason='aborted',content=[dict(type='toolCall',id='cancelled',name='bash')]))
+    prior=dict(failed,message=dict(failed['message'],stopReason='toolUse'))
+    paired=dict(type='message',id='result',parentId='failed',message=dict(role='toolResult',toolCallId='ghost',isError=True,content=[]))
+    user=dict(type='message',id='new-user',parentId='aborted',message=dict(role='user',content=[dict(type='text',text='continue')]))
+    clean=dict(finish,parentId='new-user')
+    for status in ('idle','done'):
+        state.write_text(json.dumps(dict(s,panes=[dict(x,agent_status=status) if x['pane_id']=='wTask:p1' else x for x in s['panes']])))
+        observe([prior,paired,aborted,user,clean],'idle',[])
+        observe([prior,paired,aborted],'idle',[])
+    # Derive the byte baseline from the current script by removing only this ticket's guard.
+    baseline=b/'qwb-herdr-before-aborted.sh'
+    guard="if role=='assistant' and m.get('stopReason')!='aborted':"
+    source=(ROOT/'bin/qwb-herdr.sh').read_text(); assert source.count(guard)==1
+    baseline.write_text(source.replace(guard,"if role=='assistant':",1))
+    old_helper=['bash',str(baseline)]
+    interrupted=dict(finish,parentId='result',message=dict(role='assistant',stopReason='error',content=[]))
+    for status in ('idle','done','working','blocked'):
+        state.write_text(json.dumps(dict(s,panes=[dict(x,agent_status=status) if x['pane_id']=='wTask:p1' else x for x in s['panes']])))
+        for entries,wanted,tools in (([prior,paired,interrupted],'busy' if status in ('working','blocked') else 'idle',[]),
+                                     ([prior],'busy',['ghost'])):
+            assert observe(entries,wanted,tools)==observe(entries,wanted,tools,old_helper),status
+        observe([prior,dict(aborted,parentId='failed'),user,clean],'busy',['ghost'])
+        if status in ('working','blocked'):
+            observe([prior,paired,aborted,user,clean],'busy',[])
+            observe([prior,paired,aborted],'busy',[])
+    state.write_text(json.dumps(s))
+    print('PASS aborted unexecuted calls idle/done, including leaf; paired interruption/toolUse/older pending raw bytes unchanged; working/blocked stay busy')
     observe([failed,finish],'busy',['ghost'])  # An error or Herdr idle alone never clears a call.
     observe([failed,finish,omission],'idle',[])  # Only the explicit edit condition differs.
     observe([failed,finish,dict(omission,targetId='other-entry')],'busy',['ghost'])
