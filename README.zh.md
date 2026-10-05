@@ -44,7 +44,7 @@ bash qwbuddy/bin/qwb-run.sh --task YYYY-MM-DD-topic --worker pi-sol-high
 
 ## 每个主控只选一种值守入口
 
-Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在 `agent_settled`（Pi 不再自动继续）时启动；进展以 `[qwb-wake]` follow-up 接续。旧票 exit 2 投递后也要等到 `agent_settled` 才重启值守；已迁票的 `[qwb-handoff]` 摘要在投递 API 接受后立即续接唯一代码监督。未知宿主不支持，取锁或接入值守前须先确认宿主。
+Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Stop 事件接续。Pi 的自带源模板是 `templates/pi-extensions/qwb-watch.ts`，安装目标为项目 `.pi/extensions/qwb-watch.ts`；安装后重启 Pi 或运行 `/reload`。启动时持锁会在 `session_start` 值守，晚获主控锁会在 `agent_settled`（Pi 不再自动继续）时启动；需处理的变化以 `[qwb-wake]` follow-up 接续；未迁 running 票工人未丢失时，`working:` 只记进度不叫醒，时间兜底取票修改时间与最近 wake 中较晚者（quiet 下关闭）。旧票 exit 2 投递后也要等到 `agent_settled` 才重启值守；已迁票的 `[qwb-handoff]` 摘要在投递 API 接受后立即续接唯一代码监督。未知宿主不支持，取锁或接入值守前须先确认宿主。
 
 用 `bash qwbuddy/bin/qwb-status.sh` 排查账本和值守。健康结果为「未知」时检查失败的查询、安装和主控锁，不启动另一种值守。不能用 Claude hook 回合间的 status 结果断言 hook 未安装。主控退出后须重新启动。运行时保留可见 tab 命令供手工排障，不作为主控开局入口。
 

@@ -17,7 +17,7 @@ Claude Code 和 Pi 在派发后、或处理完一次唤醒后，直接结束本�
 - **Claude Code**：母本安装器把 Stop hook 合并进 `.claude/settings.json`，指向 `qwbuddy/bin/qwb-hook-claude-stop.sh`。安装报错须修复后重装。hook 回合结束前台调用 `qwb-wake.sh --block`。健康 hook 沿用；回合间查配置与下次 Stop 的实际结果。未知时查设置、`qwbuddy/.hook.err` 和主控锁。
 - **Pi**：母本 `templates/pi-extensions/qwb-watch.ts` 由 `bin/qwb-init.sh` 安装到目标项目 `.pi/extensions/qwb-watch.ts`。安装或更新后重启 Pi 或执行 `/reload`，并验证扩展已实际加载、当前 `HERDR_PANE_ID` 持有锁；不能只看文件存在。启动时已有锁则在 `session_start` 值守，启动后获锁则在 `agent_settled`（Pi 不再自动继续）接入。扩展持有 `qwb-wake.sh --block` 子进程，exit 2 的摘要以 `[qwb-wake]` 与 `followUp` 接续；旧票摘要投递后等 `agent_settled` 才重启阻塞值守；已迁票的 `[qwb-handoff]` 摘要在API接受后立即接续唯一代码监督，即使主控忙碌也不停止监测。门铃重投由同票持久收据限制，不凭API成功宣称received/handled。`turn_end` 是同一运行内的模型请求边界，不用于启动值守。用 `qwb-status.sh` 核对 `值守：pi-ext（pid …）`；异常查安装文件、reload、锁主和 `qwbuddy/.pi-watch.err`。
 
-`qwb-wake.sh --block` 每轮复核主控锁与宿主关系，孤儿值守不消费唤醒；所有宿主共用 `.supervisor.guard` 内核单飞锁，第二代码监督拒绝启动。一轮最多投递一条摘要。旧票仍沿用末行指纹和仅running的时间兜底；已迁票逐event持久交接，旧wake指纹不消费待办，blocked/needs-decision也有界重投，当前仅controller通道。`--check` 只报健康，`--ensure` 只供历史 tab 手工排障。主控退出或机器重启后由使用者重启主控，按总说明开局和未结账本接续，不会自动恢复。
+`qwb-wake.sh --block` 每轮复核主控锁与宿主关系，孤儿值守不消费唤醒；所有宿主共用 `.supervisor.guard` 内核单飞锁，第二代码监督拒绝启动。一轮最多投递一条摘要。旧票的 running 且工人未丢失时，working: 只记进度不叫醒；其余新事实沿用末行指纹，running 的时间兜底取票修改时间与最近 wake 中较晚者（quiet 下关闭）；已迁票逐event持久交接，旧wake指纹不消费待办，blocked/needs-decision也有界重投，当前仅controller通道。`--check` 只报健康，`--ensure` 只供历史 tab 手工排障。主控退出或机器重启后由使用者重启主控，按总说明开局和未结账本接续，不会自动恢复。
 
 ## Herdr 事件与焦点（09候选，未授权启用）
 

@@ -12,16 +12,17 @@ usage() {
   每event至多3次门铃，accepted有活动/合理wait不误催；预算耗尽仍保留pending/status。
   所有宿主共用内核监督owner锁，第二实例显式拒绝；旧票仍使用下述兼容指纹。
 
-循环：读账本列未结项 → 有未结项且进展指纹已变 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
+循环：读账本列未结项 → 有需主控处理的新事实或 running 票超期无进展 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
 未结项 = 任务书头部 state ∈ {running, blocked, needs-decision}；非法 state 或账本 UTF-8 损坏
          也按 needs-decision 叫主控查看（state 合法值仍只有五个）。
 去重：fp = sha1(state 值 + "\n" + 最后一条 working:/done:/blocked:/needs-decision: 行原文，无则空串；
      running 票判定为工人丢失时再追加 "\nlost=<pane>" 段——工人一消失指纹变一次、叫一次，之后指纹不变不重叫）；
      叫醒后写 wake: <时间戳> state=<值> fp=<sha1>。fp 未变不再叫；无 fp= 的旧 wake 行视为指纹不同。
+     未迁 running 票工人未丢失且末行是 working: 时，只记进度，不因指纹变化叫醒或写 wake 行。
      投递成功才逐票写 wake 行，失败一行都不写（下轮重试）。
-兜底重叫：仅对 state=running 生效——fp 未变但最近一条 wake: 行的时间戳距今 ≥ config.sh 的
-     QWB_REWAKE_MS（>0 才启用）→ 仍再叫一次（兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
-     blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过不重叫）；时间戳解析失败按超期处理。
+兜底重叫：仅对 state=running 生效——fp 未变或上述 working: 进度票，距票文件修改时间与最近一条
+     wake: 时间戳中较晚者 ≥ config.sh 的 QWB_REWAKE_MS（>0 才启用，quiet 下关闭）→ 再叫一次；
+     工人写进度会推迟兜底，blocked/needs-decision 指纹未变即跳过；wake 时间戳解析失败按超期处理。
 投递失败：不写 wake 行、报 stderr、继续处理下一项；值守主循环不因单次投递失败退出。
 等待：一个共用订阅连接覆盖全部登记工人及角色，收到subscription_started后再level reconcile。
      事件只加速MD读回，不消费业务事实；断流/无能力每至多1秒扫描并重连，如实报缺口。
@@ -522,7 +523,7 @@ ts_epoch() {
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
 OPEN_N=0; POSTURE_QUIET=0
 collect_due() {
-  local out="$1" f st last fp lwf we lostpane="" pending retry posture plan_data plan_result plan_rc owner
+  local out="$1" f st last fp lwf we mtime progress legacy lostpane="" pending retry posture plan_data plan_result plan_rc owner
   OPEN_N=0; POSTURE_QUIET=0
   if [[ -e "$PROJECT_ROOT/qwbuddy/.posture.md" || -L "$PROJECT_ROOT/qwbuddy/.posture.md" ]]; then
     if posture="$(bash "$(dirname "$LIB")/qwb-ledger.sh" mode-status --project "$PROJECT_ROOT")"; then
@@ -575,25 +576,37 @@ collect_due() {
              [[ -n "$lostpane" ]] && printf '\nlost=%s' "$lostpane" || true
            } | shasum | cut -d' ' -f1)"
     lwf="$(last_wake_fp "$f")"
-    if [[ -n "$lwf" && "$lwf" == "$fp" ]]; then
-      # Quiet suppresses unchanged legacy timer nudges, never new facts or durable handoffs.
-      [[ "$POSTURE_QUIET" -eq 0 ]] || continue
-      # 时间兜底重叫只对 running 生效：兜底目的是「工人挂起/崩溃没写行」，只在 running 成立；
-      # blocked/needs-decision 等的是主控裁决或使用者，指纹未变即跳过（重叫只烧主控 token）。
+    legacy=1; progress=0
+    grep -q '^<!-- qwb-collab-v1$' "$f" && legacy=0
+    if [[ "$legacy" -eq 1 && "$st" == "running" && -z "$lostpane" && "$last" == working:* ]]; then
+      progress=1
+    fi
+    if [[ "$progress" -eq 1 || ( -n "$lwf" && "$lwf" == "$fp" ) ]]; then
+      # Quiet suppresses legacy timer nudges, never actionable new facts or durable handoffs.
+      [[ "$progress" -eq 1 || "$POSTURE_QUIET" -eq 0 ]] || continue
       if [[ "$st" != "running" ]]; then
         [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st} 等裁决（进展未变，不重叫）"
         continue
       fi
-      if [[ "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
+      we=skip
+      if [[ "$POSTURE_QUIET" -eq 0 && "${QWB_REWAKE_MS:-0}" =~ ^[1-9][0-9]*$ ]]; then
         we="$(ts_epoch "$(last_wake_ts "$f")")" || we=""
+        if [[ -n "$we" && "$legacy" -eq 1 ]]; then
+          mtime="$(perl -e 'print((stat($ARGV[0]))[9] // 0)' "$f")"
+          (( mtime <= we )) || we="$mtime"
+        fi
         if [[ -z "$we" ]] || (( $(now_ms) - we * 1000 >= QWB_REWAKE_MS )); then
           we=""
         fi
-      else
-        we=skip
       fi
       if [[ -n "$we" ]]; then
-        [[ "$BLOCK" -eq 1 ]] || echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+        if [[ "$BLOCK" -eq 0 ]]; then
+          if [[ "$progress" -eq 1 ]]; then
+            echo "跳过：$(basename "$f") state=${st}（工人在推进，进度行不叫醒）"
+          else
+            echo "跳过：$(basename "$f") state=${st}（已叫过，进展未变）"
+          fi
+        fi
         continue
       fi
     fi

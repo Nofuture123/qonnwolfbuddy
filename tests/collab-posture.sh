@@ -186,10 +186,10 @@ f.write_text(json.dumps(s))
             proof.write_text(json.dumps({'event_id':event,'op_id':op,'outcome':'applied','evidence':'fixture recipient handled actual source, no external action'}))
             send('handled',t,'--event',event,'--op',op,'--result-ref',proof)
     for t in [a,b,c,d]: drain(t)
-    legacy=p/'tasks/legacy.md'; legacy.write_text('state: running\nworking: legacy idle\n')
+    legacy=p/'tasks/legacy.md'; legacy.write_text('state: running\ndone: legacy idle\n')
     def wake():
         return run(['bash',p/'qwbuddy/bin/qwb-wake.sh','--project',p,'--once','--pane','ctl'],extra={'QWB_REWAKE_MS':'1'})
-    wake() # One real new legacy fact.
+    wake() # Consume an actionable completion before checking quiet idle deduplication.
     baseline=log.read_bytes(); mode_before=(p/'qwbuddy/.posture.md').read_bytes()
     revisions={t:read(t)['rev'] for t in [a,b,c,d]}
     for _ in range(3):

@@ -1983,15 +1983,17 @@ grep -qF 'pane=contract:p99' "$DISP2" \
 echo "== 27. F1 回归：工人无新账本行时的时间兜底重叫 =="
 # 场景：任务已叫醒过一次，此后工人挂起/崩溃不再追加任何行（指纹永不变）
 RWF="$TMP/tasks/2099-01-23-rewake.md"
-printf '# rw\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\nworking: 工人在干活\n' > "$RWF"
+printf '# rw\nstate: running\nimplementation-authorized: explicit fixture scope approval\ndispatch-budget: 1000\n' > "$RWF"
 ( cd "$TMP" && PATH="$STUB:$PATH" bash qwbuddy/bin/qwb-wake.sh --once --pane wtest:p9 ) >/dev/null
-[[ "$(grep -c '^wake:' "$RWF")" == "1" ]] && ok "首轮叫醒写下 wake 行" || bad "首轮未写 wake 行"
-# 指纹未变 + 默认 QWB_REWAKE_MS=1800000 未超期 → 不叫
+[[ "$(grep -c '^wake:' "$RWF")" == "1" ]] && ok "新票首轮叫醒写下 wake 行" || bad "新票首轮未写 wake 行"
+printf 'working: 工人在干活\n' >> "$RWF"
+# 新进度行不叫；默认 QWB_REWAKE_MS=1800000 未超期 → 不叫
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
-  && bad "未超期却将再叫（兜底误触发）" || ok "指纹未变且未超期→不再叫"
-# 负例：把 wake 时间戳改到 2000 年 → 已超期 → 无任何新账本行也必须再叫（修复前永远跳过）
+  && bad "未超期却将再叫（兜底误触发）" || ok "新 working 进度行且未超期→不再叫"
+# 负例：wake 时间戳与票修改时间都改到 2000 年 → 超期无进展必须再叫
 sed -i '' 's/^wake: [^[:space:]]*/wake: 2000-01-01T00:00:00Z/' "$RWF"
+touch -t 200001010000 "$RWF"
 out="$( cd "$TMP" && bash qwbuddy/bin/qwb-wake.sh --dry-run --once )"
 grep -q '未结项（将叫醒）: 2099-01-23-rewake' <<<"$out" \
   && ok "无新行但 wake 已超期→兜底再叫" || bad "无新行且已超期仍跳过（F1 未修）"
