@@ -727,7 +727,7 @@ PROMPT="你是本任务的执行者。唯一规格来源：${TASK_FILE}（先完
 if [[ -n "$GATE_OP" ]]; then
   GATE_DIFF="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" gate-diff "$GATE_OP" '')" || exit 1
   if [[ "$GATE_KIND" == review ]]; then
-    PROMPT="你是独立审核者，不写实现、不自派代理。唯一原票=${TASK_FILE}。按Standards+Spec两轴、最多3审点，核对原finding和新diff、必要直接调用者；输出实际原生session/model/family与证据，unknown/同family不伪填。本票差异包（精确base/candidate/上轮reviewed head）：${GATE_DIFF}"
+    PROMPT="你是独立审核者，不写实现、不自派代理。唯一原票=${TASK_FILE}。按Standards+Spec两轴、最多3审点，核对原finding和新diff、必要直接调用者；输出实际原生session/model/family与证据，unknown/模型相同不伪填（审核者须与实现者模型不同、会话不同；family仅可选附记）。本票差异包（精确base/candidate/上轮reviewed head）：${GATE_DIFF}"
   else
     PROMPT="原票原范围返修，不新增产品或改变场景。先qwb-ledger read核对保留的原finding，成立项逐项修复并报告新attempt；三轮同根因无新证据由门禁转技术重诊。${PROMPT}"
   fi

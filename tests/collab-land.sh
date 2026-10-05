@@ -12,6 +12,7 @@ export QWB_LAND_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_LAND_CASE="${1:-all}"
 python3 -B - <<'PY'
 from process_fixture import TemporaryDirectory, socket_path
+from roles_polish_fixture import baseline as polish_baseline, freeze_writer
 import atexit, fcntl, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_LAND_ROOT'])
@@ -268,6 +269,11 @@ exec "$LAND_REAL_MV" "$@"
             d=read(t);assert d['phase']=='verified' and d['land']['stage']=='closed'
             status=call('qwb-status.sh')
             assert '[已结]' in next(line for line in status.stdout.splitlines() if 'notify-close.md' in line),status.stdout
+            if os.environ.get('QWB_ROLES_POLISH_ONLY')=='status':print('EVIDENCE verified status before assertion\n'+status.stdout,flush=True)
+            section=status.stdout.split('notify-close.md',1)[1].split('[已结]',1)[0].split('[未结]',1)[0]
+            assert '交接待办' not in section and '条已满足或纯进度的历史交接' in section,section
+            expected=sum(not h['handled'] for h in d['handoffs'].values())
+            assert f'另有 {expected} 条已满足或纯进度的历史交接' in section,section
             assert all(not h['handled'] for h in d['handoffs'].values() if d['events'][h['source_seq']-1]['kind'] in ['land-authorize','land-prepare','land-apply'])
             closed=t.read_bytes()
             t.write_bytes(before_close)
@@ -286,6 +292,16 @@ exec "$LAND_REAL_MV" "$@"
                     ledger('dispatch',t,op,'notify-worker',f'dispatch: op_id={op} worker=sol pane=notify-worker dir={c}')
                     ledger('append',t,'blocked: real worker action remains',actor='notify-worker')
                     call('qwb-send.sh','pending','--task',t)
+                    blocked=next(h for h in read(t)['handoffs'].values() if h['payload']=='blocked: real worker action remains')
+                    visible=call('qwb-status.sh').stdout
+                    line=next(row for row in visible.splitlines() if '交接待办: event_id='+blocked['event_id'] in row)
+                    status_script=notify_bin/'qwb-status.sh';current_status=status_script.read_text()
+                    try:
+                        status_script.write_text(polish_baseline('qwb-status.sh',current_status));notify_runtime=True
+                        previous=call('qwb-status.sh').stdout
+                        assert line==next(row for row in previous.splitlines() if '交接待办: event_id='+blocked['event_id'] in row)
+                    finally:
+                        status_script.write_text(current_status);notify_runtime=False
                 else:
                     ledger('question',t,'notify-user','real user decision required')
                     # Handle notification, but never answer/resume merely by handling it.
@@ -327,6 +343,60 @@ exec "$LAND_REAL_MV" "$@"
             return {'pid':pid,'pid_start':start}
         finally:
             if child.poll() is None: child.terminate(); child.wait(timeout=20)
+    if os.environ['QWB_LAND_CASE'] in ('all','roles-polish') and not os.environ.get('QWB_NOTIFY_ONLY'):
+        t,c,op,m,head=accepted('roles-polish')
+        ledger('dispatch',t,op,'worker-pane',f'dispatch: op_id={op} worker=sol pane=worker-pane dir={c}')
+        ledger('append',t,f'working: worker-activity op={op} pane=worker-pane evidence='+json.dumps(dead_generation()))
+        ref='auth-roles-polish'
+        ledger('land-authorize',t,op,ref,'main','fixture explicit local land','tasks/roles-polish.md','tasks/live.md')
+        denied=call('qwb-worktree.sh','land','roles-polish','--op',op,'--auth-ref',ref,ok=False)
+        print('EVIDENCE '+json.dumps(dict(before=m,actual=git('rev-parse','main'),rc=denied.returncode,stderr=denied.stderr),ensure_ascii=False),flush=True)
+        assert git('rev-parse','main')==m, 'live worker rejection happened after main fast-forward'
+        assert denied.stderr.startswith('拒绝：本票写入者尚未退出（idle/done不等于已停）') and 'herdr pane close worker-pane' in denied.stderr and '同一操作号' in denied.stderr,denied.stderr
+        assert read(t)['land']['stage']=='authorized'
+        # 在同路径、同原始票与原生状态上比较只撤本票改动的基线。
+        snapshot=tmp/'polish-land-snapshot';shutil.copytree(p,snapshot)
+        original_runtime=runtime;runtime=tmp/'polish-land-bin';shutil.copytree(ROOT/'bin',runtime)
+        native=Path(env['LAND_NATIVE_STATE']);saved_native=native.read_bytes();outputs=[]
+        writer=(ROOT/'bin/qwb-ledger.sh').read_text()
+        (runtime/'qwb-ledger.sh').write_text(freeze_writer(writer))
+        worktree=(ROOT/'bin/qwb-worktree.sh').read_text()
+        try:
+            for text in [polish_baseline('qwb-worktree.sh',worktree),worktree]:
+                shutil.rmtree(p);shutil.copytree(snapshot,p);native.write_bytes(saved_native)
+                (runtime/'qwb-worktree.sh').write_text(text)
+                result=call('qwb-worktree.sh','land','roles-polish','--op',op,'--auth-ref',ref,extra={'LAND_ENDPOINT':'stopped'})
+                assert git('rev-parse','main')==head and read(t)['phase']=='verified' and not c.exists()
+                outputs.append((result.returncode,result.stdout,result.stderr,t.read_bytes()))
+            assert outputs[0]==outputs[1], 'stopped-writer land byte transcript changed'
+            print('PASS roles-polish 合规land stdout/stderr/rc/票字节一致（只撤本票改动）')
+            # 已经部分合入的land恢复仍走原收据，不重merge。
+            shutil.rmtree(p);shutil.copytree(snapshot,p);native.write_bytes(saved_native)
+            ledger('land-prepare',t,op,ref);ledger('land-apply',t,op,ref)
+            denied=call('qwb-worktree.sh','finish','roles-polish','--merged','--op',op,'--auth-ref',ref,ok=False)
+            assert denied.stderr.startswith('拒绝：本票写入者尚未退出（idle/done不等于已停）') and 'herdr pane close worker-pane' in denied.stderr,denied.stderr
+            merges=Path(env['LAND_GIT_LOG']).read_bytes()
+            call('qwb-worktree.sh','land','roles-polish','--op',op,'--auth-ref',ref,extra={'LAND_ENDPOINT':'stopped'})
+            assert Path(env['LAND_GIT_LOG']).read_bytes()==merges and read(t)['phase']=='verified'
+            print('PASS roles-polish finish出路与已部分land同op续接，无重复merge')
+            # 未迁旧票的status逐字节保持，不过滤任何输出。
+            tasks=p/'tasks';saved_tasks=tmp/'polish-status-tasks';tasks.rename(saved_tasks);tasks.mkdir()
+            try:
+                (tasks/'legacy.md').write_text('# legacy\nstate: verified\nworking: retained legacy history\n')
+                status=(ROOT/'bin/qwb-status.sh').read_text();observed=[]
+                for text in [polish_baseline('qwb-status.sh',status),status]:
+                    (runtime/'qwb-status.sh').write_text(text)
+                    result=call('qwb-status.sh')
+                    observed.append((result.returncode,result.stdout,result.stderr,(tasks/'legacy.md').read_bytes()))
+                assert observed[0]==observed[1], 'legacy status byte transcript changed'
+                print('PASS roles-polish 未迁旧票status stdout/stderr/rc/票字节一致（只撤本票改动）')
+            finally:
+                shutil.rmtree(tasks);saved_tasks.rename(tasks)
+        finally:
+            runtime=original_runtime
+        print('PASS roles-polish 工人未退出在合入前拒绝，窗口/出路明确，同op关闭后成功')
+        if os.environ['QWB_LAND_CASE']=='roles-polish':sys.exit(0)
+        t.unlink()
     if os.environ['QWB_LAND_CASE']=='env-digest':
         env['LC_ALL']='';env['LANG']='en_US.UTF-8'
         t,c,op,m,head=accepted('env-digest',actor='gate-pane',check_environment=True)
@@ -455,6 +525,8 @@ exec "$LAND_REAL_MV" "$@"
             for shape in ('"pi"','"1pi"','""','42','0','[]','{}','true','false'):
                 got=shape_run(new,target,shape)
                 assert ('尚未退出' if shape in ('"pi"','"1pi"') else '未知') in got['stderr'],got
+                if shape in ('"pi"','"1pi"'):
+                    assert 'herdr pane close '+target in got['stderr'] and '同一操作号' in got['stderr'],got
                 print('PASS land '+target+' rejects agent='+shape+' without side effects',flush=True)
             for process in ('foreground','query'):
                 prior=shape_run(old,target,process=process)
@@ -627,6 +699,9 @@ exec "$LAND_REAL_MV" "$@"
             ledger('append',t,f'worktree-space: id=task-space root-tab=task-tab path={c}')
             ledger('append',t,f'working: worker-activity op={op} pane=task-pane evidence='+json.dumps(dead_generation()))
         authorize(t,op,ref)
+        if failure=='endpoint':
+            # 明确模拟先前版本/中断留下的部分land；新鲜活工人前置拒绝由roles-polish场景覆盖。
+            ledger('land-prepare',t,op,ref);ledger('land-apply',t,op,ref)
         flag=Path(env['LAND_FAIL_FLAG']);flag.unlink(missing_ok=True)
         extra={'LAND_FAIL':'publish' if failure=='publish-reauthorize' else failure}
         if failure=='endpoint':extra|={'LAND_SPACE_PATH':str(c),'LAND_ENDPOINT':'active'}

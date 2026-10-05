@@ -85,7 +85,8 @@ else
       if [[ -z "$collab_errors" ]]; then collab_errors="$(mktemp)"; fi
       if collab="$(qwb_ledger "$PROJECT_ROOT" "$f" read 2>"$collab_errors")"; then
         collab_ok=1
-        [[ -z "$(printf '%s' "$collab" | qwb_task_obligations_json)" ]] || mark="未结"
+        obligations="$(printf '%s' "$collab" | qwb_task_obligations_json)"
+        [[ -z "$obligations" ]] || mark="未结"
       else
         mark="未结"
       fi
@@ -138,12 +139,16 @@ else
             print "       问题未结: key=$k ".($q->{answer} eq "" ? "未答" : "待恢复")."\n" if $q->{resumed} eq "";
           }
           my $h=$d->{handoffs} // {};
+          my %pending=map { substr($_,8)=>1 } grep { /^handoff=/ } split / /,$ARGV[0];
+          my $history=0;
           for my $id (sort keys %$h) {
             next if $h->{$id}{handled};
+            unless ($pending{$id}) { $history++; next }
             my $r=$h->{$id};
             print "       交接待办: event_id=$id received=".($r->{received} ne "" ? "yes" : "no")." accepted=".($r->{accepted} ne "" ? "yes" : "no")." transport=$r->{transport_count}/3".($r->{prepared} ? " 先对账" : "").($r->{transport_count}>=3 ? " 重投预算耗尽，须显式核查" : "")."\n";
           }
-        '
+          print "       另有 $history 条已满足或纯进度的历史交接\n" if $history;
+        ' "$obligations"
       else
         printf '       [未结] 协作区损坏/未知，须主控对账\n'
       fi

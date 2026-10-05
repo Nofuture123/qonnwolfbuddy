@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 公开入口 + 私有项目/系统边界替身；绝不触碰真实Herdr。
+# roles_polish_fixture.py 提供仅撤本票改动的逐字节基线。
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/process-fixture.sh"
 qwb_test_scope "$@"
@@ -11,6 +12,7 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 export QWB_PLANNING_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
 from process_fixture import TemporaryDirectory, register, release
+from roles_polish_fixture import baseline as polish_baseline, freeze_writer
 import contextlib, hashlib, json, os, shutil, signal, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_PLANNING_ROOT'])
@@ -208,7 +210,56 @@ file.write_text(json.dumps(s))
     for actor,role in [('planner','规划'),('gate','门禁')]:cli('qwb-role.sh','start','--actor',actor,'--role',role,'--worker','sol','--dir',p)
     approval={'workers':['sol'],'permissions':[],'evidence':'fixture explicit implementation approval; no paid operations','budget':1}
     grant=dict(approval,request_id='request-one',source_event=event,packages=request['packages'],paths=['api.sh'])
-    call('plan-assign','intake.md','--','planner',payload('grant.json',grant))
+    grant_file=payload('grant.json',grant)
+    def polish_plan_compare():
+        global runtime_bin
+        initial=intake.read_bytes(); original_runtime=runtime_bin
+        runtime_bin=temp/'polish-plan-bin';shutil.copytree(ROOT/'bin',runtime_bin)
+        writer=(ROOT/'bin/qwb-ledger.sh').read_text(); outputs=[]
+        try:
+            for version in [polish_baseline('qwb-ledger.sh',writer),writer]:
+                intake.write_bytes(initial);(runtime_bin/'qwb-ledger.sh').write_text(freeze_writer(version))
+                result=call('plan-assign','intake.md','--','planner',grant_file)
+                outputs.append((result.returncode,result.stdout,result.stderr,intake.read_bytes()))
+            assert outputs[0]==outputs[1], 'plan-assign byte transcript changed'
+            print('PASS roles-polish 合规plan-assign stdout/stderr/rc/票字节一致（只撤本票改动）')
+        finally:
+            intake.write_bytes(initial);runtime_bin=original_runtime
+    if os.environ.get('QWB_ROLES_POLISH_ONLY')=='route':
+        call('plan-assign','intake.md','--','planner',grant_file)
+        pending=json.loads(cli('qwb-send.sh','pending','--task',intake,'--due').stdout)
+        assigned=next(h for h in pending if h['payload'].startswith('working: planner-authorized'))
+        assert 'controller_hint' not in assigned, assigned
+        mark=count();cli('qwb-wake.sh','--once','--pane','ctl')
+        bells=[a for a in map(json.loads,log.read_text().splitlines()[mark:]) if a[:2]==['pane','run']]
+        assert any(a[2]=='planner-pane' and assigned['event_id'] in a[3] and event in a[3] for a in bells),bells
+        assert not any(a[2]=='ctl' and assigned['event_id'] in a[3] for a in bells),bells
+        assert not read('intake.md')['handoffs'][assigned['event_id']]['handled']
+        print('PASS roles-polish 起点授权行与需求原话已路由规划，主控没有自办门铃；保留未handled审计')
+        raise SystemExit(0)
+    for field,value,prefix,example in [
+        ('budget',{'A':1},'启动授权/预算未明确','"budget":1'),
+        ('packages',{'A':'tasks/A.md'},'工作包id/任务路径歧义','"A":"A.md"')]:
+        before=intake.read_bytes()
+        denied=call('plan-assign','intake.md','--','planner',payload('bad-'+field+'.json',dict(grant,**{field:value})),ok=False)
+        assert denied.stderr.startswith('账本拒绝：'+prefix) and example in denied.stderr,denied.stderr
+        assert intake.read_bytes()==before and denied.returncode==255
+    polish_plan_compare()
+    call('plan-assign','intake.md','--','planner',grant_file)
+    print('PASS roles-polish plan载荷拒绝保留前缀/rc/票字节；budget与packages示例改正成功')
+    if os.environ.get('QWB_ROLES_POLISH_ONLY')=='plan':raise SystemExit(0)
+    original=intake.read_bytes();native=Path(env['PL_NATIVE']);original_native=native.read_bytes()
+    try:
+        pending=json.loads(cli('qwb-send.sh','pending','--task',intake,'--due').stdout)
+        assigned=next(h for h in pending if h['payload'].startswith('working: planner-authorized'))
+        mark=count();cli('qwb-wake.sh','--once','--pane','ctl')
+        bells=[a for a in map(json.loads,log.read_text().splitlines()[mark:]) if a[:2]==['pane','run']]
+        assert any(a[2]=='planner-pane' and assigned['event_id'] in a[3] and event in a[3] for a in bells),bells
+        assert not any(a[2]=='ctl' and assigned['event_id'] in a[3] for a in bells),bells
+        assert not read('intake.md')['handoffs'][assigned['event_id']]['handled']
+        print('PASS roles-polish 授权行与原话照常给规划，主控没有自办门铃且审计不伪造handled')
+    finally:
+        intake.write_bytes(original);native.write_bytes(original_native)
     # 规划实际办理03持久请求，而非只看到角色文字或API已投递。
     cli('qwb-send.sh','pending','--task',intake,actor='planner-pane')
     cli('qwb-send.sh','received','--task',intake,'--event',event,actor='planner-pane')

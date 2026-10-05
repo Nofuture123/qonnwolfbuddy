@@ -12,6 +12,7 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_GATE_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_GATE_TEST_ROOT
 python3 -u -B - <<'PY'
+from roles_polish_fixture import baseline as polish_baseline, freeze_writer
 from process_fixture import TemporaryDirectory
 import hashlib, json, os, shutil, subprocess, tempfile, time
 from pathlib import Path
@@ -146,6 +147,48 @@ close $output;
     # 第一纵向切片：主控授权已登记门禁，claim真实绑定且跨调用保留。
     request=tmp/'assignment.json'; environment=tmp/'environment'; environment.write_text('fixture dependency v1\n')
     request.write_text(json.dumps({'candidate':str(ca),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}))
+    assignment=json.loads(request.read_text())
+    for field,value,prefix,example in [
+        ('workers',dict(review='reviewer',rework='sol',extra='sol'),'schema未知键 extra','"review":"reviewer"'),
+        ('workers',{'review':'auto','rework':'sol'},'工人授权须显式配置名，不用auto','"review":"reviewer"'),
+        ('required',{'fast':['user_good','user_failure']},'关键场景缺失或降低full策略','"full"'),
+        ('required',{'full':[]},'门/场景映射非法','非空'),
+        ('required',{'full':['outside']},'范围外场景','user_'),
+        ('base','short','候选/attempt/policy/环境非法','40'),
+        ('environment',str(tmp/'missing'/'environment'),'环境证据不存在','存在'),
+        ('candidate',str(tmp/'missing'/'candidate'),'候选不存在','存在')]:
+        request.write_text(json.dumps(dict(assignment,**{field:value})))
+        before=t.read_bytes()
+        denied=call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request,ok=False)
+        assert denied.stderr.startswith('账本拒绝：'+prefix) and example in denied.stderr,denied.stderr
+        assert t.read_bytes()==before,(field,denied.stderr)
+        original_runtime=notify_runtime;notify_runtime=True
+        writer=p/'qwbuddy/bin/qwb-ledger.sh';current=writer.read_text()
+        try:
+            writer.write_text(polish_baseline('qwb-ledger.sh',current))
+            old=call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request,ok=False)
+            assert (denied.returncode,denied.stdout)==(old.returncode,old.stdout) and t.read_bytes()==before,(field,denied.returncode,old.returncode)
+            assert denied.stderr.startswith(old.stderr.rstrip('\n')+'；'),(old.stderr,denied.stderr)
+        finally:
+            writer.write_text(current);notify_runtime=original_runtime
+    # full必须存在，fast/full并集覆盖即可；不能把提示升级成full独占所有场景。
+    before=t.read_bytes()
+    request.write_text(json.dumps(dict(assignment,required={'fast':['user_good'],'full':['user_failure']})))
+    before=t.read_bytes();writer=p/'qwbuddy/bin/qwb-ledger.sh';current=writer.read_text();outputs=[]
+    notify_runtime=True
+    try:
+        for text in [polish_baseline('qwb-ledger.sh',current),current]:
+            t.write_bytes(before);writer.write_text(freeze_writer(text))
+            assigned=call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request)
+            outputs.append((assigned.returncode,assigned.stdout,assigned.stderr,t.read_bytes()))
+        assert outputs[0]==outputs[1], 'gate-assign byte transcript changed'
+        print('PASS roles-polish 合规gate-assign stdout/stderr/rc/票字节一致（只撤本票改动）')
+    finally:
+        t.write_bytes(before);writer.write_text(current);notify_runtime=False
+    call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request)
+    print('PASS roles-polish gate形状提示保留前缀/rc/票字节；合规workers与fast/full并集成功')
+    if os.environ.get('QWB_ROLES_POLISH_ONLY')=='gate':raise SystemExit(0)
+    t.write_bytes(before);request.write_text(json.dumps(assignment))
     call('qwb-ledger.sh','gate-assign','--task',t,'--','gate',request)
     # A: same assertion is red against the fixed starting writer/wake, without live endpoints.
     saved_t=t.read_bytes(); saved_bt=bt.read_bytes(); saved_native=state.read_bytes()

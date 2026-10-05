@@ -375,7 +375,7 @@ sub list_ok {
 sub packages_ok {
   my $p=shift; fail('packages非法') unless ref($p) eq 'HASH' && keys(%$p) && keys(%$p)<=64;
   my %seen;
-  for my $id (keys %$p) { fail('工作包id/任务路径歧义') unless id_ok($id) && string_ok($p->{$id}) && $p->{$id}=~/\A[A-Za-z0-9_.-]+\.md\z/ && !$seen{$p->{$id}}++ }
+  for my $id (keys %$p) { fail('工作包id/任务路径歧义；packages 的键须为1–160位字母/数字/_.:-的包id，值须为不带目录的唯一 .md 文件名（字母/数字/_.-）；示例："packages":{"A":"A.md"}') unless id_ok($id) && string_ok($p->{$id}) && $p->{$id}=~/\A[A-Za-z0-9_.-]+\.md\z/ && !$seen{$p->{$id}}++ }
 }
 sub needs_ok {
   my $n=shift; keys_only($n,qw(start accept land));
@@ -390,7 +390,7 @@ sub needs_ok {
 sub authorization_ok {
   my $a=shift; keys_only($a,qw(workers permissions evidence budget profiles workers_sha256));
   list_ok($a->{workers},'workers'); list_ok($a->{permissions},'permissions');
-  fail('启动授权/预算未明确') unless @{$a->{workers}} && string_ok($a->{evidence}) && $a->{evidence} ne '' && defined($a->{budget}) && !ref($a->{budget}) && $a->{budget}=~/\A[1-9][0-9]*\z/ && $a->{budget}<=64 && $a->{workers_sha256}=~/\A[0-9a-f]{64}\z/ && ref($a->{profiles}) eq 'HASH';
+  fail('启动授权/预算未明确；budget 须为1–64的整数，workers 非空、evidence 非空，型号摘要由授权入口生成；示例："workers":["sol"],"permissions":[],"evidence":"主控已授权","budget":1') unless @{$a->{workers}} && string_ok($a->{evidence}) && $a->{evidence} ne '' && defined($a->{budget}) && !ref($a->{budget}) && $a->{budget}=~/\A[1-9][0-9]*\z/ && $a->{budget}<=64 && $a->{workers_sha256}=~/\A[0-9a-f]{64}\z/ && ref($a->{profiles}) eq 'HASH';
   fail('工人型号缺失') unless keys(%{$a->{profiles}})==@{$a->{workers}};
   for my $w (@{$a->{workers}}) { keys_only($a->{profiles}{$w},qw(model provider effort)); fail('工人型号未知') if grep { !string_ok($_) || $_ eq '' } values %{$a->{profiles}{$w}} }
 }
@@ -1436,21 +1436,24 @@ REPORT
   fail('授权仅现主控且票必须已迁/无在途claim') unless $controller && $data && !$data->{claim};
   fail('门禁身份未证实或已授权（不覆盖历史）') unless @args==2 && $identity->{actor} eq $args[0] && !$data->{gate};
   my $s=read_file(encode('UTF-8',$args[1]));
-  my $b=strict_json($s); keys_only($b,qw(candidate base attempt policy environment required workers));
-  keys_only($b->{workers},qw(review rework));
-  fail('工人授权须显式配置名，不用auto') if grep { !id_ok($_) || $_ eq 'auto' } values %{$b->{workers}};
-  fail('候选/attempt/policy/环境非法') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && string_ok($b->{candidate}) && string_ok($b->{environment}) && $b->{base}=~/\A[0-9a-f]{40,64}\z/ && ref($b->{required}) eq 'HASH' && keys(%{$b->{required}});
+  my $b=strict_json($s);
+  eval { keys_only($b,qw(candidate base attempt policy environment required workers)) };
+  if ($@) { my $why=$@; $why=~s/\n\z/；授权JSON须恰有candidate、base、attempt、policy、environment、required、workers字段\n/; die $why }
+  eval { keys_only($b->{workers},qw(review rework)) };
+  if ($@) { my $why=$@; $why=~s/\n\z/；workers 须恰有review、rework两个配置名；示例："workers":{"review":"reviewer","rework":"sol"}\n/; die $why }
+  fail('工人授权须显式配置名，不用auto；workers 值须为已配置工人名（字母/数字/_.:-，1–160位），不能为auto；示例："workers":{"review":"reviewer","rework":"sol"}') if grep { !id_ok($_) || $_ eq 'auto' } values %{$b->{workers}};
+  fail('候选/attempt/policy/环境非法；candidate、environment 须为无控制字符的存在路径；attempt、policy 须为1–160位字母/数字/_.:-的id；base 须为40–64位小写十六进制OID；required 须为非空对象；示例："attempt":"1","policy":"v1","required":{"full":["user_正常路径_保存","user_失败路径_拒绝"]}') unless id_ok($b->{attempt}) && id_ok($b->{policy}) && string_ok($b->{candidate}) && string_ok($b->{environment}) && $b->{base}=~/\A[0-9a-f]{40,64}\z/ && ref($b->{required}) eq 'HASH' && keys(%{$b->{required}});
   my $scenarios=scenario($body);
   my @scenarios=scenario_names($scenarios);
   fail('需要冻结的命名场景；场景标题须为 ### user_名字；带规划授权的票由主控向规划发修订请求，规划执行 plan-revision 加 revise；其余已迁票由主控 revise-scenarios') unless @scenarios;
   my %covered;
   for my $g (keys %{$b->{required}}) {
-    fail('门/场景映射非法') unless $g=~/\A(fast|full)\z/ && ref($b->{required}{$g}) eq 'ARRAY' && @{$b->{required}{$g}};
-    for my $s (@{$b->{required}{$g}}) { fail('范围外场景') unless grep { $_ eq $s } @scenarios; $covered{$s}=1 }
+    fail('门/场景映射非法；required 的键仅fast/full，值须为非空场景数组；示例："required":{"full":["user_正常路径_保存","user_失败路径_拒绝"]}') unless $g=~/\A(fast|full)\z/ && ref($b->{required}{$g}) eq 'ARRAY' && @{$b->{required}{$g}};
+    for my $s (@{$b->{required}{$g}}) { fail('范围外场景；required 数组成员须逐字匹配本票的 ### user_名字 标题；示例："user_正常路径_保存"（须先在本票定义）') unless grep { $_ eq $s } @scenarios; $covered{$s}=1 }
   }
-  fail('关键场景缺失或降低full策略') unless exists($b->{required}{full}) && !grep { !$covered{$_} } @scenarios;
-  $b->{candidate}=text(realpath(encode('UTF-8',$b->{candidate})) // fail('候选不存在'));
-  $b->{environment}=text(realpath(encode('UTF-8',$b->{environment})) // fail('环境证据不存在'));
+  fail('关键场景缺失或降低full策略；required 必须含full，fast/full场景并集须覆盖本票全部user_场景；示例："required":{"fast":["user_正常路径_保存"],"full":["user_失败路径_拒绝"]}') unless exists($b->{required}{full}) && !grep { !$covered{$_} } @scenarios;
+  $b->{candidate}=text(realpath(encode('UTF-8',$b->{candidate})) // fail('候选不存在；candidate 须为存在的Git候选目录路径；示例："candidate":"/项目/.worktrees/A"'));
+  $b->{environment}=text(realpath(encode('UTF-8',$b->{environment})) // fail('环境证据不存在；environment 须为存在的环境证据路径（后续读取其内容）；示例："environment":"/项目/environment.txt"'));
   $b->{spec_rev}=$data->{spec_rev}; $b->{scenarios_fp}=scen_fp($body);
   # 绑定规格正文，不绑定会不断增长的运行时账本正文。
   my $spec=spec_body($body);

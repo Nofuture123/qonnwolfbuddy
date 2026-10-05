@@ -144,6 +144,54 @@ if [[ "$CMD" == "list" ]]; then
   exit 0
 fi
 
+foreground_is_shell() {
+  printf '%s' "$1" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};'
+}
+
+# Keep stderr separate: even whitespace on a successful query makes identity unknown.
+pane_query() {
+  python3 -B - "$1" <<'PY'
+import subprocess,sys
+reply=subprocess.run(['herdr','pane','get',sys.argv[1]],capture_output=True,text=True)
+sys.stdout.write(reply.stdout+('\nstderr:'+reply.stderr if reply.returncode==0 and reply.stderr else reply.stderr))
+sys.exit(reply.returncode)
+PY
+}
+
+pane_without_agent() {
+  local rc=0
+  printf '%s' "$1" | perl -MJSON::PP -0777 -e '
+    my $j=decode_json(<STDIN>); my $p=$j->{result}{pane};
+    exit 2 unless ref($p) eq "HASH" && !$j->{error} && ($p->{pane_id}//"") eq $ARGV[0];
+    exit 0 unless defined($p->{agent});
+    exit(encode_json($p->{agent}) =~ /^".+"$/s ? 1 : 2);
+  ' "$2" || rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  if [[ "$rc" -eq 1 ]]; then echo "$3" >&2; else echo "$4" >&2; fi
+  return 1
+}
+
+# 只探本票派发登记的端点；idle/done不是退出证明。端点未知保留候选。
+land_writers_stopped() {
+  [[ "$CMD" == land || -n "${LAND_PROOF:-}" ]] || return 0
+  local data panes pane out rc proc
+  data="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" read)" || return 1
+  panes="$(printf '%s' "$data" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["workers"]))')" || return 1
+  [[ -n "$panes" ]] || return 0
+  while IFS= read -r pane; do
+    rc=0; out="$(pane_query "$pane")" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      printf '%s' "$out" | perl -MJSON::PP -0777 -e 'my $j=decode_json(<STDIN>); exit(($j->{error}{code}//"") eq "pane_not_found" ? 0 : 1);' \
+        || { echo '拒绝：本票写入者端点未知，不能删除候选' >&2; return 1; }
+      continue
+    fi
+    pane_without_agent "$out" "$pane" "拒绝：本票写入者尚未退出（idle/done不等于已停）；窗口=${pane}；确认工人已停后 herdr pane close ${pane}，再用同一操作号重跑" '拒绝：本票写入者端点未知，不能删除候选' || return 1
+    proc="$(herdr pane process-info --pane "$pane" 2>&1)" || return 1
+    foreground_is_shell "$proc" \
+      || { echo '拒绝：本票写入者前台活动/未知' >&2; return 1; }
+  done <<< "$panes"
+}
+
 # land复用原finish；验证/授权和落地发布仍由唯一MD writer承担。
 if [[ "$CMD" == land ]]; then
   [[ -n "$LAND_OP" && -n "$AUTH_REF" && -z "$ACTION" ]] || { echo '拒绝：land需要本人op/明确auth-ref，不接受finish动作' >&2; exit 2; }
@@ -154,6 +202,7 @@ if [[ "$CMD" == land ]]; then
     qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-close "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
     echo '已收尾（原land收据保留）'; exit 0
   fi
+  land_writers_stopped || exit 1
   qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-prepare "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
   if [[ "$stage" != landed ]]; then
     qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" land-apply "$LAND_OP" "$AUTH_REF" >/dev/null || exit 1
@@ -204,53 +253,6 @@ parse_land_proof() {
   proof_oid="${fields##*$'\n'}"
 }
 
-foreground_is_shell() {
-  printf '%s' "$1" | perl -MJSON::PP -0777 -e 'my $p=decode_json(<STDIN>)->{result}{process_info}; exit 1 unless ref($p) eq "HASH" && defined($p->{foreground_process_group_id}) && defined($p->{shell_pid}) && $p->{foreground_process_group_id}==$p->{shell_pid};'
-}
-
-# Keep stderr separate: even whitespace on a successful query makes identity unknown.
-pane_query() {
-  python3 -B - "$1" <<'PY'
-import subprocess,sys
-reply=subprocess.run(['herdr','pane','get',sys.argv[1]],capture_output=True,text=True)
-sys.stdout.write(reply.stdout+('\nstderr:'+reply.stderr if reply.returncode==0 and reply.stderr else reply.stderr))
-sys.exit(reply.returncode)
-PY
-}
-
-pane_without_agent() {
-  local rc=0
-  printf '%s' "$1" | perl -MJSON::PP -0777 -e '
-    my $j=decode_json(<STDIN>); my $p=$j->{result}{pane};
-    exit 2 unless ref($p) eq "HASH" && !$j->{error} && ($p->{pane_id}//"") eq $ARGV[0];
-    exit 0 unless defined($p->{agent});
-    exit(encode_json($p->{agent}) =~ /^".+"$/s ? 1 : 2);
-  ' "$2" || rc=$?
-  [[ "$rc" -eq 0 ]] && return 0
-  if [[ "$rc" -eq 1 ]]; then echo "$3" >&2; else echo "$4" >&2; fi
-  return 1
-}
-
-# 只探本票派发登记的端点；idle/done不是退出证明。端点未知保留候选。
-land_writers_stopped() {
-  [[ -n "$LAND_PROOF" ]] || return 0
-  local data panes pane out rc proc
-  data="$(qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" read)" || return 1
-  panes="$(printf '%s' "$data" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["workers"]))')" || return 1
-  [[ -n "$panes" ]] || return 0
-  while IFS= read -r pane; do
-    rc=0; out="$(pane_query "$pane")" || rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      printf '%s' "$out" | perl -MJSON::PP -0777 -e 'my $j=decode_json(<STDIN>); exit(($j->{error}{code}//"") eq "pane_not_found" ? 0 : 1);' \
-        || { echo '拒绝：本票写入者端点未知，不能删除候选' >&2; return 1; }
-      continue
-    fi
-    pane_without_agent "$out" "$pane" '拒绝：本票写入者尚未退出（idle/done不等于已停）' '拒绝：本票写入者端点未知，不能删除候选' || return 1
-    proc="$(herdr pane process-info --pane "$pane" 2>&1)" || return 1
-    foreground_is_shell "$proc" \
-      || { echo '拒绝：本票写入者前台活动/未知' >&2; return 1; }
-  done <<< "$panes"
-}
 
 # 复用09固定40c8761的PID/start与全部启动代协议，不搬其订阅/展示平台。
 # shell/null只是端点前置条件；所有删树调用再核本票真实资源及历史死亡义务。
@@ -661,7 +663,7 @@ PY
     if [[ -n "$LAND_PROOF" ]]; then
       # idle/done是模型状态，不是退出证明；land不关闭仍挂Pi的pane。
       pane_out="$(pane_query "$pane_id")" || { echo '拒绝：land写入者身份未知' >&2; return 1; }
-      pane_without_agent "$pane_out" "$pane_id" '拒绝：land写入者尚未退出（idle/done不等于已停）' '拒绝：land写入者身份未知' || return 1
+      pane_without_agent "$pane_out" "$pane_id" "拒绝：land写入者尚未退出（idle/done不等于已停）；窗口=${pane_id}；确认工人已停后 herdr pane close ${pane_id}，再用同一操作号重跑" '拒绝：land写入者身份未知' || return 1
       proc="$(herdr pane process-info --pane "$pane_id" 2>&1)" || { echo '拒绝：land前台未知' >&2; return 1; }
       foreground_is_shell "$proc" \
         || { echo '拒绝：land前台仍有活动写入者' >&2; return 1; }
