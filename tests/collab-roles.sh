@@ -45,6 +45,10 @@ with log.open('a') as f:f.write(json.dumps(a)+'\\n')
 def out(r): print(json.dumps({'result':r}))
 def err(): print('io_error',file=sys.stderr); sys.exit(9)
 mode=os.environ.get('ROLE_FAKE_MODE','')
+def reply():
+ session=Path(s['session']);session.parent.mkdir(parents=True,exist_ok=True)
+ with session.open('a') as f:
+  f.write(json.dumps({'type':'assistant','sessionId':s['sid'],'cwd':os.environ['ROLE_PROJECT'],'uuid':'reply-'+str(s['starts']),'effort':'low' if mode=='bad-effort' else s['effort'],'message':{'model':'wrong' if mode=='bad-model' else s['model'],'content':[{'type':'text','text':'ready'}]}})+'\\n')
 if a[:2]==['workspace','list']:
  out({'workspaces':[{'active_tab_id':'w1:t1','agent_status':'idle','focused':True,'label':'drill-main','number':1,'pane_count':1,'tab_count':1,'workspace_id':'w1'}]} if mode=='workspace-no-worktree' else {'workspaces':[{'workspace_id':'w1','worktree':{'repo_root':os.environ['ROLE_PROJECT'],'is_linked_worktree':False}}]})
 elif a[:2]==['tab','create']:
@@ -75,6 +79,9 @@ elif a[:2]==['pane','get']:
  if mode=='invalid-query':print('not-json');sys.exit(0)
  if mode=='wrong-result':print(json.dumps({'result':[]}));sys.exit(0)
  ctl=a[2]=='w1:pCtl'
+ if not ctl and s.get('reply_pending'):
+  s['reply_polls']+=1
+  if s['reply_polls']==7:reply();s['reply_pending']=False
  pane={'pane_id':a[2],'workspace_id':'w1','tab_id':'w1:tCtl' if ctl else 'w1:tRole','terminal_id':'term-ctl' if ctl else 'term-role','foreground_cwd':os.environ['ROLE_PROJECT']}
  if ctl or s['live']:
   pane.update(agent='pi',agent_status='working' if mode=='busy' and not ctl else 'idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':'ctl-session' if ctl else s['session']})
@@ -106,9 +113,8 @@ elif a[:2]==['pane','run']:
  if a[-1] in ('/quit','/exit') and mode!='exit-pending':s['live']=False
  elif s.get('tool')=='claude' and mode!='no-reply':
   assert '\\n' not in a[-1] and len(a[-1])<=600,a
-  session=Path(s['session']);session.parent.mkdir(parents=True,exist_ok=True)
-  with session.open('a') as f:
-   f.write(json.dumps({'type':'assistant','sessionId':s['sid'],'cwd':os.environ['ROLE_PROJECT'],'uuid':'reply-'+str(s['starts']),'effort':'low' if mode=='bad-effort' else s['effort'],'message':{'model':'wrong' if mode=='bad-model' else s['model'],'content':[{'type':'text','text':'ready'}]}})+'\\n')
+  if mode=='delayed-reply':s.update(reply_pending=True,reply_polls=0)
+  else:reply()
 else:err()
 path.write_text(json.dumps(s))
 ''')
@@ -158,7 +164,8 @@ print('Thu Oct  1 00:00:00 2099')
         assert (r.returncode == 0) == ok, (verb, r.returncode, r.stdout, r.stderr)
         return json.loads(r.stdout) if ok else r
     # Private fake clock only for bounded handshake failure cases; no production timeout knob.
-    (stub/'sitecustomize.py').write_text("import os,time\nif os.environ.get('ROLE_FAKE_CLOCK')=='1':\n tick=[0]\n def clock():\n  tick[0]+=6\n  return tick[0]\n time.monotonic=clock\n time.sleep=lambda _:None\nif os.environ.get('ROLE_PI_BYTES')=='1':\n import uuid\n time.time=lambda:2099000000\n uuid.uuid4=lambda:uuid.UUID('62391d30-b37e-48e8-8db0-1621cda1707e')\n")
+    # Import subprocess first so native query timeouts retain their real clock.
+    (stub/'sitecustomize.py').write_text("import os,time,subprocess\nif os.environ.get('ROLE_FAKE_CLOCK')=='1':\n tick=[0]\n def clock():\n  tick[0]+=6\n  return tick[0]\n time.monotonic=clock\n time.sleep=lambda _:None\nif os.environ.get('ROLE_PI_BYTES')=='1':\n import uuid\n time.time=lambda:2099000000\n uuid.uuid4=lambda:uuid.UUID('62391d30-b37e-48e8-8db0-1621cda1707e')\n")
     env['PYTHONPATH']=str(stub)+os.pathsep+env.get('PYTHONPATH','')
     # Claude role adapter starts through the same public entrance; native shape follows the probe.
     config=p/'qwbuddy/config.sh'; saved_config=config.read_bytes()
@@ -246,8 +253,33 @@ print('Thu Oct  1 00:00:00 2099')
             assert call('qwb-role.sh','status','--actor','planner')['activity']=='working'
     session.write_bytes(original)
     print('PASS Claude真机JSONL样本：执行中/打断配对/新一轮及旧悬空调用保守拒闲')
+    subdir=p/'subdir';subdir.mkdir()
+    later=json.loads(original);later.update(cwd=str(subdir),uuid='after-cd')
+    rows=[dict(type='system',sessionId=claude['session_id'],cwd=str(subdir)),json.loads(original),
+          dict(type='user',sessionId=claude['session_id'],cwd=str(subdir),message={'content':'继续'}),later]
+    after_cd='\n'.join(map(json.dumps,rows))+'\n'
+    session.write_text(after_cd)
+    cwd_activity=call('qwb-role.sh','status','--actor','planner')
+    cwd_identity=subprocess.run(['bash','-c','. "$1"; qwb_planner_identity "$2" planner','identity',str(root/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+    cwd_matches=cwd_activity['activity']=='idle' and cwd_identity.returncode==0
+    print(('PASS' if cwd_matches else 'FAIL')+' Claude后续user/assistant cwd切到子目录：活动与身份仍成立',flush=True)
+    for index,key,value in [(1,'cwd',str(subdir)),(3,'sessionId','foreign-session')]:
+        damaged=json.loads(json.dumps(rows));damaged[index][key]=value
+        session.write_text('\n'.join(map(json.dumps,damaged))+'\n')
+        assert call('qwb-role.sh','status','--actor','planner')['activity']=='unknown'
+        identity(False)
+    session.write_bytes(original)
     call('qwb-control.sh','exit','--actor','planner','--expect-gen','1')
+    starts=json.loads(state.read_text())['starts']
+    for index,key,value in [(1,'cwd',str(subdir)),(3,'sessionId','foreign-session')]:
+        damaged=json.loads(json.dumps(rows));damaged[index][key]=value
+        session.write_text('\n'.join(map(json.dumps,damaged))+'\n')
+        call('qwb-control.sh','relaunch','--actor','planner','--expect-gen','1',ok=False)
+        assert json.loads(state.read_text())['starts']==starts
+    session.write_text(after_cd)
     resumed=call('qwb-control.sh','relaunch','--actor','planner','--expect-gen','1')
+    assert cwd_matches,(cwd_activity,cwd_identity.stderr)
+    print('PASS Claude后续cwd变化可恢复；首条消息cwd错误/后续sessionId冲突仍拒绝身份与恢复')
     assert resumed['incarnation']==2 and resumed['session_id']==claude['session_id'] and resumed['session_path']==claude['session_path']
     argv=json.loads(state.read_text())['argv']; assert '--resume' in argv and '--session-id' not in argv
     call('qwb-control.sh','exit','--actor','planner','--expect-gen','2')
@@ -257,6 +289,7 @@ print('Thu Oct  1 00:00:00 2099')
         actor='planner-'+mode
         failed=call('qwb-role.sh','start','--actor',actor,'--role','规划','--worker','claude-opus-medium','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':mode,'ROLE_FAKE_CLOCK':'1'})
         if mode=='untrusted': assert '确认目录信任，然后reconcile' in failed.stderr
+        else: assert 'Claude握手未确认：' in failed.stderr,failed.stderr
         record_path=p/'qwbuddy/.roles'/(actor+'.json')
         pending=json.loads(record_path.read_text()); assert pending['incarnation']==0 and pending.get('pending') and pending['phase']!='active'
         snapshot=json.loads(state.read_text()); starts=snapshot['starts']
@@ -269,6 +302,13 @@ print('Thu Oct  1 00:00:00 2099')
         call('qwb-control.sh','exit','--actor',actor,'--expect-gen','1')
         call('qwb-role.sh','retire','--actor',actor,'--expect-gen','1')
     print('PASS Claude未信任/模型不符/档位不符/握手超时保留现场，reconcile不重发启动')
+    # Two pane queries per loop; the 7th query releases the reply on loop 4.
+    # The private clock advances 6s per deadline check: old 10s stops at loop 2.
+    delayed=call('qwb-role.sh','start','--actor','planner-delayed','--role','规划','--worker','claude-opus-medium','--dir',str(p),extra={'ROLE_FAKE_MODE':'delayed-reply','ROLE_FAKE_CLOCK':'1'})
+    assert delayed['phase']=='active' and json.loads(state.read_text())['reply_polls']==7
+    call('qwb-control.sh','exit','--actor','planner-delayed','--expect-gen','1')
+    call('qwb-role.sh','retire','--actor','planner-delayed','--expect-gen','1')
+    print('PASS Claude握手假钟越过10秒后取得新回复并active，仍保留无回复超时反例')
     config.write_bytes(saved_config); workers.write_bytes(saved_workers)
     shutil.rmtree(p/'qwbuddy/.roles'); state.unlink(); log.unlink()
     pi_byte=True

@@ -360,7 +360,7 @@ def launch():
             pending.update(handshake_sent=True,handshake_before=observation['activity_evidence'].get('assistant_record'))
             phase('handshake-sent')
             run(['herdr','pane','run',r['pane'],prompt])
-        deadline=time.monotonic()+10; reason='Claude握手未取得新的assistant模型证明'
+        deadline=time.monotonic()+120; reason='Claude握手未取得新的assistant模型证明'
         while True:
             try:
                 observation=current(d,pending=True)
@@ -369,7 +369,7 @@ def launch():
                 break
             except Refusal as e: reason=str(e)
             require(time.monotonic()<deadline,'Claude握手未确认：'+reason+'；现场保留，完成后reconcile')
-            time.sleep(.1)
+            time.sleep(.5)
         pending.pop('handshake_sent',None); pending.pop('handshake_before',None)
 
     require(not r.get('pid') or observation['pid'] != r['pid'] or observation['pid_start'] != r['pid_start'], '仍是旧运行，不能发布新incarnation')
@@ -502,8 +502,9 @@ def main():
                     if r['tool']=='claude':
                         entries=[json.loads(line) for line in session.read_text().splitlines() if line.strip()]
                         messages=[x for x in entries if x.get('type') in ('user','assistant')]
-                        require(messages and all(x.get('sessionId')==r['session_id'] and x.get('cwd') and Path(x['cwd']).resolve()==Path(r['dir']) for x in messages),'原Claude session文件身份未知，拒绝恢复')
-                        require(all(('sessionId' not in x or x['sessionId']==r['session_id']) and ('cwd' not in x or Path(x['cwd']).resolve()==Path(r['dir'])) for x in entries),'原Claude session记录身份冲突')
+                        require(messages and messages[0].get('cwd') and Path(messages[0]['cwd']).resolve()==Path(r['dir']) and
+                                all(x.get('sessionId')==r['session_id'] for x in messages),'原Claude session文件身份未知，拒绝恢复')
+                        require(all('sessionId' not in x or x['sessionId']==r['session_id'] for x in entries),'原Claude session记录身份冲突')
                     else:
                         header = json.loads(session.read_text().splitlines()[0])
                         require(header.get('type') == 'session' and header.get('id') == r['session_id'] and Path(header.get('cwd','')).resolve() == Path(r['dir']), '原session文件身份未知，拒绝恢复')

@@ -222,8 +222,9 @@ def activity(pane,directory=None):
         expected=Path(directory).resolve() if directory else Path(n.get('cwd','')).resolve()
         for x in entries:
             if 'sessionId' in x: require(x['sessionId']==sid,'Claude session ID mismatch')
-            if 'cwd' in x: require(Path(x['cwd']).resolve()==expected,'Claude session cwd mismatch')
-        require(all(x.get('sessionId')==sid and x.get('cwd') and Path(x['cwd']).resolve()==expected for x in messages),'Claude message identity missing')
+        # Later cwd follows Bash cd; only the first message anchors the session's origin.
+        require(messages[0].get('cwd') and Path(messages[0]['cwd']).resolve()==expected,'Claude session initial cwd mismatch')
+        require(all(x.get('sessionId')==sid for x in messages),'Claude message identity missing')
         outstanding=set(); latest=None
         for x in messages:
             content=x.get('message',{}).get('content')
