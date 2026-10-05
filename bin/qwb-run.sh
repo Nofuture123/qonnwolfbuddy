@@ -791,8 +791,7 @@ record_worker_activity() {
         observation="$(bash "$(dirname "$LIB")/qwb-herdr.sh" activity --project "$PROJECT_ROOT" --pane "$PANE" --dir "$DIR")" || return 1
       done
       if ! printf '%s' "$observation" | perl -MJSON::PP -0777 -e 'exit(decode_json(<STDIN>)->{session} ? 0 : 1)'; then
-        qwb_ledger "$PROJECT_ROOT" "$TASK_FILE" append \
-          "working: $(date -u +%Y-%m-%dT%H:%M:%SZ) 会话未绑定 op=$RUN_OP pane=${PANE}；等待10秒仍无Pi会话路径，本工人日后不可续派" >/dev/null
+        printf '会话未绑定：等待10秒仍无Pi会话路径，本工人日后不可续派（op=%s pane=%s）\n' "$RUN_OP" "$PANE"
       fi
     fi
   fi

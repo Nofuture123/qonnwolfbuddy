@@ -66,7 +66,9 @@ if ($verb eq 'workspace list') {
     out({workspaces=>\@spaces});
 } elsif ($verb eq 'tab create') {
     my $label=after('--label');my $gate=$label eq '门禁';$s->{tabs}=($s->{tabs}//0)+1;my $slug=$label.'-'.$s->{tabs};
-    out({root_pane=>{pane_id=>$gate?'gate-pane':'worker-'.$slug,tab_id=>$gate?'gate-tab':'tab-'.$slug,terminal_id=>'gate-terminal'}});
+    my $pane=$gate?'gate-pane':'worker-'.$slug;
+    $s->{worker_dirs}{$pane}=after('--cwd') unless $gate;
+    out({root_pane=>{pane_id=>$pane,tab_id=>$gate?'gate-tab':'tab-'.$slug,terminal_id=>'gate-terminal'}});
 } elsif ($verb eq 'agent get') {
     if ($a[2] !~ /^worker-/) { print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1; }
     out({type=>'agent_info',agent=>{pane_id=>$a[2],agent_status=>'idle',state_change_seq=>$s->{submit_seq}//185}});
@@ -78,11 +80,16 @@ if ($verb eq 'workspace list') {
     out({type=>'agent_started'});
 } elsif ($verb eq 'pane get') {
     my $gate=$a[2] eq 'gate-pane';my $d={pane_id=>$a[2],workspace_id=>'ws',terminal_id=>$gate?'gate-terminal':'ctl-terminal',foreground_cwd=>$project,agent_status=>'idle'};
-    if (!$gate || exists $s->{session}) { $d->{agent}='pi';$d->{agent_status}='idle';$d->{agent_session}={agent=>'pi',source=>'herdr:pi',kind=>'path',value=>$gate?$s->{session}:'ctl-session'}; }
+    if (!$gate || exists $s->{session}) {
+        $d->{agent}='pi';$d->{agent_status}='idle';
+        if ($a[2] =~ /^worker-/ && exists $s->{worker_dirs}{$a[2]}) { $d->{foreground_cwd}=$s->{worker_dirs}{$a[2]}; }
+        else { $d->{agent_session}={agent=>'pi',source=>'herdr:pi',kind=>'path',value=>$gate?$s->{session}:'ctl-session'}; }
+    }
     out({pane=>$d});
 } elsif ($verb eq 'pane process-info') {
     my $live=$a[-1] ne 'gate-pane' || exists $s->{session};my $id=$live?$pid:42;
-    out({process_info=>{pane_id=>$a[-1],shell_pid=>42,foreground_process_group_id=>$id,foreground_processes=>[{pid=>$id,argv0=>$live?'pi':'zsh',argv=>['pi'],cwd=>$project}]}});
+    my $cwd=$s->{worker_dirs}{$a[-1]}//$project;
+    out({process_info=>{pane_id=>$a[-1],shell_pid=>42,foreground_process_group_id=>$id,foreground_processes=>[{pid=>$id,argv0=>$live?'pi':'zsh',argv=>['pi'],cwd=>$cwd}]}});
 } elsif ($verb eq 'pane read') {
     print "(openai-codex) gpt-6.1-sol • high\n";exit 0;
 } elsif ($verb eq 'pane run' || $verb eq 'tab close') {
@@ -301,7 +308,18 @@ close $output;
     assert d['gate']['verdict']=='rework' and d['gate']['findings']['F1']['original']=='真实安全缺陷：允许未决放行'
     assert d['claim']['owner']=='gate-pane'
     # A原票公开run返修，验收claim不释放、不换规格；B独立accepted。
-    call('qwb-run.sh','--task',t,'--worker','sol','--worktree',ca,'--gate-op','accept-A','--gate-kind','rework','--name','rework-a',actor='gate-pane')
+    previous_working=[x for x in t.read_text().splitlines() if x.startswith('working:')]
+    timeout_dispatch=call('qwb-run.sh','--task',t,'--worker','sol','--worktree',ca,'--gate-op','accept-A','--gate-kind','rework','--name','rework-a',actor='gate-pane')
+    assert timeout_dispatch.stdout.count('会话未绑定')==1 and '日后不可续派' in timeout_dispatch.stdout,timeout_dispatch.stdout
+    assert '会话未绑定' not in t.read_text() and '日后不可续派' not in t.read_text(),t.read_text()
+    all_working=[x for x in t.read_text().splitlines() if x.startswith('working:')]
+    assert all_working[:len(previous_working)]==previous_working,all_working
+    new_working=all_working[len(previous_working):]
+    assert len(new_working)==2 and new_working[0].startswith('working: gate-dispatch '),new_working
+    assert new_working[1].startswith('working: worker-activity '),new_working
+    observation=json.loads(new_working[1].split(' evidence=',1)[1])
+    assert observation['activity']=='unknown' and observation['pid']==os.getpid() and 'session' not in observation,observation
+    print('PASS 门控新Pi超时仅stdout说明，活动绑定带本代PID无session，票无额外working，派发仍成功')
     dispatched=json.loads(call('qwb-ledger.sh','read','--task',t).stdout)
     assert dispatched['claim']['op_id']=='accept-A'
     child=next(iter(dispatched['gate']['dispatches'])); pane=dispatched['ops'][child]['pane']

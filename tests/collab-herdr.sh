@@ -159,11 +159,13 @@ elif args[:2] == ["status", "--json"]:''')
         print('PASS user_正常路径_'+('会话文件已落盘时的行为不变' if tool=='pi' else '非Pi工人现状不变')+': baseline raw stdout/stderr/rc/ticket/calls identical',flush=True)
     install(); e=reset('no-session'); first,elapsed=run(e); line,proof=evidence()
     assert first.returncode==0 and 'session' not in proof,(first.stdout,first.stderr,proof)
-    assert '会话未绑定' in ticket.read_text() and '日后不可续派' in ticket.read_text(),ticket.read_text()
+    assert first.stdout.count('会话未绑定')==1 and '日后不可续派' in first.stdout,(first.stdout,first.stderr)
+    assert '会话未绑定' not in ticket.read_text() and '日后不可续派' not in ticket.read_text(),ticket.read_text()
+    assert [x for x in ticket.read_text().splitlines() if x.startswith('working:')]==[line],ticket.read_text()
     # The new bound starts after agent start; preflight/locks before native startup have their own costs.
     startup=json.loads(active.read_text()); wait=startup['prompt_at']-startup['started']
     assert 10<=wait<=12,(wait,elapsed)
-    print('PASS user_正常路径_会话绑定超时仍派发: elapsed='+str(round(elapsed,3))+'s wait='+str(round(wait,3))+'s, unbound receipt plus working notice, prompt delivered',flush=True)
+    print('PASS user_正常路径_会话绑定超时仍派发: elapsed='+str(round(elapsed,3))+'s wait='+str(round(wait,3))+'s, unbound receipt plus stdout notice only, prompt delivered',flush=True)
 PY
 exit 0
 fi

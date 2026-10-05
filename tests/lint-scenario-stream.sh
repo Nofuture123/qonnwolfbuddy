@@ -12,11 +12,12 @@ export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 QWB_STREAM_TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export QWB_STREAM_TEST_ROOT
 python3 -u -B - <<'PY'
-import hashlib, json, os, shutil, subprocess, tempfile
+import hashlib, json, os, shutil, subprocess, sys, tempfile
+from contextlib import ExitStack
 from pathlib import Path
 
 root = Path(os.environ['QWB_STREAM_TEST_ROOT'])
-with tempfile.TemporaryDirectory(prefix='qwb-lint-stream-') as tmp:
+with tempfile.TemporaryDirectory(prefix='qwb-lint-stream-') as tmp, ExitStack() as processes:
     os.environ["TMPDIR"] = tmp
     project = Path(tmp).resolve()
     (project/'templates').mkdir(); (project/'tasks').mkdir()
@@ -56,6 +57,14 @@ with tempfile.TemporaryDirectory(prefix='qwb-lint-stream-') as tmp:
     shutil.copytree(root/'bin', dispatch/'qwbuddy/bin')
     (dispatch/'qwbuddy/config.sh').write_text("QWB_WORKERS='fixture'\nQWB_WORKSPACE='fixture-ws'\n")
     (dispatch/'qwbuddy/workers.sh').write_text('qwb_worker fixture herdr pi -- --thinking high\n')
+    native = subprocess.Popen([sys.executable, '-u', '-c',
+                               'import sys; print("ready",flush=True); sys.stdin.readline()'],
+                              cwd=dispatch, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    processes.callback(lambda: (native.terminate() if native.poll() is None else None,
+                                native.wait(timeout=10), native.stdin.close(), native.stdout.close()))
+    assert native.stdout.readline().strip() == 'ready'
+    session = project/'pi.jsonl'
+    session.write_text(json.dumps({'type':'session','cwd':str(dispatch)})+'\n')
     stub = project/'stub'; stub.mkdir(); calls = project/'herdr.jsonl'
     herdr = stub/'herdr'
     herdr.write_text('''#!/usr/bin/env python3
@@ -73,11 +82,14 @@ if args[:2] == ['workspace', 'list']:
 elif args[:2] == ['tab', 'create']:
     result = {'root_pane': {'pane_id': 'fixture-worker', 'tab_id': 'fixture-tab'}}
 elif args[:2] == ['pane', 'get']:
-    result = {'pane': {'pane_id': args[2], 'agent_status': 'idle'}}
+    result = {'pane': {'pane_id': args[2], 'agent':'pi', 'agent_status':'idle',
+              'foreground_cwd':os.environ['STREAM_NATIVE_CWD'],
+              'agent_session':{'agent':'pi','kind':'path','source':'herdr:pi','value':os.environ['STREAM_NATIVE_SESSION']}}}
 elif args[:2] == ['pane', 'process-info']:
-    result = {'process_info': {'pane_id': args[-1], 'shell_pid': 42,
-              'foreground_process_group_id': 42,
-              'foreground_processes': [{'pid': 42, 'argv0': 'bash'}]}}
+    pid = int(os.environ['STREAM_NATIVE_PID'])
+    result = {'process_info': {'pane_id': args[-1], 'shell_pid':42,
+              'foreground_process_group_id':pid,
+              'foreground_processes':[{'pid':pid,'argv0':'pi','cwd':os.environ['STREAM_NATIVE_CWD']}]}}
 elif args[:2] in (['agent', 'start'], ['agent', 'prompt']):
     result = {'type': 'ok'}
 else:
@@ -86,7 +98,9 @@ print(json.dumps({'result': result}))
 ''')
     herdr.chmod(0o755)
     env = os.environ | {'PATH': str(stub)+os.pathsep+os.environ['PATH'],
-                        'HERDR_PANE_ID': 'fixture-ctl', 'STREAM_HERDR_LOG': str(calls)}
+                        'HERDR_PANE_ID': 'fixture-ctl', 'STREAM_HERDR_LOG': str(calls),
+                        'STREAM_NATIVE_PID': str(native.pid), 'STREAM_NATIVE_CWD': str(dispatch),
+                        'STREAM_NATIVE_SESSION': str(session)}
     run_task = dispatch/'tasks/dispatch.md'
 
     def check_dispatch(name, text, expected_rc, expected_failure=None):
