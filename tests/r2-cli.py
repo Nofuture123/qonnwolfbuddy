@@ -59,6 +59,9 @@ elif a[:2]==["worktree","open"]:
          "root_pane":{"tab_id":"wTask:t1","pane_id":"wTask:p1"}})
 elif a[:2]==["tab","create"]:
     out({"root_pane":{"pane_id":"wTask:p2","tab_id":"wTask:t2"}})
+elif a[:2]==["pane","get"]:
+    seq=185+sum(json.loads(row)[:2]==["agent","prompt"] for row in log.read_text().splitlines())
+    out({"pane":{"pane_id":a[2],"agent_status":"idle","state_change_seq":seq}})
 else: out({"type":"ok"})
 '''
 

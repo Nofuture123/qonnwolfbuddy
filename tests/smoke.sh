@@ -601,7 +601,7 @@ case "\${1:-} \${2:-}" in
   "status --json") jq -cn --arg socket "\$HERDR_TEST_SOCKET" --arg session "\${HERDR_SESSION:-}" '{server:{socket:\$socket,session:\$session}}' ;;
   "api snapshot") "\$0" workspace list | python3 -B "$FIXDIR/snapshot.py" "\$DYNH" ;;
   "pane run")   if [[ "\${HERDR_FAIL:-}" == *run* ]]; then fix pane-run-error.json >&2; exit 1; fi
-                if [[ ! -e "\$DYNH/get-\$(san "\$3").json" && ! -e "\$DYNH/get-\$(san "\$3").err" ]]; then
+                if [[ "\${4:-}" == "'"* && "\${4:-}" != *qwb-wake.sh* && ! -e "\$DYNH/get-\$(san "\$3").json" && ! -e "\$DYNH/get-\$(san "\$3").err" ]]; then
                   jq -cn --arg pane "\$3" '{result:{pane:{pane_id:\$pane,agent_status:"idle",state_change_seq:185}}}' > "\$DYNH/get-\$(san "\$3").json"
                 fi
                 # 模拟真实效果：往 shell pane 跑 qwb-wake.sh → 之后 process-info 呈现值守进程
