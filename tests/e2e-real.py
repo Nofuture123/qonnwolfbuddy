@@ -376,7 +376,7 @@ def start_controller():
         " 工人（默认新建 worktree，不传 --name），按你所在宿主的唯一值守入口等待。工人报 done 后独立验收"
         "（跑 qwb-test.sh fast/full 并核对产出），合格则合并进 main、把 state 改为 verified、"
         f"执行 qwb-worktree.sh finish {TASK_ID} --merged。收尾后提交应入库的任务书等产物，"
-        "确认 git status --short 为空且 Git 历史没有 .qwb-lock 文件。全部完成后单独输出一行 "
+        "全部完成后单独输出一行 "
         "QWB_E2E_CONTROLLER_DONE；无法完成则输出 QWB_E2E_CONTROLLER_BLOCKED <原因>。"
     )
     h("pane", "run", CONTROL_PANE, prompt)

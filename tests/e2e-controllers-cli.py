@@ -43,6 +43,18 @@ names = {"controller_model_visible", "snapshot_global_state", "check_global_stat
 functions = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in names]
 namespace = {"re": re, "json": json, "os": os}
 exec(compile(ast.Module(body=functions, type_ignores=[]), str(ENTRY.with_suffix(".py")), "exec"), namespace)
+# Render the real controller prompt without executing its live startup boundaries.
+controller_start = next(node for node in functions if node.name == "start_controller")
+prompt_assignment = next(node for node in controller_start.body if isinstance(node, ast.Assign) and
+                         any(isinstance(target, ast.Name) and target.id == "prompt" for target in node.targets))
+prompt_context = {"WORKER": "pi", "TASK_ID": "offline-task"}
+exec(compile(ast.Module(body=[prompt_assignment], type_ignores=[]), str(ENTRY.with_suffix(".py")), "exec"), prompt_context)
+prompt = prompt_context["prompt"]
+assert "收尾后提交应入库的任务书等产物" in prompt, prompt
+assert "qwb-worktree.sh finish offline-task --merged" in prompt, prompt
+assert "qwb-lock" not in prompt, prompt
+assert "运行态" not in prompt and "git status" not in prompt, prompt
+print("PASS real E2E controller prompt: normal cleanup requirements retained, runtime assertions not disclosed")
 visible = namespace["controller_model_visible"]
 pi_view = "░▒▓ 🔌 magpie 🤖 codex/gpt-6.1-sol 🧠 high 📁 project 🌿 main 🪟 ctx 0.0%/512k\n"
 for view in (pi_view, "magpie/codex/gpt-6.1-sol · high\n"):
