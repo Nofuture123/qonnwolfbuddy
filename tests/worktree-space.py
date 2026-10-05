@@ -92,12 +92,12 @@ elif args[:2] == ["agent", "get"]:
     err("agent_not_found")
 elif args[:2] == ["tab", "create"]:
     out({"root_pane": {"pane_id": "wTask:p2", "tab_id": "wTask:t2"}})
-elif args[:2] == ["pane", "get"] and os.environ.get("QWB_TEST_NATIVE_PID"):
+elif args[:2] == ["pane", "get"] and os.environ.get("QWB_TEST_IGNORE_NATIVE_PID"):
     out({"pane": {"pane_id": args[2], "agent": "pi", "agent_status": "idle", "workspace_id": "wTask",
                   "foreground_cwd": os.environ["QWB_TEST_WT"], "tab_id": "wTask:t1",
-                  "agent_session": {"source": "herdr:pi", "kind": "path", "value": os.environ["QWB_TEST_NATIVE_SESSION"]}}})
-elif args[:2] == ["pane", "process-info"] and os.environ.get("QWB_TEST_NATIVE_PID"):
-    pid = int(os.environ["QWB_TEST_NATIVE_PID"])
+                  "agent_session": {"source": "herdr:pi", "kind": "path", "value": os.environ["QWB_TEST_IGNORE_NATIVE_SESSION"]}}})
+elif args[:2] == ["pane", "process-info"] and os.environ.get("QWB_TEST_IGNORE_NATIVE_PID"):
+    pid = int(os.environ["QWB_TEST_IGNORE_NATIVE_PID"])
     out({"process_info": {"pane_id": args[3], "foreground_process_group_id": pid, "shell_pid": 42,
                           "foreground_processes": [{"pid": pid, "argv0": "pi", "cwd": os.environ["QWB_TEST_WT"]}]}})
 elif args[:2] == ["pane", "get"]:
@@ -415,7 +415,7 @@ with tempfile.TemporaryDirectory(prefix='s-') as d:
     try:
         result = call("bash", str(repo / "qwbuddy/bin/qwb-run.sh"), "--project", str(repo),
                       "--task", "case", "--worker", "pi", env=env | {
-                          "QWB_TEST_NATIVE_PID": str(child.pid), "QWB_TEST_NATIVE_SESSION": str(session)})
+                          "QWB_TEST_IGNORE_NATIVE_PID": str(child.pid), "QWB_TEST_IGNORE_NATIVE_SESSION": str(session)})
         assert result.returncode == 0, (result.stdout, result.stderr)
         child.communicate("exit\n", timeout=10)
         assert child.returncode == 0
