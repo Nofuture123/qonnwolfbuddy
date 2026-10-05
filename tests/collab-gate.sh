@@ -229,7 +229,7 @@ close $output;
     denied_review(dict(scoped,implementer=session('different-sol','gpt-6.1-sol')),'审核批准范围/对象/身份不匹配')
     denied_review(dict(scoped,reviewer=session('same-native','gpt-6-astra',sid=impl['session'])),'同原生会话审核冲突')
     denied_review(dict(scoped,reviewer=session('gate-native','gpt-6-astra',sid=stored['gate']['identity']['session_id'])),'同原生会话审核冲突')
-    for family in [None,'unknown','arbitrary']:
+    for family in [None,'unknown','arbitrary','1']:
         ids={kind:dict(noauth[kind]) for kind in ['implementer','reviewer']}
         for identity in ids.values():
             if family is None:identity.pop('family')
@@ -237,6 +237,10 @@ close $output;
         scopedfile.write_text(json.dumps(dict(noauth,**ids)))
         call('qwb-ledger.sh','gate-review','--task',et,'--','accept-scoped',scopedfile,actor='gate-pane')
     print('PASS family缺失/unknown/任意附记均不影响真实模型与会话核验')
+    for kind in ['implementer','reviewer']:
+        for family in [{},'',1]:
+            denied_review(dict(noauth,**{kind:dict(noauth[kind],family=family)}),'审核身份unknown/字段不全')
+    print('PASS 实现者/审核者family为对象、空字符串或数字均按身份字段非法拒绝且票字节不变')
     denied_review(dict(noauth,reviewer=dict(scoped['reviewer'],model='gpt-6.1-sol')),'审核/实现型号不是主控准确授权配置')
     for field,value in [('modelId','gpt-6.1-sol'),('provider','anthropic'),('thinkingLevel','high'),('id','wrong-native'),('cwd',str(tmp/'foreign'))]:
         bad=session('mismatched-'+field,'gpt-6-astra')

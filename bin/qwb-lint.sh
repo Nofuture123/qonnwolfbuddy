@@ -247,9 +247,9 @@ while IFS= read -r f; do
   rm="$(rid_val "$rl" model)"
   rsess="$(rid_val "$rl" session)"; rev="$(rid_val "$rl" evidence)"
   [[ -n "$im" && -n "$isess" && -n "$iev" ]] \
-    || b="${b} 实现者身份字段不全(需model/family/session/evidence)"
+    || b="${b} 实现者身份字段不全(需model/session/evidence)"
   [[ -n "$rm" && -n "$rsess" && -n "$rev" ]] \
-    || b="${b} 审核者身份字段不全(需model/family/session/evidence)"
+    || b="${b} 审核者身份字段不全(需model/session/evidence)"
   im_l="$(printf '%s' "${im##*/}" | tr '[:upper:]' '[:lower:]')"
   rm_l="$(printf '%s' "${rm##*/}" | tr '[:upper:]' '[:lower:]')"
   [[ -n "$im" && -n "$rm" && "$im_l" == "$rm_l" ]] \

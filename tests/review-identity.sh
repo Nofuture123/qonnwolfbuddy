@@ -101,13 +101,20 @@ runlint
 echo "== 7. 缺字段 / 缺证据（反例）=="
 mk 'review-impl: model=gpt-5.2 family=gpt evidence=docs/reviews/impl-session.md' "$REV"
 runlint
-[[ "$RC" -eq 1 ]] && ok "缺 session 字段 → 拒绝" || bad "缺 session 竟通过"
+{ [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -Fq '实现者身份字段不全(需model/session/evidence)'; } \
+  && ok "缺 session 字段 → 拒绝并列出实际必填字段" || bad "缺 session 拒绝或必填字段文案错误"
 mk 'review-impl: family=gpt session=s-impl-1 evidence=docs/reviews/impl-session.md' "$REV"
 runlint
-[[ "$RC" -eq 1 ]] && ok "缺 model 字段 → 拒绝" || bad "缺 model 竟通过"
+{ [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -Fq '实现者身份字段不全(需model/session/evidence)'; } \
+  && ok "缺 model 字段 → 拒绝并列出实际必填字段" || bad "缺 model 拒绝或必填字段文案错误"
 mk 'review-impl: model=gpt-5.2 family=gpt session=s-impl-1' "$REV"
 runlint
-[[ "$RC" -eq 1 ]] && ok "缺 evidence 字段 → 拒绝" || bad "缺 evidence 竟通过"
+{ [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -Fq '实现者身份字段不全(需model/session/evidence)'; } \
+  && ok "缺 evidence 字段 → 拒绝并列出实际必填字段" || bad "缺 evidence 拒绝或必填字段文案错误"
+mk "$IMPL" 'review-rev: model=claude-opus-4.6 evidence=docs/reviews/rev-session.md'
+runlint
+{ [[ "$RC" -eq 1 ]] && printf '%s' "$OUT" | grep -Fq '审核者身份字段不全(需model/session/evidence)'; } \
+  && ok "审核者缺 session → 必填字段文案不含family" || bad "审核者必填字段文案错误"
 mk 'review-impl: model=gpt-5.2 family=gpt session=s-impl-1 evidence=docs/reviews/不存在.md' "$REV"
 runlint
 [[ "$RC" -eq 1 ]] && ok "evidence 路径不存在 → 拒绝" || bad "不存在的证据位置竟通过"

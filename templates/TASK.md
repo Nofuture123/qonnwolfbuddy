@@ -99,12 +99,12 @@ Then  <可见结果及不得发生的副作用>
 要求独立审核的票在头部加 `review-required: yes`，验收时由**主控据真实会话证据**补记两行：
 
 ```
-  review-impl: model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
-  review-rev:  model=<实际型号> family=<模型家族> session=<原生会话标识> evidence=<证据位置>
+  review-impl: model=<实际型号> session=<原生会话标识> evidence=<证据位置>
+  review-rev:  model=<实际型号> session=<原生会话标识> evidence=<证据位置>
 ```
 
-- `family` 只写模型家族（如 `gpt` / `claude` / `gemini`），据真实 TUI/会话记录判断；**无法可靠判断就写 `unknown`**——lint 会报缺证据不通过，不许按名字猜。
-- `cli=` / `provider=` 可附记，**绝不充当 family**：同 CLI 不同家族合法，不同 CLI 同家族会被拒。
+- `model/session/evidence` 必填；`family` 为可选附记，无法确认可写 `unknown`，不影响独立审核判定；审核 JSON 带 `family` 时值须为非空字符串。
+- 审核者的模型须与实现者不同：取最后一个 `/` 后的型号并忽略大小写比较；同型号换渠道或换推理档位算同一模型，`cli=` / `provider=` 只作附记。
 - 两方 `session` 不得是同一原生实例——同一会话换角色 ≠ 独立审核。
 - `evidence` 是证据位置（会话转储/审核文档路径）；写成路径时 lint 核对文件存在。
 - 不补历史票：没标记的票不需要也不许凭空补身份。

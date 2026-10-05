@@ -1176,6 +1176,7 @@ if ($cmd eq 'land-authorize') {
   for my $kind (qw(implementer reviewer)) {
     my $id=$r->{$kind}; keys_only($id,qw(model session evidence), exists($id->{family}) ? 'family' : ());
     fail('审核身份unknown/字段不全') if grep { !string_ok($_) || $_ eq '' || lc($_) eq 'unknown' } @{$id}{qw(model session evidence)};
+    fail('审核身份unknown/字段不全') if exists($id->{family}) && (!string_ok($id->{family}) || $id->{family} eq '' || $json->encode($id->{family}) !~ /\A"/);
     my $fh=safe_open(encode('UTF-8',$id->{evidence}),O_RDONLY); my @records;
     while (my $s=<$fh>) { push @records,strict_json($s) } close $fh;
     my $profile=$c->{worker_profiles}{$kind eq 'reviewer' ? 'review' : 'rework'};
