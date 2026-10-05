@@ -356,7 +356,7 @@ sub scenario_names { return $_[0] =~ /$scenario_name/g }
 sub require_scenario_names {
   my $s=scenario(shift);
   for my $title ($s =~ /^(###(?:[^\S\n][^\n]*)?)$/mg) {
-    fail("场景标题须为 ### user_名字；不合规标题：$title；示例：### user_正常路径_保存") unless $title =~ $scenario_name;
+    fail("场景标题须为 ### user_名字；不合规标题：${title}；示例：### user_正常路径_保存") unless $title =~ $scenario_name;
   }
   fail('场景块须至少一个 ### user_名字 标题；示例：### user_正常路径_保存') unless scenario_names($s);
 }
