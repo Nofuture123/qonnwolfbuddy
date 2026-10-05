@@ -2,7 +2,7 @@
 
 ```
 任务 id:  claude-role-adapter
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
 dispatch-budget: 3
 来源:     Rocky 2026-10-05 五角色裁决（副主控：Claude Code opus 5.5 或 Pi astra low）；真机实测 docs/reviews/2026-10-05-claude-code-herdr-probe.md
@@ -160,3 +160,8 @@ working: 2026-10-05T09:40:40Z 主控真机验收再退回两处（第五轮演�
 working: 2026-10-05T09:43:51Z 已读09:40:40追加裁决，与add-dir合并为本轮一次提交。原add-dir角色全套已rc0，规划旧轮仍运行；暂不改其执行中的产品文件。现先加done/focused=false/end_turn的status与握手启动回归，在旧判定上留红；随后合并idle/done判定与缺代次、未信任、握手未确认的完整恢复提示，代次校验表达式不变。
 working: 2026-10-05T09:49:25Z done回归先红：done-red.log rc1同时复现未聚焦done/end_turn被判unknown及握手前置拒绝。旧add-dir规划轮经本票监督器TERM正常清理，planning.rc=143，不计通过；监督器身份与原因存previous-planning-interruption.json，已核无残留。现已合并idle/done、当前代次提示、未信任/握手失败完整reconcile命令及反例；冻结4文件重跑完整四门，最终与add-dir一起提交。
 working: 2026-10-05T09:54:41Z 合并返修角色全套rc0 PASS39 FAIL0：真实安装add-dir、重复/坏参数、done活动/握手/退出、done下未配对工具与模型错误拒绝、gen0/gen1缺失及过期代次提示、未信任/握手失败完整命令均通过。fast rc0、lint rc0 PASS9 FAIL0且LINT PASS；最终planning仍在跑。日志=.qwb-tmp/claude-role-combined/，冻结4文件未再改动，五处会一起提交。
+done: 2026-10-05T10:09:03Z 五处返修一次提交 commit=e0bcd3c0d7fabb92e136377c470d48d9cd58d2eb（父提交d5dc99e，4个白名单文件，工作区clean）。①支持重复--add-dir，逐值非空且不以-开头；②未知参数点名拒绝；③直接使用qwb-init真实安装的完整workers.sh验证规划start及实际argv；④Claude activity与握手前置均接受idle/done，PID/session/模型/工具配对条件不变；⑤reconcile拒绝提示当前代次，未信任/握手失败附含project/actor/expect-gen的完整命令，代次校验表达式未改。
+done: 2026-10-05T10:09:03Z 先红后绿：.qwb-tmp/claude-role-add-dir/red.log rc1复现安装注入add-dir被旧解析器拒绝；.qwb-tmp/claude-role-combined/done-red.log rc1复现focused=false且end_turn的done被判unknown及握手前置拒绝。最终roles.log覆盖真实安装启动、重复/空值/缺值/选项值/未知参数、done活动/握手/退出及其未配对工具/模型错误反例、gen0/gen1缺失与旧代次拒绝、完整恢复命令参数。安装器核对结论：默认Claude参数为dangerously-skip-permissions/model/effort，另注入add-dir；未发现其他自动新增参数。
+done: 2026-10-05T10:09:03Z 最终证据目录=/Users/rocky/projects/qonnwolfbuddy/.worktrees/claude-role-adapter/.qwb-tmp/claude-role-combined/。bash tests/collab-roles.sh → rc0 PASS39 FAIL0（roles.log）；bash tests/collab-planning.sh → rc0 PASS37 FAIL0（planning.log）；bash bin/qwb-test.sh fast → rc0，无新增shellcheck告警（fast.log）；bash bin/qwb-lint.sh → rc0 PASS9 FAIL0、LINT PASS（lint.log）。PASS/FAIL按grep -a -c列首计数，独立退出回执和verification-summary.json齐全；candidate-hashes.json与最终提交字节一致。旧范围planning因追加需求中断rc143单独保留，未计通过。
+done: 2026-10-05T10:09:03Z 已搜tests/smoke.sh与tests/collab-all.sh中的collab-roles.sh：默认清单与ORDER已有入口，PASS数动态，默认15项不变，需改计数/清单0处。/bin/bash -n tests/collab-roles.sh、git diff --check通过，已核无本票测试进程残留。未跑全门；所有运行验证均为隔离fakeHerdr，未操作真Herdr、未启动模型、未读写真实Claude会话目录，未建分支或push。
+working: 2026-10-05T11:58:55Z 主控验收：三次提交 b2157c9、7488ed0、d0acdff 已在 main。全新安装的项目里真机探测通过（带 --add-dir 启动成功、窗口不在前台报 done 认作空闲、缺代次的拒绝写明当前代次，证据 .qwb-tmp/probe-claude-planner-start/result.md）；第六轮真机演练 Claude 副主控零介入走通（docs/reviews/2026-10-05-real-herdr-roles-drill-r6.md）；main 24a8a88 全门 rc=0、865 PASS、0 FAIL（.qwb-tmp/ctl-full-merge14.log）；真机端到端第 17 轮 rc=0（docs/reviews/2026-10-05-e2e-real-claude-pi-r9.md）。

@@ -2,7 +2,7 @@
 
 ```
 任务 id:  roles-r4-followups
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
 dispatch-budget: 3
 来源:     2026-10-05 副主控与门控真机演练第四轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r4.md 的 U2–U9）
@@ -104,3 +104,11 @@ working: 2026-10-05T09:43:20Z 实现与文档阶段完成，产品改动仅qwb-l
 working: 2026-10-05T09:49:45Z 文档双路径完整通过：bash tests/roles-walkthrough.sh rc0，PASS=22、FAIL=0；派工前与已派工后修订都从安装文档原样执行至两票verified，旧done按not-applied办理、同会话重派、旧阻塞与纯进度仍handled=0而不挡结案；未修订status/wake及票/native字节对照通过。日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-r4-followups/.qwb-tmp/roles-r4-evidence/walkthrough-4.log。正跑修改Python文件独立入口及其余指定定向门。
 working: 2026-10-05T09:53:12Z 修改文件独立入口已通过：python3 -B tests/roles-walkthrough.py rc0，PASS=11、FAIL=0；最终fast与lint均rc0，Bash3.2语法通过。已在tests/smoke.sh与tests/collab-all.sh检索roles-walkthrough.sh/.py：原16项清单已含shell入口，Python由collab-land.sh引用，无新增文件/固定通过条数需改；证据runner-inventory.log。planning定向仍执行，land/handoff在同串行链后续，等待完整回执后提交。
 working: 2026-10-05T10:00:34Z 定向planning完成：bash tests/collab-planning.sh rc0，PASS=40、FAIL=0（含Pi全路径与隔离Claude身份模拟，未启动真实模型），日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-r4-followups/.qwb-tmp/roles-r4-evidence/collab-planning-1.log。串行链现进入collab-land；重派补强断言正在复验。
+working: 2026-10-05T10:04:15Z 调用链补核发现同一就绪契约还有start-claim入口：它在start_check通过后写planner-ready（无需先经值守plan-ready）。当前分类漏此入口，正在用公开start-claim补反例；拟仍仅在qwb-lib原分类中识别两种合法就绪事件，不改路由或权限。现行定向链先完成，再冻结最终版本复验相关质量门。
+working: 2026-10-05T10:10:18Z 直接start-claim就绪反例red-direct-ready.log rc1已留证，现仅扩展原分类一处条件，识别同spec授权后的plan-ready/start-claim两种合法就绪记录。旧定向链仅本票进程已正常终止：planning-1 rc0，land-1中断日志保留，不冒充完整通过。最终版本冻结，三个独立隔离定向文件并行复验，另跑文档双路径；所有日志/自然退出码写入本副本.qwb-tmp/roles-r4-evidence/*-final文件，未跑全门。
+working: 2026-10-05T10:18:45Z 最终分类的文档双路径已完整通过：walkthrough-final.log rc0 PASS=22 FAIL=0，含真实公开start-claim就绪、值守plan-ready就绪、同spec时序反例、同工人只启动一次与两票verified。交接collab-handoff-final.log rc0 PASS=12 FAIL=0；fast-complete与lint-complete均rc0。正在最后的Python独立入口及planning/land长回归；代码继续冻结。
+working: 2026-10-05T10:23:10Z 最终land定向完整通过：collab-land-final.log rc0 PASS=58 FAIL=0（含agent-shapes、env-digest、env-compat子入口）；Python独立入口walkthrough-python-final.log rc0 PASS=11 FAIL=0。文档双路径22PASS、handoff12PASS、fast/lint均已通过；仅剩最终planning长回归，完整结束后校验冻结文件、资源和提交。
+done: 2026-10-05T10:31:01Z commit=b61e7555e296bfd9fa90a6e48ad31684681a8074 六场景全过：bash tests/roles-walkthrough.sh rc0 PASS22 FAIL0；①已派工修订旧done按not-applied处置、同副本同会话且工人只启动一次，最终两票verified；②同spec重新授权后plan-ready/start-claim均自动满足旧阻塞；③未授权仍为规划待办并门铃（遵主控A）；④新安装PI/Claude控制设verified后lint通过；⑤真正死键、赋值、注释/裸export仍拒绝；⑥未修订status/wake/stdout/stderr/rc/票与native字节相同，基线仅撤本票分类。日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-r4-followups/.qwb-tmp/roles-r4-evidence/walkthrough-final.log。
+done: 2026-10-05T10:31:01Z commit=b61e7555e296bfd9fa90a6e48ad31684681a8074 定向均rc0：python3 -B tests/roles-walkthrough.py PASS11 FAIL0；bash tests/collab-planning.sh PASS40 FAIL0；bash tests/collab-land.sh PASS58 FAIL0（含三个子入口）；bash tests/collab-handoff.sh PASS12 FAIL0。/bin/bash bin/qwb-test.sh fast rc0、无shellcheck告警；/bin/bash bin/qwb-lint.sh rc0 PASS9 FAIL0且LINT PASS，仅既有占位行警告。Bash3.2语法、git diff --check通过。日志在上一行证据目录：walkthrough-python-final、collab-planning-final、collab-land-final、collab-handoff-final、fast-complete、lint-complete的.log/.rc。
+done: 2026-10-05T10:31:01Z commit=b61e7555e296bfd9fa90a6e48ad31684681a8074 先红证据red-branch、red-lint、red-ready-corrected均rc1；补充red-direct-ready rc1后修复。初次red-ready是前提不符，未当目标红；旧land-1中断保留，不当通过。已检索tests/smoke.sh与tests/collab-all.sh中的roles-walkthrough.sh/.py及固定计数：原16项清单已接入，Python由collab-land.sh引用，无需改清单/条数，证据runner-inventory.log。只提交白名单9文件，冻结hash与提交逐字节一致、工作区clean；测试临时资源已回收，仅留本副本.qwb-tmp/roles-r4-evidence证据。未跑母仓全门、未操作真Herdr或启动模型、未建分支/推送，主账本state未改。
+working: 2026-10-05T11:58:55Z 主控验收：提交 b61e755 合入 main 为 a643238。主控独立跑 tests/roles-walkthrough.sh rc=0、22 PASS、0 FAIL，tests/collab-handoff.sh rc=0、12 PASS、0 FAIL，快门 rc=0，LINT PASS；main 24a8a88 全门 rc=0、865 PASS、0 FAIL。第六轮真机演练里自检不再把常驻职责开关判成死配置。

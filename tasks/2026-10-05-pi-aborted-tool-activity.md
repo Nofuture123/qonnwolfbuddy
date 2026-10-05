@@ -2,7 +2,7 @@
 
 ```
 任务 id:  pi-aborted-tool-activity
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）
 dispatch-budget: 3
 来源:     2026-10-05 第六轮真机演练的故障注入（主控实测）
@@ -67,3 +67,12 @@ dispatch-budget: 3
 
 - 不改任何放行条件、身份校验与权限；不让未授权的派工变得可行；说明书里不写没有对照代码核实过的命令或字段。
 - 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
+working: 2026-10-05T11:28:41Z 主控手工派发（同 Space 独立 Tab，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6.1-sol --thinking high） agent=qwb-pi-aborted-tool-activity pane=w14Z:p1J dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity base=e2bce9f
+working: 2026-10-05T11:29:32Z 执行者已完整核对任务书、Claude 实测文档与两份 Pi 脱敏样本；确认缺陷位于 Pi 分支 outstanding 收集，复用 tests/collab-herdr.sh 已接入夹具，先跑起点红例；不触碰真 Herdr或模型会话。
+working: 2026-10-05T11:30:24Z 起点 e2bce9f1f3458912b6967b944e614df31a4153d2 已运行已接入夹具中的新增断言，rc=1；失败确为期望 idle/空 pending、实际 busy/pending_tools=cancelled。红例日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity/red.log；开始仅修 Pi 收集条件并验证兼容。
+working: 2026-10-05T11:31:04Z 最小修复与定向绿例完成：rc=0 PASS=3 FAIL=0；idle/done、aborted末条、工作中打断配对及toolUse悬空均已覆盖，working/blocked仍busy，旧挂起不被新aborted清除。日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity/green.log；tests/smoke.sh无该文件引用，collab-all清单已接入且无该用例PASS硬编码，herdr-batch仍9段，无需改清单。准备串行验收快门、lint、collab-roles、collab-herdr。
+working: 2026-10-05T11:34:11Z 快门和lint均rc=0（LINT PASS）；tests/collab-roles.sh单跑rc=0 PASS=39 FAIL=0；日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity/collab-roles.log。正在运行tests/collab-herdr.sh完整单文件门，等待退出回执，不跑全门。
+working: 2026-10-05T11:36:46Z 票内验收全绿：定向提取块rc=0 PASS=3 FAIL=0；fast rc=0 PASS=0 FAIL=0；lint rc=0 PASS=9 FAIL=0且LINT PASS；collab-roles rc=0 PASS=39 FAIL=0；完整collab-herdr rc=0 PASS=97 FAIL=0。日志目录=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity；冻结源码SHA未变，临时scope及测试进程已回收，准备只提交两个白名单文件。
+done: 2026-10-05T11:36:58Z 执行完成 sha=3b7f598ef189b7ad082675a735b619a985e048c9；仅改bin/qwb-herdr.sh的Pi条件与tests/collab-herdr.sh，aborted调用不计pending，身份/进程/Claude口径不变。起点红rc=1；绿定向rc=0 PASS=3 FAIL=0；fast rc=0 PASS=0 FAIL=0；lint rc=0 PASS=9 FAIL=0且LINT PASS；collab-roles rc=0 PASS=39 FAIL=0；collab-herdr单文件rc=0 PASS=97 FAIL=0。两类兼容场景按当前脚本仅撤本票改动逐字节对照。smoke无引用；collab-all已接入、无PASS硬编码；herdr-batch仍9段，无需改清单。未跑全门。其他error悬空情形仍按原口径，不推断放宽。原始日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity/{red,green,fast,lint,collab-roles,collab-herdr}.log；测试scope及进程已回收，副本clean。
+done: 2026-10-05T11:37:44Z 更正上一done回票长度604字；最终sha=3b7f598ef189b7ad082675a735b619a985e048c9（主控注：原文此处两个字节损坏，提交号由主控对照副本补上）。仅改Pi aborted调用收集条件及已接入回归。红例rc=1；定向绿rc=0 PASS=3 FAIL=0；fast rc=0 PASS=0 FAIL=0；lint rc=0 PASS=9 FAIL=0且LINT PASS；collab-roles rc=0 PASS=39 FAIL=0；collab-herdr rc=0 PASS=97 FAIL=0。基线仅撤本票改动，配对打断与toolUse逐字节一致；working/blocked仍busy。smoke无引用，collab-all已有入口无PASS硬编码，herdr-batch仍9段，无需改清单；未跑全门。其他error悬空口径不变。日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/pi-aborted-tool-activity/.qwb-tmp/pi-aborted-tool-activity/{red,green,fast,lint,collab-roles,collab-herdr}.log。测试资源回收，副本clean。
+working: 2026-10-05T11:58:55Z 主控验收：提交 3b7f598 合入 main 为 24a8a88，改动为 bin/qwb-herdr.sh 一处条件加测试；缺陷与对照情形均来自主控真机实测样本。main 24a8a88 全门 rc=0、865 PASS、0 FAIL。修复后的真机复测（打断后一分钟门铃能触发）尚未做，随下一次故障注入一并验证。
