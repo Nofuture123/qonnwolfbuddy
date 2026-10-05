@@ -2,7 +2,7 @@
 
 ```
 任务 id:  silent-end-escalation
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权；2026-10-05「太长了，哪可能30分钟停滞兜底呢」
 dispatch-budget: 3
 来源:     2026-10-05 第六轮真机演练的故障注入（docs/reviews/2026-10-05-real-herdr-roles-drill-r6.md 的 W2）
@@ -69,3 +69,7 @@ dispatch-budget: 3
 working: 2026-10-05T11:39:39Z 主控手工派发（沿用 worker-silent-end 的原窗口与原会话，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6.1-sol --thinking high） agent=qwb-worker-silent-end pane=w14Z:p1F dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-silent-end base=a4e1c68
 working: 2026-10-05T11:47:21Z 已完整读新票、主仓第六轮实测W2及现有路由/提示/模板；副本clean、HEAD=a4e1c68。拟复用现有wake回执及收件人指纹识别首次提醒，非主控首次提醒后同silent_end持续3倍阈值直接升级主控一次；不加配置/权限/重检查。先在现有隔离planning夹具补升级红证；代码只本副本，状态只本新票。
 working: 2026-10-05T11:53:45Z 红证成立：QWB_PLANNING_UPWARD_ONLY=1 QWB_SILENT_END_ONLY=1 QWB_ESCALATION_ONLY=1 bash tests/collab-planning.sh 在a4e1c68运行时rc1，规划60秒首提醒后180秒仍零主控升级（red-upgrade.log）。实现已补纯回执推导：已有非主控收件指纹匹配首次wake，3倍阈值届满再直达主控，独立升级去重且投递前复核同指纹/仍成立；无新增配置/原生查询轮次。四模板仅新增独立一句/相关注释。fast rc0、lint rc0 LINT PASS；八场景及调用/字节对照继续，日志本副本.qwb-tmp/silent-end-escalation-evidence/。
+working: 2026-10-05T12:02:04Z 聚焦八场景green-focused rc0，验证规划/门控首次60秒提醒后再180秒升级主控一次，含首次时间/工人窗口/op/派工者说明；提前done/blocked/needs-decision取消；working零额外查询、新指纹重计时、主控首次无二次、关闭/quiet/away无升级；等待期间及未触发路径stdout/stderr/rc/票内容/假Herdr全调用序列与仅撤本票基线逐字节一致。原起点升级red-upgrade rc1已留。继续Bash3.2 tests/collab-planning.sh整文件验收，不跑全门。
+working: 2026-10-05T12:11:33Z 主控裁决（预读你副本里的改动后追加）：升级逻辑用的主控窗口取自变量 PANE（qwb_worker_silent_notice 的第五个参数，以及 worker_due_row 里与 target 的比较）。真机上主控的值守是挂钩调起的 qwb-wake.sh --project 根 --block --max-ms 数值，不带 --pane，配置里的 QWB_CONTROLLER_PANE 按说明书留空，所以 PANE 是空串：controller 为空时你的升级分支整段跳过，真机上永远不会升级。你的测试用的是 --once --pane ctl，所以是绿的。block 模式下主控目标是 block_round 传给 route_gate_due 的那个值（HERDR_PANE_ID，缺省时为 pid 加父进程号），首次门铃在真机上能送到副主控走的就是这条路。改法：升级逻辑里的主控身份与本轮 route_gate_due 收到的主控目标保持同一个来源，两种模式（--once/--pane 与 --block/HERDR_PANE_ID）都成立；不要另造来源。补场景 9：按挂钩的真实调用方式（--block --max-ms，不带 --pane，环境里有 HERDR_PANE_ID，配置的 QWB_CONTROLLER_PANE 为空）跑一遍场景 1，升级的摘要必须出现在该次 block 的标准输出里且退出码为 2；这条在你当前实现上应当是红的，先留红证。其余不变。
+working: 2026-10-05T12:25:17Z 按12:11:33Z裁决补场景9红证：真实--block --max-ms、不带pane、QWB_CONTROLLER_PANE为空；原实现先叫规划，但升级stdout空且rc124（red-block.log），断言应rc2准确失败。现升级判定放到[qwb-worker]路由分支，直接使用route_gate_due已有controller实参；worker_due_row复核显式传同一实参，lib不再读取PANE另造来源。纯回执推导/原生重检查次数不变。前一整文件所有Python检查已过，但运行中改测试文件导致Bash读取尾部偏移EOF，planning-full rc2不计绿证；后续文件冻结后完整重跑。
+working: 2026-10-05T13:10:52Z 主控接手收尾并验收：工人上下文用到 98%，未写 done、未提交；主控取其副本全部改动（.qwb-tmp/escalation-takeover.patch）应用到 main，工人已按要求停止。主控独立跑 /bin/bash tests/collab-planning.sh rc=0、57 PASS、0 FAIL、854 秒（.qwb-tmp/ctl-esc-planning.log，含升级各场景与按挂钩调用方式的 block 场景），快门 rc=0，LINT PASS。真机验证（第七轮演练，脚本与安装进演练项目的逐字节一致）：工人 12:41:59Z 不回票收工，12:43:01Z 副主控被提醒，12:46:03Z 升级门铃送到主控，主控 12:46:09Z 开始处理。全门见本票之后的主控记录。遗留：主控重新授权后无人叫副主控续派，已开票 reauthorize-ready。
