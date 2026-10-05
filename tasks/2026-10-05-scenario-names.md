@@ -2,7 +2,7 @@
 
 ```
 任务 id:  scenario-names
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）
 dispatch-budget: 3
 来源:     2026-10-05 副主控与门控真机演练第二轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r2.md） 的 R1、R2
@@ -102,3 +102,10 @@ working: 2026-10-05T05:24:29Z 执行者已完整读规格、TASK/规划说明和
 working: 2026-10-05T05:26:46Z 基点4b1f2e2先红已留证：QWB_SCENARIO_NAMES_ONLY=all bash tests/collab-planning.sh，rc1/PASS4/FAIL4；旧new对全错与混合标题返回0，旧revise对非法标题返回0；合规交付门控和成功字节对照通过。日志=.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/baseline-red-valid.log。修订路径源码已确认，开始最小修复。
 working: 2026-10-05T05:29:25Z 最小修复完成；最终六场景QWB_SCENARIO_NAMES_ONLY=all rc0/PASS8/FAIL0；同断言固定基点回放rc1/PASS4/FAIL4（两处出路均缺）；旧拒绝自然rc与原前缀保留，new/revise/gate-assign合规stdout/stderr/rc/票全字节一致。日志=.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/{baseline-final,scenarios-final}.log；开始快门及三份定向。
 working: 2026-10-05T05:31:37Z 补获场景块边界反例：场景外user_标题曾误放行，boundary-red.log rc1/PASS2/FAIL1；已让新命名校验复用scenario提取，gate标准不改。因源码补改，当前串行门日志作为attempt1留存，结束后重跑最终定向门。
+working: 2026-10-05T05:38:24Z 首轮规划33 PASS/0 FAIL但自然rc2：运行期间补入边界用例后，Bash在脚本末段读源偏移报syntax error；当前与基点bash -n均rc0。首败planning.log保留，不当通过；冻结源码的final-planning完整复跑已串行排队。快门原rc0；gate/ledger正按最终源码运行。
+working: 2026-10-05T05:43:03Z 最终源码下 /bin/bash tests/collab-gate.sh 完成rc0/PASS25/FAIL0，日志=.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/gate.log；账本单跑中；冻结源码后的fast/planning复跑仍按本票串行排队。
+working: 2026-10-05T05:44:53Z /bin/bash tests/collab-ledger.sh rc0/PASS8/FAIL0；冻结源码后的 bash bin/qwb-test.sh fast rc0/PASS0/FAIL0、无ShellCheck告警。final-planning完整复跑中，六新增场景已通过；日志=.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/{ledger,final-fast,final-planning}.log。
+done: 2026-10-05T05:52:04Z sha=bfb63d5b009f8702863bea196363e7b30799c786 六场景：QWB_SCENARIO_NAMES_ONLY=all bash tests/collab-planning.sh rc0/PASS8/FAIL0；invalid-new（含无标题/空后缀/场景外标题）、mixed-new、valid-gate、invalid-revision、refusal-routes、byte-equivalence均通过；旧拒绝自然rc/前缀与票字节保留，合规new/revise/gate-assign完整字节一致。固定基点回放rc1/PASS4/FAIL4；边界先红rc1/PASS2/FAIL1。原始日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/scenarios-complete.log、baseline-final.log、boundary-red.log。
+done: 2026-10-05T05:52:04Z sha=bfb63d5b009f8702863bea196363e7b30799c786 验收门：bash bin/qwb-test.sh fast rc0/PASS0/FAIL0、无ShellCheck告警；/bin/bash tests/collab-planning.sh rc0/PASS33/FAIL0；/bin/bash tests/collab-gate.sh rc0/PASS25/FAIL0；/bin/bash tests/collab-ledger.sh rc0/PASS8/FAIL0；Bash3.2，源码冻结前后SHA256一致。原始日志=/Users/rocky/projects/qonnwolfbuddy/.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/final-fast.log、final-planning.log、gate.log、ledger.log；首轮规划rc2/PASS33/FAIL0日志planning.log保留，冻结重跑已通过；未跑全门。
+done: 2026-10-05T05:52:04Z sha=bfb63d5b009f8702863bea196363e7b30799c786 入口计数：在tests/smoke.sh、tests/collab-all.sh搜索改动文件collab-planning.sh，并扩搜整个tests/；仅collab-all默认清单和排序引用，无PASS/组数硬编码，计数改动0处，证据=/Users/rocky/projects/qonnwolfbuddy/.worktrees/scenario-names/.qwb-tmp/scenario-names-evidence/entry-count-audit.log、all-test-references.log。仅四个白名单文件提交，detached基点上追加，工作区clean；本票测试进程与临时项目已回收，仅保留证据目录（cleanup-check.log）。无真Herdr/模型会话，无分支/push；state字段未改。
+working: 2026-10-05T07:15:35Z 主控验收：读完产品与模板改动；提交 bfb63d5 已 cherry-pick 进 main（0b72de8）。两处合并后修正由主控补提交：本票的字节对照用例基线钉在 4b1f2e2，合入 collab-notify-gaps 后失败，改为「当前脚本只去掉场景名校验」（3f26a6d）；拒绝信息里 $title 后紧跟中文标点，被账本检查与冒烟第 8 节拦下并连带 43 项失败（工人只跑了快门，快门不含这条检查），改为 ${title}（adfb7b4）。修正后 QWB_SCENARIO_NAMES_ONLY=all 的 collab-planning rc=0 PASS=9。main @ adfb7b4 上 bash bin/qwb-test.sh full rc=0、859 PASS、0 FAIL、825 秒（.qwb-tmp/ctl-full-merge10.log）。

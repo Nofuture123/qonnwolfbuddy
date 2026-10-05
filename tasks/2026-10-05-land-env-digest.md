@@ -2,7 +2,7 @@
 
 ```
 任务 id:  land-env-digest
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）
 dispatch-budget: 3
 来源:     2026-10-05 副主控与门控真机演练第二轮（docs/reviews/2026-10-05-real-herdr-roles-drill-r2.md） 的 R5
@@ -94,3 +94,9 @@ working: 2026-10-05T05:24:23Z 主控裁决：同意。前提里把 land-close �
 working: 2026-10-05T05:27:34Z 基点先红已完成：bash tests/collab-land.sh env-digest rc=1，真实land-authorize rc=255并拒绝「未验收或验收条件已变」；bash tests/collab-gate.sh rc=1，直接/LC_ALL=C采样仅environment_sha256不同。日志为本副本.qwb-tmp/land-env-evidence/red-land.log、red-gate.log。已按最新裁决保留land-close；修复仅gate_context与land_ready，进入绿灯及字节等价验证。
 working: 2026-10-05T05:29:06Z 最小修复绿灯：env-digest rc=0，门控原PATH/空LC_ALL收据审核通过，主控异PATH/LANG经官方land到verified；env-compat rc=0，固定时钟/事件后基点与当前gate收据/审核/结论及官方land的stdout、stderr、rc、票字节一致，dirty/spec/scenarios/new-commit在authorize/prepare/apply均拒绝且main未动。fast rc=0。正在跑collab-gate.sh与collab-land.sh定向文件；不跑全门。
 working: 2026-10-05T05:31:07Z 补记定向首败：collab-land原有9组完成后rc=2，原因是执行者运行期间编辑本测试脚本，使Bash heredoc后的读取偏移失效（语法检查本身通过）；首败保留land-first.log/.rc。已冻结三个改动文件SHA256到frozen.sha256并重跑collab-land，不再在测试运行期编辑。另/bin/bash 3.2 env-digest rc=0，明确LANG=en_US.UTF-8到C的跨环境闭环通过。
+working: 2026-10-05T05:33:17Z collab-gate.sh定向完整通过rc=0（gate.log），实际qwb-run审核/返修与空LC_ALL直接账本调用贯通；PATH变动收据/审核/结论仍拒绝，依赖环境变化原断言也通过。collab-land冻结重跑已通过原有落地/恢复用例，继续跑已接入的agent-shapes及env-digest/env-compat。smoke/collab-all引用检查无固定计数需改，证据count-references.log。
+working: 2026-10-05T05:35:29Z 全部验收完成：fast rc=0无ShellCheck告警；collab-gate.sh rc=0 PASS=26 FAIL=0；collab-land.sh冻结重跑rc=0 PASS=52 FAIL=0；env-compat rc=0 PASS=5 FAIL=0；Bash3.2 env-digest rc=0 PASS=4 FAIL=0。计数用grep -c逐行统计，summary.txt留证。三个文件冻结摘要一致，git diff --check通过，测试fixture目录与启动进程已回收，准备提交。
+done: 2026-10-05T05:35:48Z sha=725cc7f445cc3f221e01e7bb7412cfae3cc6003a 完成最小修复并提交，工作区clean；land_ready沿用accepted审核的环境摘要以保持完整回执结构，候选其他字段现场重算；gate_context仅在环境摘要/版本采样时规范LC_ALL=C，其余环境与工具校验保留，land-close守卫未改。基点先红red-land.log为rc=1/真实授权rc=255，red-gate.log为rc=1。证据目录=/Users/rocky/projects/qonnwolfbuddy/.worktrees/land-env-digest/.qwb-tmp/land-env-evidence/（README.md、summary.txt及各原始日志）。
+done: 2026-10-05T05:35:48Z sha=725cc7f445cc3f221e01e7bb7412cfae3cc6003a 验收：bash bin/qwb-test.sh fast rc=0 PASS=0 FAIL=0（fast-final.log）；bash tests/collab-gate.sh rc=0 PASS=26 FAIL=0（gate.log）；bash tests/collab-land.sh rc=0 PASS=52 FAIL=0（land.log）；bash tests/collab-land.sh env-compat rc=0 PASS=5 FAIL=0（compat.log）；/bin/bash tests/collab-land.sh env-digest rc=0 PASS=4 FAIL=0（bash32-env.log）。PASS/FAIL均用grep -c统计；未跑全门。首轮运行期改脚本导致的Bash续读首败保留land-first.log，冻结后完整重跑已绿。
+done: 2026-10-05T05:35:48Z sha=725cc7f445cc3f221e01e7bb7412cfae3cc6003a 四场景均验：异PATH/LANG主控经官方land到精确main/verified；dirty/spec/scenarios/new-commit在authorize/prepare/apply均与基点同文拒绝且main不动；门控PATH变化的receipt/review/verdict均拒绝，实际run审核/返修正常；同环境固定时钟/事件后基点与当前stdout/stderr/rc/票字节完全一致。已搜索smoke.sh及collab-all.sh中的collab-gate.sh、collab-land.sh，无固定PASS/组数需改（count-references.log）。冻结摘要、diff-check均通过，测试资源已回收。
+working: 2026-10-05T07:15:35Z 主控验收：读完产品改动（land_ready 沿用已通过审核里记录的环境摘要，候选其余各项现场重算；gate_context 采样环境时统一 LC_ALL=C；门控各步环境比对不变）。提交 725cc7f 已 cherry-pick 进 main（a18134c）；独立跑 tests/collab-land.sh rc=0 PASS=52、tests/collab-gate.sh rc=0 PASS=26。合入 collab-notify-gaps 后，本票的同环境对照用例因基线钉在 4b1f2e2 而失败，主控把基线改为「当前脚本只撤掉沿用环境那一行」（3f26a6d），重跑 tests/collab-land.sh rc=0 PASS=54。main @ adfb7b4 上 bash bin/qwb-test.sh full rc=0、859 PASS、0 FAIL、825 秒（.qwb-tmp/ctl-full-merge10.log）。未做：真机演练验证。

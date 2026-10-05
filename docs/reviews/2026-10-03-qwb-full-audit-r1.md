@@ -341,7 +341,7 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 - **F53（已修，见下节）** `tests/subscribe-reap.py` 要求 2 秒内观察到事件，高负载下五次重采样都会超时而使全门 rc=1；当天两个工人各因此多跑一轮全门，单独复跑均通过。
 - 未修的小项：工人与主控在未迁旧票上都会先试 `qwb-ledger.sh append` 被拒（rc=25）再改用直接追加；`templates/roles/主控.md` 与 `bin/qwb-run.sh` 发给审核者的提示里仍有「同family」字样；派工规则的顾问档只配了 fable 一个候选。
 
-### 副主控链路与派发可靠性（2026-10-05，main @ 4b1f2e2）
+### 副主控链路与派发可靠性（2026-10-05，main @ adfb7b4）
 
 当天把副主控（规划）与门控（门禁）两个常驻职责第一次放到真机上演练（隔离会话；主控 Claude Code opus 5.5 medium，规划与门禁 Pi astra low，工人 Pi sol high）：职责启动、主控授权、规划开票、规划派工都成功，工人交付后链路断掉，门禁没有被用到。发现 D1–D8 见[演练记录](2026-10-05-real-herdr-roles-drill.md)。据此开票修复，另有两张票来自当天的全门与真机验收。
 
@@ -355,8 +355,11 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 | `reuse-binding` | Pi sol high | `1ac7a81`、`44ab8ac` | 首次派发 Pi 工人时最多等 10 秒会话路径再记身份；续派的三项比对不变；旧记录没有会话时拒绝并给出换名重派或关闭原 pane 两条出路。修 F55（演练 D7） |
 | `prompt-start-window` | Pi sol high | `5e4a160`、`4b1f2e2` | 补回车仍在 5 秒时做，补回车后的等待放宽到 60 秒；补回车的说明改为打印到标准输出（原先写进票，门禁派工时会被账本拒绝而使派发失败）。修 F56 |
 | `collab-silence-fallback` | Pi astra high | `fd2c8c2`…`538803f` | 已迁票：纯进度行不门铃任何角色，也不算未结义务；工人窗口丢失或超过重叫间隔无动静时叫醒派工者（副主控派的叫副主控，其余叫主控）；交接投满三次未接时升级主控一次，之后最短每 30 分钟重提。修演练 D6。[设计](../designs/2026-10-05-collab-silence-fallback.md) |
+| `land-env-digest` | Pi astra high | `a18134c` | 落地各步核对「验收条件未变」时沿用门控通过时记录的环境摘要，候选的提交、规格、场景、命令、工人配置仍现场重算；采样环境时统一语言环境，消除包装脚本造成的差异；门控自己各步的环境比对不变。修演练二 R5 |
+| `scenario-names` | Pi sol high | `0b72de8`、`adfb7b4` | 规划开票与修订时按门控的标准校验场景标题（每个三级标题须为 `### user_名字`）；`gate-assign` 与 `revise-scenarios` 两处拒绝写出路；模板里矛盾的说法改掉。修演练二 R1、R2 |
+| `collab-notify-gaps` | Pi astra high | `f08f07c`…`39e6966` | 门控授权成功即派生「待接手」交接并由值守门铃门控；规划办完主控发来的请求（含需求原话）时原子上报主控；本代登记的等待到期即重提，之后最短每 30 分钟一次；门控给出结论并交还后单独通知主控；落地各步自己写的行不再成为主控自己的待办，门控结论在主控完成落地授权后视为已处理。修演练二 R3、R4、R6、R7。[设计](../designs/2026-10-05-collab-notify-gaps.md) |
 
-合并后 main @ `015fb4f`：`bash bin/qwb-test.sh full` rc=0，859 PASS / 0 FAIL，731 秒（主控独立跑；同时有一个工人在跑另一轮全门，负载 25–41）。再合入 `wake-exit-hang` 与 `reuse-binding` 后 main @ `44ab8ac`：全门 rc=0，859 PASS / 0 FAIL，669 秒。再合入 `prompt-start-window` 与 `collab-silence-fallback` 后 main @ `4b1f2e2`：全门 rc=0，859 PASS / 0 FAIL，611 秒（其前一轮在 `538803f` 上 rc=1：冒烟第 74 节写死的通过条数没有随 `prompt-start-window` 新增用例更新，主控补了条数）。此前两轮主干全门失败过：`57d6e7a` 上 857 PASS / 2 FAIL（`process-entry-cleanup` 入口超时、`socket-path-regression`，当时六轮全门并发，负载约 85）；`abf5d05` 上 858 PASS / 1 FAIL（`socket-path-regression`，单独重跑 rc=0）。
+合并后 main @ `015fb4f`：`bash bin/qwb-test.sh full` rc=0，859 PASS / 0 FAIL，731 秒（主控独立跑；同时有一个工人在跑另一轮全门，负载 25–41）。再合入 `wake-exit-hang` 与 `reuse-binding` 后 main @ `44ab8ac`：全门 rc=0，859 PASS / 0 FAIL，669 秒。再合入 `prompt-start-window` 与 `collab-silence-fallback` 后 main @ `4b1f2e2`：全门 rc=0，859 PASS / 0 FAIL，611 秒（其前一轮在 `538803f` 上 rc=1：冒烟第 74 节写死的通过条数没有随 `prompt-start-window` 新增用例更新，主控补了条数）。此前两轮主干全门失败过：`57d6e7a` 上 857 PASS / 2 FAIL（`process-entry-cleanup` 入口超时、`socket-path-regression`，当时六轮全门并发，负载约 85）；`abf5d05` 上 858 PASS / 1 FAIL（`socket-path-regression`，单独重跑 rc=0）。再合入 `land-env-digest`、`scenario-names`、`collab-notify-gaps` 后 main @ `adfb7b4`：全门 rc=0，859 PASS / 0 FAIL，825 秒（其前一轮在 `3f26a6d` 上 rc=1、43 项失败，根因一处：`scenario-names` 的拒绝信息里变量后紧跟中文标点，被账本检查拦下；工人只跑了快门）。
 
 真机验收：
 
@@ -365,6 +368,7 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 | 11 | `57d6e7a` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**，约 2 分钟。首次派发未触发补回车；身份记录带会话路径。[记录](2026-10-05-e2e-real-claude-pi-r3.md) |
 | 12 | `44ab8ac` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**，约 2 分钟（同时在跑一轮全门）。[记录](2026-10-05-e2e-real-claude-pi-r4.md) |
 | 13 | `4b1f2e2` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**。[记录](2026-10-05-e2e-real-claude-pi-r5.md) |
+| 14 | `adfb7b4` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**。[记录](2026-10-05-e2e-real-claude-pi-r6.md) |
 
 本节发现：
 
@@ -374,8 +378,9 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 - **F57（现场取证，已修）** 值守退出时可能永久卡住：一个 `qwb-wake.sh --block --max-ms 1` 运行 16 分钟不退，调用栈停在退出清理 `event_cleanup` 的 `wait "$EVENT_PID"`；订阅器收到终止信号后没有退出、仍在正常循环。主控的推断（未证实是这次现场的原因）：订阅器靠信号处理函数抛 `SystemExit` 退出，异常若落在对象析构期间会被 Python 丢弃。票 `wake-exit-hang`。
 - **F58（未查明）** 多轮全门并发、负载 60–85 时，`process-entry-cleanup`（入口 60 秒超时；一次在全门 TERM 用例后观察到临时目录残留）与 `socket-path-regression` 会失败，低负载单跑通过。失败输出被截断，没有拿到具体断言。做法上改为：工人只跑快门与定向测试，全门由主控在合并后串行跑。
 - 演练记录里的 D6（已迁票的进度行会叫规划）已由 `collab-silence-fallback` 修；D3（说明书四处缺口）未修，归入角色说明合并票。
-- **第二轮真机演练**（候选 `59f6734`，04:27Z–05:18Z）：整条链第一次走到落地与收尾，但靠主控模型读源码与绕路，其中一处绕开了官方落地脚本。发现 R1–R10 见[记录](2026-10-05-real-herdr-roles-drill-r2.md)。在修的票：`land-env-digest`（R5，主控经官方脚本落地必被拒）、`collab-notify-gaps`（R3、R4、R6、R7）、`scenario-names`（R1、R2）。
-- **做法上的教训**：不让工人跑全门之后，写死在冒烟里的通过条数没人更新，合并后全门才暴露。现在任务书要求工人搜冒烟与协作总入口里写死的条数并同步。
+- **第二轮真机演练**（候选 `59f6734`，04:27Z–05:18Z）：整条链第一次走到落地与收尾，但靠主控模型读源码与绕路，其中一处绕开了官方落地脚本。发现 R1–R10 见[记录](2026-10-05-real-herdr-roles-drill-r2.md)。R1–R7 已由 `land-env-digest`、`scenario-names`、`collab-notify-gaps` 修（见上表），尚未经真机演练验证；R8（说明书缺口）归入角色说明合并票。
+- **F59（未修）** 测试里有多处「与某个固定历史提交逐字节对照」的写法（`tests/collab-planning.sh` 钉 `44ab8ac`、`4b1f2e2`、`d66d77c`，`tests/collab-herdr.sh` 钉 `57d6e7a` 等）。后续任何一次正当的行为变更都可能让它们失效；本波已有两处因此失败，改成了「当前脚本只撤掉本票改动」作基线。其余几处目前未失败。
+- **做法上的教训**：不让工人跑全门之后，写死在冒烟里的通过条数没人更新，合并后全门才暴露。现在任务书要求工人搜冒烟与协作总入口里写死的条数并同步，并单独跑一次账本检查（快门不含「变量后紧跟中文」这类规则）。
 
 ### 未做与遗留
 
