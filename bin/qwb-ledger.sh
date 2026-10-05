@@ -630,6 +630,30 @@ sub handoff_due {
   }
   return !$h->{transport_at} || $now-$h->{transport_at} >= $retry;
 }
+# 只认自动来源与真实派发历史，不把用户正文或可自选event_id当身份。
+sub worker_handoff_source {
+  my $h=shift; my $e=$data->{events}[$h->{source_seq}-1];
+  return unless $e && $h->{event_id} eq source_id($e->{event_id}) && $h->{corr} eq $h->{event_id};
+  return unless $e->{op_id} ne '' && grep {
+    $_->{kind} eq 'dispatch' && $_->{seq}<$e->{seq} && $_->{op_id} eq $e->{op_id} &&
+    $data->{ops}{$_->{op_id}}{pane} eq $e->{actor}
+  } @{$data->{events}};
+  return $e;
+}
+sub planner_controller_hint {
+  my $h=shift;
+  return '' unless $planning_grant;
+  my $g=$data->{gate};
+  return '' if $g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/;
+  return '' if grep { source_id($_->{event_id}) eq $h->{event_id} } values %{$data->{test_requests} // {}};
+  return '门禁 accepted；下一步：主控安排落地/清理' if $g && $g->{verdict} eq 'accepted';
+  return '门禁 rediagnose；下一步：主控安排技术重诊' if $g && $g->{verdict} eq 'rediagnose';
+  my $e=$data->{events}[$h->{source_seq}-1];
+  return '迁入核查；下一步：主控核对旧义务' if $e->{kind} eq 'migrate';
+  my $worker_source=worker_handoff_source($h);
+  return '工人已交付；下一步：主控安排门禁' if $worker_source && $worker_source->{kind} eq 'done';
+  return '';
+}
 sub append_body { $body =~ s/\n?\z/\n/; $body.="$_[0]\n" }
 sub field {
   my ($key,$val)=@_;
@@ -1378,6 +1402,11 @@ REPORT
     }
     my @p=map { +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0} }
       sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
+    # 只给规划分流增加瞬时提示；既有测试请求整批及门禁claim路径保持原输出。
+    my %pending=map { $_->{event_id}=>1 } @p;
+    unless (grep { $_->{reply_sha256} eq '' && $pending{source_id($_->{event_id})} } values %{$data->{test_requests} // {}}) {
+      for my $h (@p) { my $hint=planner_controller_hint($h); $h->{controller_hint}=$hint if $hint ne '' }
+    }
     $pending_output=$json->encode(\@p);
     if (!$added) { print "$pending_output\n"; exit }
   } elsif ($cmd eq 'handoff-send') {

@@ -558,7 +558,7 @@ collect_due() {
       [[ "$pending" != '[]' ]] || continue
       # 同批完整event_id；旧wake指纹不是消费游标，摘要不把正文当系统指令。
       last="[qwb-handoff] $(printf '%s' "$pending" | perl -MJSON::PP -0777 -e '
-        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile}} } @$p]);
+        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ())} } @$p]);
       ')"
       fp="$(printf '%s' "$pending" | shasum | cut -d' ' -f1)"
       printf '%s\t%s\t%s\t%s\t\n' "$f" "$st" "$fp" "$last" >> "$out"
@@ -625,11 +625,18 @@ seq_mark() {
 }
 compose_msg() {
   DUE_N=0; DUE_MSG=""
-  local f st fp last lostpane sep=""
+  local f st fp last lostpane hint sep=""
   while IFS=$'\t' read -r f st fp last lostpane; do
     DUE_N=$((DUE_N + 1))
     [[ -n "$last" ]] || last="尚无状态行"
-    DUE_MSG="${DUE_MSG}${sep}$(seq_mark "$DUE_N") $(basename "$f" .md)(${st}) 最近: ${last}"
+    hint=""
+    if [[ "$last" == '[qwb-handoff] '* && "$last" == *'"controller_hint":'* ]]; then
+      hint="$(printf '%s' "${last#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
+        binmode STDOUT, ":encoding(UTF-8)"; my %seen;
+        print join("；",grep { !$seen{$_}++ } map { $_->{controller_hint} // () } @{decode_json(<STDIN>)});
+      ')"
+    fi
+    DUE_MSG="${DUE_MSG}${sep}$(seq_mark "$DUE_N") $(basename "$f" .md)(${st}) ${hint:+${hint}；}最近: ${last}"
     [[ -n "$lostpane" ]] && DUE_MSG="${DUE_MSG}（工人丢失）"
     sep=" "
   done < "$1"
@@ -662,8 +669,14 @@ route_gate_due() {
           print "$r->{identity}{actor}\t".JSON::PP->new->canonical->encode($r->{identity})."\t$r->{identity}{pane}\t测试体系\tsource:$r->{event_id}";
         } elsif ($g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
           print "$g->{identity}{actor}\t".JSON::PP->new->canonical->encode($g->{identity})."\t$g->{identity}{pane}\t门禁";
+        } elsif ($g && $g->{verdict}=~/^(accepted|rediagnose)$/ && ($d->{planning_authority} || ($d->{planning} && $d->{planning}{authority}))) {
+          # 验收结论和技术重诊回主控，不能再次落入规划分支。
         } elsif (my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef)) {
-          print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
+          my @planning=grep { !exists $_->{controller_hint} } @$due;
+          if (@planning) {
+            print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
+            print "\t".join(",",map { $_->{event_id} } @planning) if @planning<@$due;
+          }
         }
       ' "$last")"
     fi
@@ -671,8 +684,9 @@ route_gate_due() {
       IFS=$'\t' read -r actor grant target role request_event <<< "$info"
       if [[ -n "$request_event" ]]; then
         split="$(perl -MJSON::PP -e '
-          my ($raw,$id)=@ARGV; my $p=decode_json(substr($raw,length("[qwb-handoff] "))); my $j=JSON::PP->new->canonical->utf8;
-          print $j->encode([grep { $_->{event_id} eq $id } @$p]),"\t",$j->encode([grep { $_->{event_id} ne $id } @$p]);
+          my ($raw,$ids)=@ARGV; my %ids=map { $_=>1 } split /,/,$ids;
+          my $p=decode_json(substr($raw,length("[qwb-handoff] "))); my $j=JSON::PP->new->canonical->utf8;
+          print $j->encode([grep { $ids{$_->{event_id}} } @$p]),"\t",$j->encode([grep { !$ids{$_->{event_id}} } @$p]);
         ' "$last" "$request_event")"
         IFS=$'\t' read -r split remainder <<< "$split"
         if [[ "$remainder" != '[]' ]]; then

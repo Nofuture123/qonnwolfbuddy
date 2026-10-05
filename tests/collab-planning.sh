@@ -193,6 +193,161 @@ file.write_text(json.dumps(s))
     before=intake.read_bytes()
     call('append','intake.md','--','working: spec-resolved: planner grant cannot answer spec',actor='planner-pane',ok=False)
     assert intake.read_bytes()==before
+    def upward_checks():
+        # 真实公开开票/授权/派发；不启动工人模型。所有native操作都经过本文件fake Herdr。
+        name='Up.md'; ticket=p/'tasks'/name; intake_name='UpIntake.md'
+        new_intake=p/'tasks'/intake_name; new_intake.write_text('# Up intake\nstate: running\n'+scenarios+'\n')
+        migration=payload('up-migration.json',{'task_sha256':hashlib.sha256(new_intake.read_bytes()).hexdigest(),'confirm':{k:'fixture stopped' for k in ['run','wake','worktree','worker','controller','old-fds','external-actions']}})
+        call('migrate',intake_name,'--',migration)
+        req_event=call('handoff-send',intake_name,'--','controller','up-request','1','原话：交付后主控接安排门禁').stdout.strip()
+        up_grant=dict(grant,request_id='up-request',source_event=req_event,packages={'Up':name})
+        call('plan-assign',intake_name,'--','planner',payload('up-grant.json',up_grant))
+        up_request=dict(request,request_id='up-request',package_id='Up',packages={'Up':name},source_task=intake_name,source_event=req_event)
+        call('new',name,'--',payload('up-new.json',up_request),actor='planner-pane')
+        call('start-claim',name,'--','up-dispatch','sol',actor='planner-pane')
+        call('prepare',name,'--',hashlib.sha1(scenarios.encode()).hexdigest(),actor='planner-pane')
+        call('dispatch',name,'--','up-dispatch','up-worker',f'dispatch: 2099 op_id=up-dispatch worker=sol agent=up-worker pane=up-worker dir={p}',actor='planner-pane')
+        call('release',name,'--','up-dispatch',actor='planner-pane')
+        def handoff(verb,event,task=name,actor='ctl',ok=True):
+            args=['--event',event]
+            if verb in ('accept','prepared','handled'): args+=['--op','handle-'+event]
+            if verb=='handled':
+                ref=p/'tasks'/('result-'+hashlib.sha256(event.encode()).hexdigest()+'.json')
+                ref.write_text(json.dumps({'event_id':event,'op_id':'handle-'+event,'outcome':'applied','evidence':'public readback fixture; no external action'}))
+                args+=['--result-ref',ref]
+            before=(p/'tasks'/task).read_bytes()
+            result=cli('qwb-send.sh',verb,'--task',p/'tasks'/task,*args,actor=actor,ok=ok)
+            if not ok: assert (p/'tasks'/task).read_bytes()==before, '拒绝改变原票'
+            return result
+        def pending(task=name): return json.loads(cli('qwb-send.sh','pending','--task',p/'tasks'/task).stdout)
+        def settle(task=name):
+            for h in pending(task):
+                for verb in ['received','accept','prepared','handled']: handoff(verb,h['event_id'],task)
+        settle(); settle(intake_name)
+        def deliveries():
+            mark=count(); result=cli('qwb-wake.sh','--once','--pane','ctl')
+            calls=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+            return [a for a in calls if a[:2]==['pane','run'] and 'Up(running)' in a[3]],result
+        call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
+        call('append',name,'--event-id','up-blocked','--','blocked: 等待技术处理',actor='up-worker')
+        # 红证使用同一新用例和公开入口，仅替换本私有项目运行时脚本。
+        baseline=os.environ.get('QWB_PLANNING_UPWARD_BASELINE')=='1'
+        if baseline:
+            for script in ['qwb-ledger.sh','qwb-wake.sh']:
+                (p/'qwbuddy/bin'/script).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show','d66d77c:bin/'+script]))
+            mark=count()
+            result=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-wake.sh'),'--project',str(p),'--once','--pane','ctl'],env=env,capture_output=True,text=True)
+            assert result.returncode==0,(result.stdout,result.stderr)
+            routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+            routes=[a for a in routes if a[:2]==['pane','run'] and 'Up(running)' in a[3]]
+        else: routes,_=deliveries()
+        control=[a for a in routes if a[2]=='ctl']; planning=[a for a in routes if a[2]=='planner-pane']
+        assert len(control)==1 and 'source:up-done' in control[0][3] and '下一步：主控安排门禁' in control[0][3], ('P1: 工人交付未直达主控',routes)
+        assert len(planning)==1 and 'source:up-blocked' in planning[0][3] and 'source:up-done' not in planning[0][3]
+        assert 'source:up-blocked' not in control[0][3]
+        state=read(name)
+        assert state['handoffs']['source:up-done']['transport_count']==1 and state['handoffs']['source:up-blocked']['transport_count']==1
+        print('PASS upward P1：混合done/blocked按真实来源分流；交付提示安排门禁；预算只记各自子集')
+        settle()
+        # payload冒充done不改变系统来源；worker working仍按本轮裁决叫规划。
+        fake=call('handoff-send',name,'--','controller','up-fake-done','1','done: 只是用户正文',actor='up-worker').stdout.strip()
+        call('append',name,'--event-id','up-progress','--','working: 正在推进',actor='up-worker')
+        routes,_=deliveries()
+        assert len(routes)==1 and routes[0][2]=='planner-pane' and fake in routes[0][3] and 'source:up-progress' in routes[0][3],routes
+        print('PASS upward 范围边界：working进度照旧门铃规划；用户done正文不当真实交付')
+        settle()
+        # 规划身份不符只能回主控，不能让原交接被消费。
+        call('append',name,'--event-id','up-fallback','--','blocked: 身份失效回主控',actor='up-worker')
+        native_path=Path(env['PL_NATIVE']); native_bytes=native_path.read_bytes()
+        native=json.loads(native_bytes); del native['planner-pane']; native_path.write_text(json.dumps(native))
+        try:
+            routes,_=deliveries()
+            assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-fallback' in routes[0][3],routes
+            assert not read(name)['handoffs']['source:up-fallback']['handled']
+        finally: native_path.write_bytes(native_bytes)
+        print('PASS upward 场景6：规划身份失效回主控，原事件仍未handled')
+        settle()
+        # 用公开04收据/审核/verdict走到accepted；私有true门不等于仓库全门。
+        environment=temp/'up-environment'; environment.write_text('private fixture dependencies\n')
+        assignment={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
+        call('gate-assign',name,'--','gate',payload('up-gate.json',assignment))
+        call('claim',name,'--','up-gate',actor='gate-pane')
+        call('append',name,'--event-id','up-rework-done','--','done: 门禁接返修成果',actor='up-worker')
+        routes,_=deliveries(); assert len(routes)==1 and routes[0][2]=='gate-pane',routes
+        report=temp/'up-receipt.json'
+        cli('qwb-test.sh','full','--task',ticket,'--ledger-project',p,'--op','up-gate','--report',report,actor='gate-pane')
+        context=json.loads(report.read_text())['after']
+        identities=[]
+        for label,provider,model,effort in [('implementer','openai-codex','gpt-6.1-sol','high'),('reviewer','anthropic','claude-opus-4-6','low')]:
+            sid='up-'+label; native=temp/(sid+'.jsonl')
+            native.write_text(''.join(json.dumps(r)+'\n' for r in [{'type':'session','id':sid,'cwd':str(p)},{'type':'model_change','provider':provider,'modelId':model},{'type':'thinking_level_change','thinkingLevel':effort}]))
+            identities.append({'session':sid,'model':model,'evidence':str(native)})
+        review={'context':context,'implementer':identities[0],'reviewer':identities[1],'standards':'pass','spec':'pass','covered':['user_good','user_failure'],'findings':[]}
+        call('gate-review',name,'--','up-gate',payload('up-review.json',review),actor='gate-pane')
+        call('gate-verdict',name,'--','up-gate','accepted',actor='gate-pane')
+        call('append',name,'--event-id','up-after-accepted','--','working: 等主控落地')
+        routes,_=deliveries()
+        assert len(routes)==1 and routes[0][2]=='ctl' and 'source:up-after-accepted' in routes[0][3] and '门禁 accepted' in routes[0][3],routes
+        assert read(name)['gate']['verdict']=='accepted' and read(name)['claim']['owner']=='gate-pane' and read(name)['phase']=='running'
+        print('PASS upward P3：公开accepted之后交接回主控，pending门禁优先、claim/state不变')
+        if os.environ.get('QWB_PLANNING_UPWARD_COMPARE')!='1': return
+        # 同路径、同初始票/身份，固定两份writer的时钟与随机输入；比较未过滤的完整字节。
+        cli('qwb-role.sh','start','--actor','up-test','--role','测试体系','--worker','sol','--dir',p)
+        probe=subprocess.run(['bash','-c','. "$1"; qwb_gate_identity "$2" up-test 测试体系','probe',str(ROOT/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+        assert probe.returncode==0,(probe.stdout,probe.stderr)
+        test_identity=json.loads(probe.stdout)
+        original=ticket.read_bytes(); initial=read(name); native_path=Path(env['PL_NATIVE']); native_bytes=native_path.read_bytes()
+        other_dir=temp/'compat-other-tasks'; other_dir.mkdir()
+        others=[f for f in (p/'tasks').glob('*.md') if f!=ticket]
+        for f in others: f.rename(other_dir/f.name)
+        runtime=p/'qwbuddy/bin'
+        originals={s:(runtime/s).read_bytes() for s in ['qwb-ledger.sh','qwb-wake.sh']}
+        snapshots={}
+        def frozen_ticket(data):
+            body=original.split(b'\n<!-- qwb-collab-v1\n')[0]
+            return body+b'\n<!-- qwb-collab-v1\n'+json.dumps(data,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()+b'\n-->\n'
+        for case in ['plain','pending','rework','test-request']:
+            data=json.loads(json.dumps(initial))
+            if case=='plain': data.pop('planning'); data.pop('gate'); data['claim']=None
+            elif case in ('pending','rework'): data['gate']['verdict']=case
+            else:
+                event_id='up-after-accepted'
+                data['test_requests']={'compat-test':{'event_id':event_id,'identity':test_identity,'reason':'new-behavior','scenario':'user_good','context':{},'reply':{},'reply_sha256':''}}
+            snapshots[case]=frozen_ticket(data)
+        snapshots['legacy']=b'# legacy\nstate: blocked\nblocked: unchanged legacy input\n'
+        evidence=os.environ.get('QWB_PLANNING_UPWARD_EVIDENCE')
+        evidence=Path(evidence) if evidence else None
+        if evidence: evidence.mkdir(parents=True,exist_ok=False)
+        try:
+            for case,snapshot in snapshots.items():
+                outputs=[]
+                for version in ['baseline','candidate']:
+                    for script in originals:
+                        raw=subprocess.check_output(['git','-C',str(ROOT),'show','d66d77c:bin/'+script]) if version=='baseline' else (ROOT/'bin'/script).read_bytes()
+                        if script=='qwb-ledger.sh':
+                            raw=raw.replace(b'my $now=int(time()*1000);',b'my $now=4102444800000;')
+                            raw=raw.replace(b"strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)",b"'2099-01-01T00:00:00Z'")
+                            raw=raw.replace(b"$event=unpack('H*',$bytes);",b'$event=substr(sha256_hex("$cmd:$data->{seq}"),0,32);')
+                        (runtime/script).write_bytes(raw)
+                    ticket.write_bytes(snapshot); native_path.write_bytes(native_bytes); log.write_bytes(b'')
+                    result=subprocess.run(['bash',str(runtime/'qwb-wake.sh'),'--project',str(p),'--once','--pane','ctl'],env=env,capture_output=True)
+                    observed={'stdout':result.stdout,'stderr':result.stderr,'rc':str(result.returncode).encode(),'ticket':ticket.read_bytes(),'herdr':log.read_bytes()}
+                    assert result.returncode==0,(case,version,observed)
+                    calls=[json.loads(s) for s in observed['herdr'].splitlines()]
+                    expected='gate-pane' if case in ('pending','rework') else ('worker-测试体系' if case=='test-request' else 'ctl')
+                    assert any(a[:3]==['pane','run',expected] for a in calls),(case,version,calls)
+                    outputs.append(observed)
+                    if evidence:
+                        for key,value in observed.items(): (evidence/(case+'-'+version+'.'+key)).write_bytes(value)
+                for key in outputs[0]: assert outputs[0][key]==outputs[1][key], ('P6 byte mismatch',case,key,outputs[0][key],outputs[1][key])
+                print('PASS upward P6逐字节 '+case+': stdout/stderr/rc/票/Herdr一致')
+        finally:
+            ticket.write_bytes(original); native_path.write_bytes(native_bytes)
+            for script,raw in originals.items(): (runtime/script).write_bytes(raw)
+            for f in others: (other_dir/f.name).rename(f)
+    if os.environ.get('QWB_PLANNING_UPWARD_ONLY')=='1':
+        upward_checks()
+        raise SystemExit(0)
     def accept_land_checks():
         # 沿用04的Pi JSONL外部证据fixture；不启动真实审核代理，私有true门不是仓库full验收。
         change=source('acceptance-request','原话：StageB验收需StageA accepted，落地需StageA landed')
@@ -413,6 +568,7 @@ file.write_text(json.dumps(s))
     assert (p/'tasks/C.md').read_bytes()==history
     print('PASS user_变更使旧证据失效：CAS/显式gate handoff，旧binding保留且失效；原话不覆盖；C不中止；已验收历史拒绝重写')
     accept_land_checks()
+    upward_checks()
     evidence=os.environ.get('QWB_PLANNING_EVIDENCE_DIR')
     if evidence:
         dest=Path(evidence);dest.mkdir(parents=True,exist_ok=False)
