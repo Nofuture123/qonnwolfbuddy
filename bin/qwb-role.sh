@@ -17,14 +17,14 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
   echo 'start另需 --role 门禁|规划|测试体系|CI（按需） --worker <已配置工人> --dir <既有目录>；变更操作仅实际绑定主控。'
   echo '控制: qwb-control.sh interrupt|exit|relaunch --actor <id> --expect-gen <代次> --project <根>'
   echo '模式: mode enter|exit|status|summary --project <根> -- <参数>；详见qwb-ledger.sh --help'
-  echo 'Pi须显式配置QWB_ROLE_PI_CONTROL=verified；Claude/Codex控制未验证，拒绝。原工人派发配置不变。'
+  echo 'Pi须显式配置QWB_ROLE_PI_CONTROL=verified；Claude仅规划可用，须QWB_ROLE_CLAUDE_CONTROL=verified；Codex控制未验证，拒绝。原工人派发配置不变。'
   exit 0
 fi
 [[ -d "$PROJECT_ROOT" ]] || { echo '错误：项目根不存在' >&2; exit 2; }
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 # shellcheck source=/dev/null
 . "$BINDIR/qwb-lib.sh"
-QWB_ROLE_PI_CONTROL=""; QWB_WORKSPACE=""; QWB_WORKERS=""
+QWB_ROLE_PI_CONTROL=""; QWB_ROLE_CLAUDE_CONTROL=""; QWB_WORKSPACE=""; QWB_WORKERS=""
 QWB_ROLE_PI_INTEGRATION="${HOME}/.pi/agent/extensions/herdr-agent-state.ts"
 if [[ -f "$PROJECT_ROOT/qwbuddy/config.sh" ]]; then
   # shellcheck source=/dev/null
@@ -42,7 +42,17 @@ if [[ "${1:-}" == start || "${1:-}" == relaunch ]]; then
     for i in "${!QWB_CONFIG_NAMES[@]}"; do
       [[ "${QWB_CONFIG_NAMES[i]}" == "$selected" ]] || continue
       offset="${QWB_CONFIG_OFFSETS[i]}"; count="${QWB_CONFIG_COUNTS[i]}"
-      qwb_pi_profile role "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}" >/dev/null || exit 1
+      if [[ "${QWB_CONFIG_HARNESSES[i]}" == claude ]]; then
+        qwb_claude_profile role "${QWB_CONFIG_MODES[i]}" claude "${QWB_CONFIG_ARGV[@]:offset:count}" >/dev/null || exit 1
+        selected_role=""
+        for ((j=0; j<${#args[@]}; j++)); do
+          [[ "${args[j]}" != --role ]] || selected_role="${args[j+1]:-}"
+        done
+        [[ "$selected_role" == 规划 ]] || { echo '拒绝：Claude仅可担任规划；门禁、测试体系、CI须Pi' >&2; exit 1; }
+        [[ "$QWB_ROLE_CLAUDE_CONTROL" == verified ]] || { echo '拒绝：须在qwbuddy/config.sh启用QWB_ROLE_CLAUDE_CONTROL=verified' >&2; exit 1; }
+      else
+        qwb_pi_profile role "${QWB_CONFIG_MODES[i]}" "${QWB_CONFIG_HARNESSES[i]}" "${QWB_CONFIG_ARGV[@]:offset:count}" >/dev/null || exit 1
+      fi
     done
   fi
   PROFILE="$({
@@ -56,7 +66,7 @@ if [[ "${1:-}" == start || "${1:-}" == relaunch ]]; then
   } | python3 -c 'import json,sys; print(json.dumps([json.loads(s) for s in sys.stdin]))')"
 fi
 export QWB_ROLE_BINDIR="$BINDIR" QWB_ROLE_ROOT="$PROJECT_ROOT" QWB_ROLE_PROFILE="$PROFILE"
-export QWB_ROLE_PI_CONTROL QWB_ROLE_PI_INTEGRATION QWB_WORKSPACE QWB_WORKERS
+export QWB_ROLE_PI_CONTROL QWB_ROLE_PI_INTEGRATION QWB_ROLE_CLAUDE_CONTROL QWB_WORKSPACE QWB_WORKERS
 python3 -B - "$@" <<'PY'
 import argparse, contextlib, fcntl, hashlib, json, os, re, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
@@ -179,18 +189,26 @@ def snapshot_dir(directory):
             'status':run(['git','-C',directory,'status','--porcelain=v1','--untracked-files=all']).stdout}
 
 def model_profile(profile):
-    p = run(['bash','-c','. "$1"; shift; qwb_pi_profile role "$@"','qwb-role',str(bindir/'qwb-lib.sh'),
-             profile['mode'],profile['harness'],*profile['argv']])
+    if profile['harness']=='claude':
+        p = run(['bash','-c','. "$1"; shift; qwb_claude_profile role "$@"','qwb-role',str(bindir/'qwb-lib.sh'),
+                 profile['mode'],profile['harness'],*profile['argv']])
+    else:
+        p = run(['bash','-c','. "$1"; shift; qwb_pi_profile role "$@"','qwb-role',str(bindir/'qwb-lib.sh'),
+                 profile['mode'],profile['harness'],*profile['argv']])
     d = json.loads(p.stdout)
     return d['provider'], d['model'], d['effort']
 
-def adapter():
+def adapter(tool=None, role=None):
+    if (tool or (r or {}).get('tool')) == 'claude':
+        require((role or (r or {}).get('role')) == '规划', 'Claude仅支持规划职责')
+        require(os.environ.get('QWB_ROLE_CLAUDE_CONTROL') == 'verified', 'Claude控制未启用；请在qwbuddy/config.sh设置QWB_ROLE_CLAUDE_CONTROL=verified')
+        return None
     require(os.environ.get('QWB_ROLE_PI_CONTROL') == 'verified', 'Pi控制尚未在本项目批准启用（QWB_ROLE_PI_CONTROL=verified）；不安装/自动启用')
     integration = Path(os.environ['QWB_ROLE_PI_INTEGRATION']); safe(integration)
     require(integration.is_file() and 'HERDR_INTEGRATION_ID=pi' in integration.read_text(), '缺已安装原生Herdr Pi集成，拒绝未知绑定')
     return str(integration)
 
-def current(d, pending=False):
+def current(d, pending=False, handshake=False):
     require(bool(d.get('pane')), '尚无端点；保留prepared记录，需核对tab创建结果')
     p = pane_info(d['pane']); proc = process_info(d['pane'])
     require(p.get('workspace_id') == d['workspace'] and p.get('terminal_id') == d['terminal'], '端点归属/terminal发生变化')
@@ -209,6 +227,24 @@ def current(d, pending=False):
             require((old.returncode == 1 and not old.stdout.strip() and not old.stderr.strip()) or
                     (old.returncode == 0 and bool(old.stdout.strip()) and old.stdout.strip() != d['pid_start']), '旧Pi PID仍在或死亡证据未知，不能认定结束')
         return {'activity':'stopped','proof':'foreground-shell+old-pid-ended' if d.get('pid') else 'owned-new-pane+launch-not-sent'}
+    if d['tool']=='claude':
+        require(p.get('agent')=='claude','运行工具未知，拒绝认闲/认死')
+        native=native_process(proc,'claude')
+        require(Path(native.get('cwd','')).resolve()==Path(d['dir']),'Claude进程目录归属不符')
+        bound=not pending or bool(d.get('pending',{}).get('pid'))
+        if bound: require(native['pid']==d.get('pid') and native['start']==d.get('pid_start'),'不是登记启动incarnation；不能采信迟到idle/完成')
+        ref=p.get('agent_session')
+        require(isinstance(ref,dict) and ref.get('agent')=='claude' and ref.get('kind')=='id' and ref.get('source')=='herdr:claude' and ref.get('value')==d['session_id'],'原生Claude session与本代登记不符')
+        observed=json.loads(run(['bash',str(bindir/'qwb-herdr.sh'),'activity','--project',str(root),'--pane',d['pane'],'--dir',d['dir']]).stdout)
+        require(observed.get('pid')==native['pid'] and observed.get('pid_start')==native['start'] and observed.get('session_id')==d['session_id'],'活动观察不是当前PID/session代次')
+        if bound and d.get('session_path'): require(observed.get('session')==d['session_path'],'原生session路径变化，拒绝旧事件')
+        if not handshake:
+            require(observed.get('actual_model')==d['model'] and observed.get('actual_effort')==d['effort'],'当前Claude模型/effort未证实匹配；须完成握手且不以argv冒充实际模型')
+            require(observed['activity'] in ('busy','idle'),'真实活动未知，不以idle认闲或退出')
+        out=dict(activity='working' if observed['activity']=='busy' else observed['activity'],activity_evidence=observed,pid=native['pid'],pid_start=native['start'],proof='native-session+pid-start+assistant-model')
+        if observed.get('session'): out['session_path']=observed['session']
+        if not handshake: out.update(actual_model=observed['actual_model'],actual_effort=observed['actual_effort'])
+        return out
     require(p.get('agent') == 'pi', '运行工具未知，拒绝认闲/认死')
     native = native_process(proc)
     require(Path(native.get('cwd','')).resolve() == Path(d['dir']), 'Pi进程目录归属不符')
@@ -288,23 +324,54 @@ def launch():
     pending = r['pending']; d = dict(r, **pending)
     # Never retry a possibly delivered launch by guessing from a timeout.
     if pending.get('attempted', r['phase'] not in ('prepared','pane-ready','stopped')):
-        observation = current(d, pending=True)
+        observation = current(d, pending=True, handshake=r['tool']=='claude')
         require(observation['activity'] != 'stopped', '启动部分完成，尚无匹配实例；先显式exit核对旧运行，不能重送启动')
     else:
         require(current(r)['activity'] == 'stopped', '旧实例未证实结束，拒绝启动替身')
-        sessions = state / (r['actor']+'.sessions'); safe(sessions, True); sessions.mkdir(exist_ok=True)
-        argv = list(r['argv']) + ['--no-extensions','-e',integration,'--no-skills','--no-prompt-templates','--no-context-files','--no-approve','--offline',
-                                  '--session-dir',str(sessions),'--append-system-prompt',r['charter']]
-        if pending.get('resume_path'): argv += ['--session',pending['resume_path']]
-        else: argv += ['--session-id',pending['session_id']]
+        if r['tool']=='claude':
+            guide=f'你是项目{root}的{r["role"]}职责。开工前先完整读取职责文件：{r["charter"]}。'
+            require('\n' not in guide and '\r' not in guide and len(guide)<=600,'Claude指路文字须单行且不超过600字符')
+            argv=list(r['argv'])+['--append-system-prompt',guide]
+            argv+=['--resume',pending['session_id']] if pending.get('resume_path') else ['--session-id',pending['session_id']]
+        else:
+            sessions = state / (r['actor']+'.sessions'); safe(sessions, True); sessions.mkdir(exist_ok=True)
+            argv = list(r['argv']) + ['--no-extensions','-e',integration,'--no-skills','--no-prompt-templates','--no-context-files','--no-approve','--offline',
+                                      '--session-dir',str(sessions),'--append-system-prompt',r['charter']]
+            if pending.get('resume_path'): argv += ['--session',pending['resume_path']]
+            else: argv += ['--session-id',pending['session_id']]
         pending['attempted'] = True
         phase('launch-sent', exit='not-requested')
         p = run(['bash','-c','. "$1"; shift; qwb_start_worker "$@"','qwb-role',str(bindir/'qwb-lib.sh'),
-                 r['agent_name'],r['pane'],'pi','30000',*argv], check=False)
+                 r['agent_name'],r['pane'],r['tool'],'30000',*argv], check=False)
         if p.returncode:
-            phase('launch-uncertain', last_error=p.stderr.strip()); raise Refusal('启动未确认；记录与现场保留，先reconcile现实，不重发')
-        observation = current(d, pending=True)
-        require(observation['activity'] != 'stopped', '启动返回但未确认实际Pi')
+            phase('launch-uncertain', last_error=p.stderr.strip())
+            if r['tool']=='claude' and 'agent_not_ready' in p.stdout+p.stderr:
+                raise Refusal('Claude尚未就绪；请到窗口'+r['pane']+'确认目录信任，然后reconcile；现场保留，不重发启动')
+            raise Refusal('启动未确认；记录与现场保留，先reconcile现实，不重发')
+        observation = current(d, pending=True, handshake=r['tool']=='claude')
+        require(observation['activity'] != 'stopped', '启动返回但未确认实际'+('Claude' if r['tool']=='claude' else 'Pi'))
+    if r['tool']=='claude':
+        pending.update({k:observation[k] for k in ('pid','pid_start','session_path') if k in observation}); save()
+        d=dict(r,**pending)
+        if not pending.get('handshake_sent'):
+            require(pane_info(r['pane']).get('agent_status')=='idle','Claude尚未空闲，保留现场待reconcile补握手')
+            prompt=f'请先完整读取职责文件 {r["charter"]}，核对你是本项目的规划职责，然后只回复“就绪”。'
+            require('\n' not in prompt and '\r' not in prompt and len(prompt)<=600,'Claude握手须单行且不超过600字符')
+            pending.update(handshake_sent=True,handshake_before=observation['activity_evidence'].get('assistant_record'))
+            phase('handshake-sent')
+            run(['herdr','pane','run',r['pane'],prompt])
+        deadline=time.monotonic()+10; reason='Claude握手未取得新的assistant模型证明'
+        while True:
+            try:
+                observation=current(d,pending=True)
+                require(observation['activity_evidence'].get('assistant_record')!=pending.get('handshake_before'), 'Claude握手尚无本次新回复')
+                require(observation['activity']=='idle','Claude握手尚未空闲')
+                break
+            except Refusal as e: reason=str(e)
+            require(time.monotonic()<deadline,'Claude握手未确认：'+reason+'；现场保留，完成后reconcile')
+            time.sleep(.1)
+        pending.pop('handshake_sent',None); pending.pop('handshake_before',None)
+
     require(not r.get('pid') or observation['pid'] != r['pid'] or observation['pid_start'] != r['pid_start'], '仍是旧运行，不能发布新incarnation')
     r.update(pending); r.update(observation); r.pop('pending',None); r.pop('attempted',None); r.pop('last_error',None)
     phase('active')
@@ -336,7 +403,7 @@ def main():
             require(a.role and a.worker and a.dir, 'start需role/worker/dir')
             profile = next((x for x in json.loads(os.environ['QWB_ROLE_PROFILE']) if x['worker'] == a.worker),None)
             require(profile is not None, '工人未配置')
-            provider, model, effort = model_profile(profile); adapter()
+            provider, model, effort = model_profile(profile); adapter(profile['harness'], a.role)
             directory = str(Path(a.dir).resolve()); checkpoint = snapshot_dir(directory)
             if r:
                 require(r['role'] == a.role and r['worker'] == a.worker and r['dir'] == directory and r['argv'] == profile['argv'], '重复start的角色/worker/目录/argv冲突')
@@ -357,10 +424,10 @@ def main():
                 r = dict(version=1,actor=a.actor,root=str(root),role=a.role,scope='single-project',
                          kind='on-demand' if a.role=='CI' else 'standing',
                          allowed_actions=['status','proposal','test'] if a.role=='测试体系' else (['status','proposal','new','revise','dispatch-authorized'] if a.role=='规划' else ['status','proposal']),
-                         worker=a.worker,argv=profile['argv'],tool='pi',provider=provider,model=model,effort=effort,
+                         worker=a.worker,argv=profile['argv'],tool=profile['harness'],provider=provider,model=model,effort=effort,
                          dir=directory,workspace=workspace,controller=owner[0],owner_fp=owner[1],incarnation=0,
                          agent_name='qwb-role-'+a.actor,checkpoint=checkpoint,pane_history=[],
-                         pending=dict(incarnation=1,session_id=uuid.uuid4().hex))
+                         pending=dict(incarnation=1,session_id=str(uuid.uuid4()) if profile['harness']=='claude' else uuid.uuid4().hex))
                 charter = state/(a.actor+'.charter.md'); safe(charter)
                 require(not charter.exists(), '孤立charter保留待核对，拒绝覆盖')
                 charter.write_text(charter_text+'\n## 实际角色绑定与恢复\n'+
@@ -379,7 +446,7 @@ def main():
             require(a.expect_gen is not None and a.expect_gen == r['incarnation'], '旧代际/缺expect-gen，拒绝推进当前实例')
             require(r['phase'] != 'retired' or a.command == 'retire', '已退休角色不可控制/恢复')
             control_target = dict(r, **r.get('pending',{}))
-            observation = current(control_target, pending=bool(r.get('pending')))
+            observation = current(control_target, pending=bool(r.get('pending')), handshake=r['tool']=='claude' and bool(r.get('pending')) and a.command=='reconcile')
             if observation['activity'] != 'stopped':
                 control_target.update(observation)
                 if r.get('pending'):
@@ -400,12 +467,15 @@ def main():
                 adapter()
                 if observation['activity'] != 'stopped':
                     require(observation['activity'] in ('idle','done'), '先interrupt并核对idle，不能把退出文字输入工作中的agent')
+                    if r['tool']=='claude': require(pane_info(r['pane']).get('scroll',{}).get('offset_from_bottom',0)==0,'viewport非末尾，composer状态无法核对')
                     visible = run(['herdr','pane','read',r['pane'],'--source','visible']).stdout
                     borders = [i for i,s in enumerate(visible.splitlines()) if re.fullmatch(r'\s*─{8,}\s*',s)]
-                    require(len(borders) >= 2 and all(not s.strip() for s in visible.splitlines()[borders[-2]+1:borders[-1]]), 'composer未证实为空，拒绝覆盖/拼接未提交输入')
+                    composer=visible.splitlines()[borders[-2]+1:borders[-1]] if len(borders)>=2 else []
+                    empty=(len(composer)==1 and re.fullmatch(r'\s*❯\s*',composer[0])) if r['tool']=='claude' else all(not s.strip() for s in composer)
+                    require(len(borders) >= 2 and empty, 'composer未证实为空，拒绝覆盖/拼接未提交输入')
                     require(current(control_target)['pid'] == observation['pid'], '送退出前PID发生变化')
                     phase('exit-sent',exit='unconfirmed')
-                    run(['herdr','pane','run',r['pane'],'/quit'])
+                    run(['herdr','pane','run',r['pane'],'/exit' if r['tool']=='claude' else '/quit'])
                     for _ in range(20):
                         time.sleep(.1)
                         observation = current(control_target)
@@ -425,12 +495,18 @@ def main():
                 model_profile(profile)
                 checkpoint = snapshot_dir(r['dir'])
                 require(hashlib.sha256(Path(r['charter']).read_bytes()).hexdigest() == r['charter_sha256'], '持久职责已变化，需主控核对')
-                pending = dict(incarnation=r['incarnation']+1,session_id=uuid.uuid4().hex)
+                pending = dict(incarnation=r['incarnation']+1,session_id=str(uuid.uuid4()) if r['tool']=='claude' else uuid.uuid4().hex)
                 session = Path(r['session_path']) if r.get('session_path') else None
                 if session is not None: safe(session)
                 if session is not None and session.exists():
-                    header = json.loads(session.read_text().splitlines()[0])
-                    require(header.get('type') == 'session' and header.get('id') == r['session_id'] and Path(header.get('cwd','')).resolve() == Path(r['dir']), '原session文件身份未知，拒绝恢复')
+                    if r['tool']=='claude':
+                        entries=[json.loads(line) for line in session.read_text().splitlines() if line.strip()]
+                        messages=[x for x in entries if x.get('type') in ('user','assistant')]
+                        require(messages and all(x.get('sessionId')==r['session_id'] and x.get('cwd') and Path(x['cwd']).resolve()==Path(r['dir']) for x in messages),'原Claude session文件身份未知，拒绝恢复')
+                        require(all(('sessionId' not in x or x['sessionId']==r['session_id']) and ('cwd' not in x or Path(x['cwd']).resolve()==Path(r['dir'])) for x in entries),'原Claude session记录身份冲突')
+                    else:
+                        header = json.loads(session.read_text().splitlines()[0])
+                        require(header.get('type') == 'session' and header.get('id') == r['session_id'] and Path(header.get('cwd','')).resolve() == Path(r['dir']), '原session文件身份未知，拒绝恢复')
                     pending.update(session_id=r['session_id'],resume_path=str(session))
                 phase('stopped',controller=owner[0],owner_fp=owner[1],checkpoint=checkpoint,pending=pending)
                 launch()

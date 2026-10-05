@@ -34,6 +34,10 @@ with manager as temp:
     integration=temp/'integration.ts'; integration.write_text('// HERDR_INTEGRATION_ID=pi\n')
     (p/'qwbuddy/config.sh').write_text(f"QWB_WORKERS='sol reviewer'\nQWB_WORKSPACE='ws'\nQWB_ROLE_PI_CONTROL='verified'\nQWB_ROLE_PI_INTEGRATION='{integration}'\nQWB_GATE_FAST='true'\nQWB_GATE_FULL='true'\n")
     (p/'qwbuddy/workers.sh').write_text('qwb_worker sol herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\nqwb_worker reviewer herdr pi -- --provider anthropic --model claude-opus-4-6 --thinking low\nqwb_family openai-codex/gpt-6.1-sol gpt\nqwb_family openai-codex/gpt-6-astra gpt\nqwb_family anthropic/claude-opus-4-6 claude\n')
+    claude_planner=os.environ.get('QWB_CLAUDE_PLANNER')=='1'
+    if claude_planner:
+        config=p/'qwbuddy/config.sh';config.write_text(config.read_text()+"\nQWB_ROLE_CLAUDE_CONTROL='verified'\nQWB_WORKERS='sol reviewer claude-opus-medium'\n")
+        workers=p/'qwbuddy/workers.sh';workers.write_text(workers.read_text()+'qwb_worker claude-opus-medium herdr claude -- --model claude-opus-5-5 --effort medium --dangerously-skip-permissions\n')
     (p/'.gitignore').write_text('tasks/\nqwbuddy/.roles/\nqwbuddy/.controller.lock/\nqwbuddy/.supervisor.guard\n')
     def git(*args): return subprocess.check_output(['git','-C',str(p),*args],text=True).strip()
     git('init','-q'); git('add','.'); git('-c','user.name=Test','-c','user.email=test@invalid','commit','-qm','seed')
@@ -57,7 +61,10 @@ elif a[:2]==['agent','get']:
 elif a[:2]==['agent','start']:
  v=a[a.index('--')+1:]; pane=a[a.index('--pane')+1]
  if '--session-id' in v:
-  sid=v[v.index('--session-id')+1];sd=v[v.index('--session-dir')+1];s[pane]={'session':sd+'/2099_'+sid+'.jsonl'}
+  sid=v[v.index('--session-id')+1]
+  if a[a.index('--kind')+1]=='claude':s[pane]={'session':os.environ['QWB_CLAUDE_PROJECTS_DIR']+'/project/'+sid+'.jsonl','sid':sid,'tool':'claude'}
+  else:
+   sd=v[v.index('--session-dir')+1];s[pane]={'session':sd+'/2099_'+sid+'.jsonl'}
  out({'type':'agent_started'})
 elif a[:2]==['pane','get']:
  pane=a[2]
@@ -72,10 +79,11 @@ elif a[:2]==['pane','get']:
   if n>=3:s.pop(pane,None)
  live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
  if live:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
+ if s.get(pane,{}).get('tool')=='claude':d.update(agent='claude',agent_session={'agent':'claude','source':'herdr:claude','kind':'id','value':s[pane]['sid']})
  out({'pane':d})
 elif a[:2]==['pane','process-info']:
  pane=a[-1];live=pane=='ctl' or pane in s;i=pid if live else 42
- out({'process_info':{'pane_id':pane,'shell_pid':42,'foreground_process_group_id':i,'foreground_processes':[{'pid':i,'argv0':'pi' if live else 'zsh','argv':['pi'],'cwd':p}]}})
+ out({'process_info':{'pane_id':pane,'shell_pid':42,'foreground_process_group_id':i,'foreground_processes':[{'pid':i,'argv0':s.get(pane,{}).get('tool','pi') if live else 'zsh','argv':['pi'],'cwd':p}]}})
 elif a[:2]==['pane','read']:print('(openai-codex) gpt-6.1-sol • high');sys.exit()
 elif a[:2]==['agent','prompt']:
  if not os.environ.get('PL_PROMPT_HOLD'):s['submit_seq']=s.get('submit_seq',185)+1
@@ -86,6 +94,10 @@ elif a[:2]==['pane','send-keys']:
  out({'type':'ok'})
 elif a[:2] in (['pane','run'],['tab','close']):
  if a[:2]==['pane','run'] and os.environ.get('PL_FAIL_TRANSPORT')==a[2]:sys.exit(9)
+ if a[:2]==['pane','run'] and s.get(a[2],{}).get('tool')=='claude':
+  assert '\\n' not in a[3] and len(a[3])<=600,a
+  session=Path(s[a[2]]['session']);session.parent.mkdir(parents=True,exist_ok=True)
+  session.write_text(json.dumps({'type':'assistant','sessionId':s[a[2]]['sid'],'cwd':p,'effort':'medium','message':{'model':'claude-opus-5-5','content':[]}})+'\\n')
  out({'type':'ok'})
 else:sys.exit(77)
 file.write_text(json.dumps(s))
@@ -93,6 +105,7 @@ file.write_text(json.dumps(s))
     for file in stub.iterdir(): file.chmod(0o755)
     log=temp/'native-calls.jsonl'
     env=os.environ|{'PATH':str(stub)+':'+os.environ['PATH'],'HERDR_PANE_ID':'ctl','PL_NATIVE':str(temp/'native.json'),'PL_PROJECT':str(p),'PL_PID':str(os.getpid()),'PL_LOG':str(log)}
+    env['QWB_CLAUDE_PROJECTS_DIR']=str(temp/'claude-projects')
     diagnostic=os.environ.get('QWB_PLANNING_DIAGNOSTIC_DIR')
     diagnostic=Path(diagnostic) if diagnostic else None
     if diagnostic: diagnostic.mkdir(parents=True,exist_ok=False)
@@ -208,10 +221,19 @@ file.write_text(json.dumps(s))
     mark=count(); run('old.md',ok=False); no_dispatch_since(mark)
     print('PASS user_可重放需求与真实就绪：持久source/一次request包映射；重放逐字节不变；旧running未授权拒绝')
     # 启用既有02身份、主控受限授权、03持久request；不靠角色字符串授权。
-    for actor,role in [('planner','规划'),('gate','门禁')]:cli('qwb-role.sh','start','--actor',actor,'--role',role,'--worker','sol','--dir',p)
+    for actor,role in [('planner','规划'),('gate','门禁')]:cli('qwb-role.sh','start','--actor',actor,'--role',role,'--worker','claude-opus-medium' if claude_planner and actor=='planner' else 'sol','--dir',p)
     approval={'workers':['sol'],'permissions':[],'evidence':'fixture explicit implementation approval; no paid operations','budget':1}
     grant=dict(approval,request_id='request-one',source_event=event,packages=request['packages'],paths=['api.sh'])
     grant_file=payload('grant.json',grant)
+    if claude_planner:
+        call('plan-assign','intake.md','--','planner',grant_file)
+        call('new','B.md','--',payload('claude-new.json',dict(request,package_id='B')),actor='planner-pane')
+        mark=count();run('B.md',worker='reviewer',actor='planner-pane',ok=False);no_dispatch_since(mark)
+        run('B.md',actor='planner-pane')
+        d=read('B.md');assert d['workers'] and d['planning']['source']['text']=='原话：A接口v1；B用此接口；C独立'
+        mark=count();run('B.md',actor='planner-pane',ok=False);no_dispatch_since(mark)
+        print('PASS Claude规划真实祖先进程身份：plan-assign/new/qwb-run派工；未授权工人/超预算仍拒绝',flush=True)
+        raise SystemExit(0)
     def polish_plan_compare():
         global runtime_bin
         initial=intake.read_bytes(); original_runtime=runtime_bin
@@ -1158,3 +1180,7 @@ file.write_text(json.dumps(s))
         shutil.copy(log,dest/'fake-herdr.jsonl')
         (dest/'README.md').write_text('私有Git+fakeHerdr边界fixture；并非现场session/PID/生产交互证据。\n')
 PY
+
+if [[ "${QWB_CLAUDE_PLANNER:-}" != 1 ]]; then
+  QWB_CLAUDE_PLANNER=1 bash "$0"
+fi

@@ -51,14 +51,21 @@ elif a[:2]==['tab','create']:
  s['cwd']=a[a.index('--cwd')+1];out({'root_pane':{'pane_id':'w1:pRole','tab_id':'w1:tRole','terminal_id':'term-role','workspace_id':'w1'}})
 elif a[:2]==['agent','start']:
  s.update(live=True,starts=s['starts']+1,name=a[2],argv=a[a.index('--')+1:])
- s['model']=s['argv'][s['argv'].index('--model')+1];s['effort']=s['argv'][s['argv'].index('--thinking')+1]
- if '--provider' in s['argv']:s['provider']=s['argv'][s['argv'].index('--provider')+1]
+ s['tool']=a[a.index('--kind')+1]
+ s['model']=s['argv'][s['argv'].index('--model')+1];s['effort']=s['argv'][s['argv'].index('--effort' if s['tool']=='claude' else '--thinking')+1]
+ if s['tool']=='claude':
+  s['sid']=s['argv'][s['argv'].index('--resume' if '--resume' in s['argv'] else '--session-id')+1]
+  s['session']=str(Path(os.environ['QWB_CLAUDE_PROJECTS_DIR'])/'project'/(s['sid']+'.jsonl'))
+ elif '--provider' in s['argv']:s['provider']=s['argv'][s['argv'].index('--provider')+1]
  else:s['provider'],s['model']=s['model'].split('/',1)
- if '--session' in s['argv']:
+ if s['tool']=='claude':pass
+ elif '--session' in s['argv']:
   s['session']=s['argv'][s['argv'].index('--session')+1];s['sid']=json.loads(Path(s['session']).read_text().splitlines()[0])['id']
  else:
   sid=s['argv'][s['argv'].index('--session-id')+1]; sd=s['argv'][s['argv'].index('--session-dir')+1]
   s.update(sid=sid,session=str(Path(sd)/('2099_'+sid+'.jsonl')))
+ if mode=='untrusted':
+  s['untrusted']=True;path.write_text(json.dumps(s));print(json.dumps({'error':{'code':'agent_not_ready'}}));sys.exit(1)
  if mode=='launch-failed':
   path.write_text(json.dumps(s));err()
  out({'type':'agent_started'})
@@ -71,7 +78,11 @@ elif a[:2]==['pane','get']:
  pane={'pane_id':a[2],'workspace_id':'w1','tab_id':'w1:tCtl' if ctl else 'w1:tRole','terminal_id':'term-ctl' if ctl else 'term-role','foreground_cwd':os.environ['ROLE_PROJECT']}
  if ctl or s['live']:
   pane.update(agent='pi',agent_status='working' if mode=='busy' and not ctl else 'idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':'ctl-session' if ctl else s['session']})
- if mode=='old-session' and not ctl:pane['agent_session']['value']=str(Path(s['session']).parent/'2099_late-old-session.jsonl')
+ if s.get('tool')=='claude' and not ctl and s['live']:
+  pane.update(agent='claude',agent_session={'agent':'claude','kind':'id','source':'herdr:claude','value':s['sid']})
+ if mode=='untrusted' and not ctl:pane.update(agent_status='blocked',agent_session=None)
+ if mode=='old-session' and not ctl:pane['agent_session']['value']='different-session'
+ if mode=='scrolled' and not ctl:pane['scroll']={'offset_from_bottom':10}
  if mode=='foreign-terminal' and not ctl:pane['terminal_id']='term-foreign'
  out({'pane':pane})
 elif a[:2]==['pane','process-info']:
@@ -79,15 +90,25 @@ elif a[:2]==['pane','process-info']:
  live=ctl or (s['live'] and mode!='background')
  argv=['node','/opt/pi/dist/cli.js'] + ([] if ctl else s['argv']) if live else ['-zsh']
  pid=(999 if mode=='spoof-controller' else os.getppid()) if ctl else 100000000+s['starts'] if live else 42
- out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':pid if live else 42,'foreground_processes':[{'pid':pid,'argv0':'pi' if live else 'zsh','argv':argv,'cwd':os.environ['ROLE_PROJECT']}]}})
+ if mode=='wrong-pid' and not ctl and live:pid+=100
+ rows=[{'pid':pid,'argv0':('pi' if ctl else s.get('tool','pi')) if live else 'zsh','argv':argv,'cwd':os.environ['ROLE_PROJECT']}]
+ if not ctl and live and s.get('tool')=='claude':rows.append({'pid':pid+1000,'argv0':'caffeinate','cwd':os.environ['ROLE_PROJECT']})
+ out({'process_info':{'pane_id':a[-1],'shell_pid':42,'foreground_process_group_id':pid if live else 42,'foreground_processes':rows}})
 elif a[:2]==['pane','read']:
+ if s.get('tool')=='claude':
+  print('────────────────────\\n'+('❯ draft' if mode=='draft' else '❯ Try "hello"' if mode=='placeholder' else '❯')+'\\n────────────────────');sys.exit(0)
  print('────────────────────\\n'+('draft obligation' if mode=='draft' else '')+'\\n────────────────────\\n$0.000 (sub) 0.0%/272k (auto)  ('+s.get('provider','openai-codex')+') '+('wrong-model' if mode=='wrong-model' else s.get('model','gpt-6.1-sol'))+' • '+s.get('effort','high'));sys.exit(0)
 elif a[:2]==['pane','send-keys']:
  if mode=='action-failed':err()
  # Actual Herdr actions succeed with no JSON payload.
 elif a[:2]==['pane','run']:
  if mode=='action-failed':err()
- if a[-1]=='/quit' and mode!='exit-pending':s['live']=False
+ if a[-1] in ('/quit','/exit') and mode!='exit-pending':s['live']=False
+ elif s.get('tool')=='claude' and mode!='no-reply':
+  assert '\\n' not in a[-1] and len(a[-1])<=600,a
+  session=Path(s['session']);session.parent.mkdir(parents=True,exist_ok=True)
+  with session.open('a') as f:
+   f.write(json.dumps({'type':'assistant','sessionId':s['sid'],'cwd':os.environ['ROLE_PROJECT'],'uuid':'reply-'+str(s['starts']),'effort':'low' if mode=='bad-effort' else s['effort'],'message':{'model':'wrong' if mode=='bad-model' else s['model'],'content':[{'type':'text','text':'ready'}]}})+'\\n')
 else:err()
 path.write_text(json.dumps(s))
 ''')
@@ -106,10 +127,152 @@ print('Thu Oct  1 00:00:00 2099')
     (stub / 'ps').chmod(0o755)
     env = os.environ | {'PATH':str(stub)+':'+os.environ['PATH'], 'HERDR_PANE_ID':'w1:pCtl', 'HERDR_WORKSPACE_ID':'w1',
                          'ROLE_PROJECT':str(p), 'ROLE_FAKE_STATE':str(state), 'ROLE_FAKE_LOG':str(log)}
+    pi_byte=False
+    def byte_snapshot():
+        roles=p/'qwbuddy/.roles'
+        return (roles.exists(), {str(f.relative_to(roles)):f.read_bytes() for f in roles.rglob('*') if f.is_file()} if roles.exists() else {},
+                [str(f.relative_to(roles)) for f in roles.rglob('*') if f.is_dir()] if roles.exists() else [],
+                {f:f.read_bytes() if f.exists() else None for f in (state,log)})
+    def byte_restore(snapshot):
+        exists,files,dirs,native=snapshot;roles=p/'qwbuddy/.roles'
+        if roles.exists():shutil.rmtree(roles)
+        if exists:
+            roles.mkdir(mode=0o700)
+            for name in dirs:(roles/name).mkdir(parents=True,exist_ok=True)
+            for name,raw in files.items():(roles/name).write_bytes(raw)
+        for file,raw in native.items():
+            if raw is None:
+                if file.exists():file.unlink()
+            else:file.write_bytes(raw)
     def call(script, verb, *args, ok=True, extra=None):
+        compare=pi_byte and os.environ.get('QWB_ROLE_PI_BYTE_BASELINE')
+        before=byte_snapshot() if compare else None
         r = subprocess.run(['bash', str(root/'bin'/script), verb, '--project', str(p), *args], env=env | (extra or {}), capture_output=True, text=True)
+        if compare:
+            after=byte_snapshot();byte_restore(before)
+            old=subprocess.run(['bash',str(Path(compare)/script),verb,'--project',str(p),*args],env=env|(extra or {}),capture_output=True,text=True)
+            observed=byte_snapshot();byte_restore(after)
+            assert (old.returncode,old.stdout,old.stderr)==(r.returncode,r.stdout,r.stderr),(verb,'Pi stdout/stderr/rc',old,r)
+            assert observed==after,(verb,'Pi role/native bytes changed')
+            print('BYTE PASS '+script+' '+verb,flush=True)
         assert (r.returncode == 0) == ok, (verb, r.returncode, r.stdout, r.stderr)
         return json.loads(r.stdout) if ok else r
+    # Private fake clock only for bounded handshake failure cases; no production timeout knob.
+    (stub/'sitecustomize.py').write_text("import os,time\nif os.environ.get('ROLE_FAKE_CLOCK')=='1':\n tick=[0]\n def clock():\n  tick[0]+=6\n  return tick[0]\n time.monotonic=clock\n time.sleep=lambda _:None\nif os.environ.get('ROLE_PI_BYTES')=='1':\n import uuid\n time.time=lambda:2099000000\n uuid.uuid4=lambda:uuid.UUID('62391d30-b37e-48e8-8db0-1621cda1707e')\n")
+    env['PYTHONPATH']=str(stub)+os.pathsep+env.get('PYTHONPATH','')
+    # Claude role adapter starts through the same public entrance; native shape follows the probe.
+    config=p/'qwbuddy/config.sh'; saved_config=config.read_bytes()
+    workers=p/'qwbuddy/workers.sh'; saved_workers=workers.read_bytes()
+    env['QWB_CLAUDE_PROJECTS_DIR']=str(Path(tmp)/'claude-projects')
+    config.write_text(config.read_text()+"\nQWB_ROLE_CLAUDE_CONTROL='verified'\nQWB_WORKERS='sol claude-opus-medium'\n")
+    workers.write_text(workers.read_text()+'qwb_worker claude-opus-medium herdr claude -- --model claude-opus-5-5 --effort medium --dangerously-skip-permissions\n')
+    args=('start','--actor','planner','--role','规划','--worker','claude-opus-medium','--dir',str(p))
+    disabled=config.read_text().replace("QWB_ROLE_CLAUDE_CONTROL='verified'", "QWB_ROLE_CLAUDE_CONTROL=''")
+    config.write_text(disabled)
+    denied=call('qwb-role.sh',*args,ok=False)
+    assert 'QWB_ROLE_CLAUDE_CONTROL=verified' in denied.stderr
+    config.write_text(disabled.replace("QWB_ROLE_CLAUDE_CONTROL=''", "QWB_ROLE_CLAUDE_CONTROL='verified'"))
+    for role in ('门禁','测试体系','CI'):
+        denied=call('qwb-role.sh','start','--actor','invalid','--role',role,'--worker','claude-opus-medium','--dir',str(p),ok=False)
+        assert 'Claude仅可担任规划' in denied.stderr
+    valid_workers=workers.read_text()
+    for suffix in (' --model duplicate',' --effort high',' --resume arbitrary',' --fast',' --append-system-prompt text'):
+        workers.write_text(valid_workers.rstrip()+suffix+'\n')
+        call('qwb-role.sh',*args,ok=False)
+    for model in ('--dangerously-skip-permissions','""'):
+        workers.write_text(valid_workers.replace('--model claude-opus-5-5','--model '+model))
+        call('qwb-role.sh',*args,ok=False)
+    workers.write_text(valid_workers)
+    assert not state.exists() and not (p/'qwbuddy/.roles').exists() and not log.exists()
+    print('PASS Claude开关关闭/非规划职责：零Herdr调用零角色记录')
+    claude=call('qwb-role.sh',*args)
+    assert claude['phase']=='active' and claude['actual_model']=='claude-opus-5-5' and claude['actual_effort']=='medium',claude
+    import uuid
+    assert str(uuid.UUID(claude['session_id']))==claude['session_id']
+    native=json.loads(state.read_text()); argv=native['argv']
+    guide=argv[argv.index('--append-system-prompt')+1]
+    assert '\n' not in guide and len(guide)<=600 and claude['charter'] in guide
+    def identity(ok=True):
+        check=subprocess.run(['bash','-c','. "$1"; qwb_planner_identity "$2" planner','identity',str(root/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+        assert (check.returncode==0)==ok,(check.stdout,check.stderr)
+        return json.loads(check.stdout) if ok else check
+    assert identity()['session_id']==claude['session_id']
+    print('PASS Claude规划启动握手：UUID/单行指路/实际模型档位/active/规划身份')
+    original=Path(claude['session_path']).read_bytes()
+    for field,value in [('effort','low'),('model','wrong'),('sessionId','wrong'),('cwd',str(Path(tmp)) )]:
+        record=json.loads(original)
+        if field=='model':record['message']['model']=value
+        else:record[field]=value
+        Path(claude['session_path']).write_text(json.dumps(record)+'\n')
+        assert call('qwb-role.sh','status','--actor','planner')['activity']=='unknown'
+        identity(False)
+        Path(claude['session_path']).write_bytes(original)
+    for mode in ('old-session','wrong-pid'):
+        assert call('qwb-role.sh','status','--actor','planner',extra={'ROLE_FAKE_MODE':mode})['activity']=='unknown'
+        call('qwb-control.sh','exit','--actor','planner','--expect-gen','1',ok=False,extra={'ROLE_FAKE_MODE':mode})
+    session=Path(claude['session_path']); moved=session.with_suffix('.backup')
+    session.rename(moved);session.symlink_to(moved)
+    assert call('qwb-role.sh','status','--actor','planner')['activity']=='unknown'
+    session.unlink();moved.rename(session)
+    duplicate=session.parent.parent/'duplicate';duplicate.mkdir();copy=duplicate/session.name;copy.write_bytes(original)
+    assert call('qwb-role.sh','status','--actor','planner')['activity']=='unknown'
+    copy.unlink();duplicate.rmdir()
+    print('PASS Claude模型/档位/session/cwd/PID漂移及符号链接/重复文件：身份及控制拒绝')
+    for mode in ('draft','placeholder','busy','scrolled'):
+        call('qwb-control.sh','exit','--actor','planner','--expect-gen','1',ok=False,extra={'ROLE_FAKE_MODE':mode})
+        assert json.loads(state.read_text())['live']
+    assert call('qwb-role.sh','status','--actor','planner',extra={'ROLE_FAKE_MODE':'busy'})['activity']=='working'
+    record=json.loads(original);record['message']['content']=[{'type':'tool_use','id':'call-1','name':'Read','input':{}}]
+    Path(claude['session_path']).write_text(json.dumps(record)+'\n')
+    assert call('qwb-role.sh','status','--actor','planner')['activity']=='working'
+    call('qwb-control.sh','exit','--actor','planner','--expect-gen','1',ok=False)
+    result=dict(type='user',sessionId=claude['session_id'],cwd=str(p),message={'content':[{'type':'tool_result','tool_use_id':'call-1','content':'read'}]})
+    with Path(claude['session_path']).open('a') as f:f.write(json.dumps(result)+'\n'+original.decode())
+    assert call('qwb-role.sh','status','--actor','planner')['activity']=='idle'
+    call('qwb-control.sh','interrupt','--actor','planner','--expect-gen','1')
+    print('PASS Claude活动/输入框：working及未配对工具不认闲；草稿/占位提示不退出；配对完成可认闲')
+    for name,activity in [('tool-running','working'),('interrupted','idle'),('after-new-turn','idle')]:
+        rows=[json.loads(line) for line in (root/'tests/fixtures/herdr'/('claude-session-'+name+'.jsonl')).read_text().splitlines() if line.strip()]
+        for row in rows:
+            if 'sessionId' in row:row['sessionId']=claude['session_id']
+            if 'cwd' in row:row['cwd']=str(p)
+        session.write_text('\n'.join(map(json.dumps,rows))+'\n')
+        got=call('qwb-role.sh','status','--actor','planner');assert got['activity']==activity,(name,got)
+        if name=='after-new-turn':
+            # A newer completed round cannot erase an unmatched tool call in the older round.
+            rows=[row for row in rows if not (row.get('type')=='user' and isinstance(row.get('message',{}).get('content'),list) and
+                  any(c.get('type')=='tool_result' for c in row['message']['content']))]
+            session.write_text('\n'.join(map(json.dumps,rows))+'\n')
+            assert call('qwb-role.sh','status','--actor','planner')['activity']=='working'
+    session.write_bytes(original)
+    print('PASS Claude真机JSONL样本：执行中/打断配对/新一轮及旧悬空调用保守拒闲')
+    call('qwb-control.sh','exit','--actor','planner','--expect-gen','1')
+    resumed=call('qwb-control.sh','relaunch','--actor','planner','--expect-gen','1')
+    assert resumed['incarnation']==2 and resumed['session_id']==claude['session_id'] and resumed['session_path']==claude['session_path']
+    argv=json.loads(state.read_text())['argv']; assert '--resume' in argv and '--session-id' not in argv
+    call('qwb-control.sh','exit','--actor','planner','--expect-gen','2')
+    call('qwb-role.sh','retire','--actor','planner','--expect-gen','2')
+    print('PASS Claude退出/原会话resume/代次递增/显式退休')
+    for mode in ('untrusted','bad-model','bad-effort','no-reply'):
+        actor='planner-'+mode
+        failed=call('qwb-role.sh','start','--actor',actor,'--role','规划','--worker','claude-opus-medium','--dir',str(p),ok=False,extra={'ROLE_FAKE_MODE':mode,'ROLE_FAKE_CLOCK':'1'})
+        if mode=='untrusted': assert '确认目录信任，然后reconcile' in failed.stderr
+        record_path=p/'qwbuddy/.roles'/(actor+'.json')
+        pending=json.loads(record_path.read_text()); assert pending['incarnation']==0 and pending.get('pending') and pending['phase']!='active'
+        snapshot=json.loads(state.read_text()); starts=snapshot['starts']
+        if mode!='untrusted':
+            # Simulate the pending native answer arriving/correcting after timeout; no prompt re-send.
+            session=Path(snapshot['session']);session.parent.mkdir(exist_ok=True,parents=True)
+            session.write_text(json.dumps(dict(type='assistant',uuid='late',sessionId=snapshot['sid'],cwd=str(p),effort='medium',message={'model':'claude-opus-5-5','content':[]}))+'\n')
+        recovered=call('qwb-role.sh','reconcile','--actor',actor,'--expect-gen','0')
+        assert recovered['phase']=='active' and json.loads(state.read_text())['starts']==starts
+        call('qwb-control.sh','exit','--actor',actor,'--expect-gen','1')
+        call('qwb-role.sh','retire','--actor',actor,'--expect-gen','1')
+    print('PASS Claude未信任/模型不符/档位不符/握手超时保留现场，reconcile不重发启动')
+    config.write_bytes(saved_config); workers.write_bytes(saved_workers)
+    shutil.rmtree(p/'qwbuddy/.roles'); state.unlink(); log.unlink()
+    pi_byte=True
+    if os.environ.get('QWB_ROLE_PI_BYTE_BASELINE'):env['ROLE_PI_BYTES']='1'
     # Config errors must stick even when a later valid declaration succeeds (Bash || disables errexit).
     workers=p/'qwbuddy/workers.sh'; original_workers=workers.read_text()
     workers.write_text('qwb_worker not-registered herdr pi -- --provider openai-codex --model gpt-6.1-sol --thinking high\n'+original_workers)

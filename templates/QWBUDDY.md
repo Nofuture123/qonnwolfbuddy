@@ -156,6 +156,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 
 - 母本仓 `bash <母本仓>/bin/qwb-init.sh <项目根>` 安装或升级；`qwb-init.sh` 不装入目标项目。升级后按入口检查 [宿主与值守专项](host-watch-guide.md)。
 - `qwbuddy/bin/qwb-run.sh` 派发，`qwb-dispatch.sh --json` 给 `--worker auto` 返回结构化路由：clear 含 worker，off/error/ambiguous 回退已校验的默认工人；规则来自 `qwbuddy/dispatch-rules.json`，不解析人读文本。
+- `qwb-role.sh` 的规划职责支持 Pi 与显式启用 `QWB_ROLE_CLAUDE_CONTROL=verified` 的 Claude Code；门禁、测试体系、CI 仍仅支持 Pi。Claude 会话目录默认 `~/.claude/projects`，可用 `QWB_CLAUDE_PROJECTS_DIR` 注入隔离目录。
 - `qwb-status.sh` 点名，`qwb-lock.sh` 管锁，`qwb-wake.sh` 值守，`qwb-worktree.sh` 收尾，`qwb-test.sh` 跑门，`qwb-lint.sh` 自检；入口脚本可查 `--help`。`--ensure` 只供历史 tab 手工排障，主控退出后值守不自动恢复。
 
 ### 离开 / 静音 / 返回（单项目持久记录）

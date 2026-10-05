@@ -171,7 +171,7 @@ def activity(pane,directory=None):
     require(len(native)==1 and isinstance(native[0].get('pid'),int),'native tool identity unknown')
     n=native[0]; start=command(['ps','-p',str(n['pid']),'-o','lstart=']).strip(); require(start,'PID start unknown')
     if directory: require(Path(n.get('cwd','')).resolve()==Path(directory).resolve(),'tool cwd mismatch')
-    # Unmatched Pi tool calls override an idle edge; all other CLI adapters remain unknown/busy.
+    # Unmatched tool calls override an idle edge; only verified native session adapters may report idle.
     ref=info.get('agent_session',{}) or {}
     if tool=='pi' and ref.get('source')=='herdr:pi' and ref.get('kind')=='path':
         session=Path(ref.get('value','')); require(session.is_absolute() and not session.is_symlink(),'native session unknown')
@@ -204,6 +204,48 @@ def activity(pane,directory=None):
         settled=last is None or (last.get('role')=='assistant' and last.get('stopReason') in ('stop','error','aborted'))
         return dict(activity='busy' if active else 'idle' if settled and info.get('agent_status') in ('idle','done') else 'unknown',
                     proof='native-pid-start+session-branch',pid=n['pid'],pid_start=start,session=str(session),pending_tools=sorted(outstanding))
+    if tool=='claude' and ref.get('agent')=='claude' and ref.get('source')=='herdr:claude' and ref.get('kind')=='id':
+        sid=ref.get('value','')
+        require(isinstance(sid,str) and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',sid),'Claude session ID unknown')
+        projects=Path(os.environ.get('QWB_CLAUDE_PROJECTS_DIR',str(Path.home()/'.claude/projects')))
+        require(projects.is_absolute() and not projects.is_symlink() and projects.resolve()==projects,'Claude projects path redirected')
+        files=list(projects.glob('*/'+sid+'.jsonl'))
+        evidence=dict(pid=n['pid'],pid_start=start,session_id=sid)
+        if not files:
+            return dict(evidence,activity='busy' if info.get('agent_status') in ('working','blocked') else 'unknown',proof='native-pid+unpersisted-claude-session')
+        require(len(files)==1,'Claude session file is not unique')
+        session=files[0]
+        require(not session.is_symlink() and session.resolve()==session and session.is_file(),'Claude session path redirected or not regular')
+        entries=[json.loads(line) for line in session.read_text().splitlines() if line.strip()]
+        messages=[x for x in entries if x.get('type') in ('user','assistant')]
+        require(messages,'Claude session messages missing')
+        expected=Path(directory).resolve() if directory else Path(n.get('cwd','')).resolve()
+        for x in entries:
+            if 'sessionId' in x: require(x['sessionId']==sid,'Claude session ID mismatch')
+            if 'cwd' in x: require(Path(x['cwd']).resolve()==expected,'Claude session cwd mismatch')
+        require(all(x.get('sessionId')==sid and x.get('cwd') and Path(x['cwd']).resolve()==expected for x in messages),'Claude message identity missing')
+        outstanding=set(); latest=None
+        for x in messages:
+            content=x.get('message',{}).get('content')
+            require(isinstance(content,(str,list)),'Claude content unknown')
+            if x['type']=='assistant': latest=x
+            for c in content if isinstance(content,list) else []:
+                require(isinstance(c,dict),'Claude content block unknown')
+                if c.get('type')=='tool_use':
+                    require(isinstance(c.get('id'),str) and c['id'],'Claude tool ID missing'); outstanding.add(c['id'])
+                elif c.get('type')=='tool_result': outstanding.discard(c.get('tool_use_id'))
+        # Controller ruling 2026-10-05: any unmatched call, including an older turn, prevents idle.
+        # Known limit: Claude may report idle while a background command runs and later starts a turn.
+        active=bool(outstanding) or info.get('agent_status') in ('working','blocked')
+        last=messages[-1]
+        interrupted=last['type']=='user' and last['message'].get('content')==[{'type':'text','text':'[Request interrupted by user for tool use]'}]
+        settled=latest is not None and (last['type']=='assistant' or interrupted)
+        observed=dict(evidence,activity='busy' if active else 'idle' if settled and info.get('agent_status')=='idle' else 'unknown',
+                      proof='native-pid-start+claude-session',session=str(session),pending_tools=sorted(outstanding))
+        if latest:
+            import hashlib
+            observed.update(actual_model=latest.get('message',{}).get('model'),actual_effort=latest.get('effort'),assistant_record=hashlib.sha256(json.dumps(latest,sort_keys=True).encode()).hexdigest())
+        return observed
     return dict(activity='busy' if info.get('agent_status') in ('working','blocked') else 'unknown',proof='native-pid; CLI idle not verified',pid=n['pid'],pid_start=start)
 
 def ended(pid,start):

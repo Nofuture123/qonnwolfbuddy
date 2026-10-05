@@ -255,6 +255,28 @@ except AssertionError as e:
 PY
 }
 
+# Claude常驻规划仅接受固定模型/档位与已知权限参数。
+qwb_claude_profile() {
+  python3 -B - "$@" <<'PY'
+import json,re,sys
+purpose,mode,harness,*args=sys.argv[1:]
+try:
+    assert purpose=='role' and mode=='herdr' and harness=='claude', '仅规划支持Claude Herdr控制'
+    d={'provider':'anthropic'}; i=0
+    while i<len(args):
+        flag=args[i]
+        if flag=='--dangerously-skip-permissions': i+=1; continue
+        assert flag in ('--model','--effort') and i+1<len(args), 'Claude角色仅允许--model/--effort与--dangerously-skip-permissions'
+        key=flag[2:]; value=args[i+1]
+        assert key not in d and not value.startswith('-') and re.fullmatch(r'[a-zA-Z0-9_.-]+',value), flag+'须显式出现一次且非空'
+        d[key]=value; i+=2
+    assert 'model' in d and d.get('effort') in ('low','medium','high','max'), 'Claude须显式--model与--effort low|medium|high|max'
+    print(json.dumps(d))
+except AssertionError as e:
+    print('工人身份拒绝: '+str(e),file=sys.stderr); sys.exit(1)
+PY
+}
+
 # workers.sh是已获授权的项目配置；整体键匹配，不按斜杠拆模型ID。
 qwb_model_family() (
   local root="$1" selected="$2" count=0 family=unknown

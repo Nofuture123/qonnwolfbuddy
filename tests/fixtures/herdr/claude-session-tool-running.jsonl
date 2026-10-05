@@ -1,0 +1,7 @@
+{"type": "mode", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6"}
+{"type": "permission-mode", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6"}
+{"type": "user", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6", "cwd": "/fixture/project", "parentUuid": null, "uuid": "844b6fc0-b048-425f-a415-e0610b05e525", "isSidechain": false, "promptSource": "typed", "message": {"role": "user", "content": "用 Bash 工具在前台执行这一条命令：python3 -c \"import time; time.sleep(60)\" ，执行完回复完成两个字。不要改成后台，"}}
+{"type": "last-prompt", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6"}
+{"type": "mode", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6"}
+{"type": "permission-mode", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6"}
+{"type": "assistant", "sessionId": "ffa97dfb-d063-42dc-86d3-e535a7901df6", "cwd": "/fixture/project", "effort": "medium", "perTurnEffort": "medium", "parentUuid": "54f4acc9-1ae1-4d02-bb41-8fb760b85630", "uuid": "d27eb898-d608-4517-8296-7cf734903738", "isSidechain": false, "message": {"role": "assistant", "model": "claude-opus-5-5", "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_01RGHzVPHWrdQ8Xs7canr44R", "name": "Bash", "input": {"command": "python3 -c \"import time; time.sleep(60)\""}}]}}
