@@ -4,7 +4,7 @@
 
 ## Workspace 与首次派发
 
-当前主控 pane 从 `HERDR_PANE_ID` 取得，不把动态 pane ID 写入 `qwbuddy/config.sh`。项目根与值守 tab 的 workspace 依次由 `QWB_WORKSPACE`、`herdr workspace list` 中匹配项目根的非 linked workspace、调用者 workspace（带警告）确定；任务 worktree 的工人则直接落在该 worktree 独立 Space 的根 pane（新建 Space 不另开 tab；复用既有 Space 时才开新 tab）。配置 ID 在本机不存在或指向任务 linked Space 则拒绝。跨项目不能按根匹配时，在目标项目配置稳定的主 workspace ID；只在命令环境设置 `QWB_WORKSPACE` 不能覆盖脚本 source 的 `config.sh` 赋值。
+当前主控 pane 从 `HERDR_PANE_ID` 取得，不把动态 pane ID 写入 `qwbuddy/config.sh`。日常 hook/扩展的 `--block` 入口用它核对锁主并接续；手工值守的投递目标依次取显式 `--pane`、进程环境 `QWB_CONTROLLER_PANE`、配置同名键，后者只是备用目标。项目根与值守 tab 的 workspace 依次由 `QWB_WORKSPACE`、`herdr workspace list` 中匹配项目根的非 linked workspace、调用者 workspace（带警告）确定；任务 worktree 的工人则直接落在该 worktree 独立 Space 的根 pane（新建 Space 不另开 tab；复用既有 Space 时才开新 tab）。配置 ID 在本机不存在或指向任务 linked Space 则拒绝。跨项目不能按根匹配时，在目标项目配置稳定的主 workspace ID；只在命令环境设置 `QWB_WORKSPACE` 不能覆盖脚本 source 的 `config.sh` 赋值。
 
 `qwb-run.sh` 派发前尝试预置信任。文件缺失、格式不符或首次启动对话框可能仍需人工处理；旧基线首次派发曾需手工确认并补发提示（母本仓 `docs/E2E-RUNBOOK.md`），不能据此宣称当前无人介入路径已验证。
 
@@ -25,7 +25,7 @@ Claude Code 和 Pi 在派发后、或处理完一次唤醒后，直接结束本�
 
 展示排序入口：`bash qwbuddy/bin/qwb-herdr.sh move --project "$PWD" --task tasks/<票>.md --space <本票登记Space> --index <最终0基位置>`。仅准确登记且Git归属吻合的Space可移；保存并读回顺序与焦点，不修改票归属。finish关闭前必须退回真实shell，活Pi即使idle也不自动关；只移动自己的Space到最后再关，读回缺失才删Git，失败保留定位。未知焦点/并发焦点变化不覆盖用户新选择。
 
-Pi活动按真实PID启动时间、当前session叶分支的未配对toolCall/toolResult核对；原生idle不盖过长工具。派发记录本代活动到同票MD，复用需匹配PID/session；无证据拒绝。02控制继续沿用原代际/PID/模型页脚核验。Claude及其他CLI的idle未核验，报告unknown并拒绝据此复用/收尾；不会自动催停、重启或增加常驻LLM。普通124仍只是等待到期，不宣称取消/死亡或夜间就绪。
+Pi活动按真实PID启动时间、当前session叶分支的未配对toolCall/toolResult核对；原生idle不盖过长工具。派发记录本代活动到同票MD，复用需匹配PID/session；无证据拒绝。02控制继续沿用原代际/PID/模型页脚核验。Claude 常驻规划与 `qwb-run.sh` 工人同用活动探针，核真实 PID/启动时间、原生会话号与唯一 JSONL；身份/目录/记录不符报 unknown。会话尚未落盘时，原生 working/blocked 报 busy，其余状态报 unknown；已落盘且证据完整时，任意未配对 `tool_use/tool_result` 或原生 working/blocked 均报 busy，无未配对工具且末消息是 assistant 或规定的工具打断记录、原生 idle/done 才判 idle，否则报 unknown。工人复用另核派发本代 PID/session 绑定；Claude 后台命令可能跨回合运行，idle 不证明进程退出，收尾仍核原 PID 和候选 cwd/FD。其他 CLI 的 idle 仍未核验，报告 unknown 并拒绝据此复用/收尾；不会自动催停、重启或增加常驻 LLM。普通124仍只是等待到期，不宣称取消/死亡或夜间就绪。
 
 ## 持久交接与接班边界（03候选，未授权启用）
 

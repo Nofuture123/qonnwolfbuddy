@@ -1,11 +1,11 @@
 # 每个 agent 一条定义：qwb_worker <名> herdr <harness> -- <逐项 argv>。
 # 旧式 herdr <argv> 行仍以名为 harness；空串与含空格参数保真。
 # 工人默认最高权限：隔离 worktree 中执行，产物由主控验收。
-# 常驻role是独立opt-in，仅herdr pi且明确provider/model/thinking可用于role；
+# 常驻role是独立opt-in；Pi须herdr pi并明确provider/model/thinking；
 # 本项目真机验收后才在config.sh声明QWB_ROLE_PI_CONTROL=verified，未声明时拒绝启动/控制。
-# QWB_ROLE_PI_INTEGRATION默认已装herdr-agent-state.ts；role仅显式加载它，无自动全项目watcher。
-# qwb-role保留workers逐项argv；再添加职责/精确session绑定及no-approve/offline，不发送初始模型任务。
-# Claude Code role控制未验证，明确拒绝；原qwb-run adapter不受此限制。
+# Pi的QWB_ROLE_PI_INTEGRATION默认已装herdr-agent-state.ts；Pi role仅显式加载它，无自动全项目watcher。
+# qwb-role保留workers逐项argv；Pi再添加职责/精确session绑定及no-approve/offline，不发送初始模型任务。
+# Claude Code仅规划职责可用，须QWB_ROLE_CLAUDE_CONTROL=verified并完成握手；其余常驻职责拒绝，原qwb-run adapter不受此限制。
 qwb_worker pi herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high
 qwb_worker claude herdr claude -- --dangerously-skip-permissions --model claude-opus-5-5 --effort medium
 qwb_worker pi-sol-high herdr pi -- --approve --provider magpie --model codex/gpt-6.1-sol --thinking high

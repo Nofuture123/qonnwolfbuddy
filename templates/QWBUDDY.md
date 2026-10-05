@@ -12,7 +12,7 @@
 2. **抢主控锁**：`bash qwbuddy/bin/qwb-lock.sh acquire`（锁主记作 `HERDR_PANE_ID`）。**已被占用且锁主仍活 = 另一个主控在活动**：`qwb-lock.sh status` 看锁主，向使用者报告，**不要继续动手、不要抢锁**。锁主已消失（pid 已退出 / pane 不存在）时 acquire 会自动回收残留锁并获锁；锁主死活查不出来（herdr 不在 PATH / 查询报错）则照旧拒绝（不猜、不回收）。
 3. **点名**：跑 `bash qwbuddy/bin/qwb-status.sh`——它列出未结项（`[未结]`）、每张的最近状态行与未处理的规格疑点；**只读未结项那几份任务书**的末尾状态行，搞清活到哪了；向使用者报告：几个未结项、分别在什么阶段、下一步打算干什么。status 标「工人丢失」的票（pane 已不存在、账本无结论）重派**同一票**幂等续接，不另开副本。
 4. **按已识别宿主选择唯一值守入口**，核对安装、锁主与健康：Claude Code 用已安装的 Stop hook；Pi 用已加载的 `qwb-watch.ts` 扩展。Claude Code 和 Pi 派发后、或处理完一次唤醒后，直接结束当前回合，等待 hook 或扩展再叫醒；不要在回合内 sleep 轮询账本，也不要自己运行 `qwb-wake.sh`。未知状态先查明，不当作未运行，不启动第二种值守。
-5. **首次接入宿主、配置目标 workspace、首次派发信任、恢复或排查值守**时读 [宿主与值守专项](host-watch-guide.md)。动态 pane/workspace ID 不写入配置；跨项目无法按项目根匹配时，可有意配置稳定的目标 workspace ID。
+5. **首次接入宿主、配置目标 workspace、首次派发信任、恢复或排查值守**时读 [宿主与值守专项](host-watch-guide.md)。当前主控 pane 从 `HERDR_PANE_ID` 取得，`QWB_CONTROLLER_PANE` 只是值守 `--pane` 的备用目标，动态 pane/workspace ID 不写入配置；跨项目无法按项目根匹配时，可有意配置稳定的目标 workspace ID。
 如果账本为空：报「账本无任务」，等使用者提需求。
 
 ## 2. 三层责任——谁的保证归谁
@@ -47,7 +47,7 @@
 
 - `tasks/` 是**唯一真相**。任务书 `tasks/YYYY-MM-DD-<主题>.md`，头部必须有 `state: <值>` 字段行。
 - `state` 值域固定五个：`running` / `blocked` / `needs-decision` / `done` / `verified`。
-- 任务书**写好即写 `state: running`**。「已写好、待派发」不需要单独状态——对值守而言「待派」与「已派」同义：都要主控动手。非 5 值域的值（如 `pending`）或账本 UTF-8 损坏时，`qwb-status.sh` 仍列为 `[未结]` 并提示主控查看，`qwb-wake.sh` 按 `needs-decision` 叫醒主控；`qwb-run.sh` 拒绝非法 state，`qwb-lint.sh` 报 FAIL。主控写票仍只能使用上述五个合法值。
+- 手写的未迁旧票**写好即写 `state: running`**，待派与已派都需要主控跟进；副主控经 `qwb-ledger.sh new` 开出的协作票先为 `blocked`，授权、依赖与就绪核对通过后，`qwb-run.sh` 在派发流程中改为 `running`，属于预期过渡。非 5 值域的值（如 `pending`）或账本 UTF-8 损坏时，`qwb-status.sh` 仍列为 `[未结]` 并提示主控查看，`qwb-wake.sh` 按 `needs-decision` 叫醒主控；`qwb-run.sh` 拒绝非法 state，`qwb-lint.sh` 报 FAIL。主控写票仍只能使用上述五个合法值。
 - 所有任务经任务书文件派发，**无隐性依赖**——换会话、换 AI、重启都不丢。
 - 派发时给工人**主账本的绝对路径**（`<项目根>/tasks/...`）。工人在 worktree 副本里干活，写进副本 `tasks/` 的东西你**看不到**。
 - 工人只往主账本报告自己的状态行，不改别人的行、不改 `state:` 字段。未迁旧票的 `working:` 只记进度，不会叫醒主控；需要主控处理时写 `blocked:` 或 `needs-decision:`，全部完成写 `done:`。已迁票必须用 `qwb-ledger.sh append`，裸追加会损坏协作区并被拒绝；旧票保留旧格式，未确认停写不得迁移。
@@ -91,7 +91,7 @@ claim跨长工具保留，短flock只包读/检查/发布；中断不自动清cl
 ## 4. 派发流程
 
 ```
-写任务书（模板 qwbuddy/TASK.md；写好即 state: running，见 §3；必须有「验收场景」块，见 §6） 
+手写任务书（模板 qwbuddy/TASK.md；未迁旧票写好即 state: running，见 §3；必须有「验收场景」块，见 §6），或按常驻流程由副主控 new 开协作票（初始 blocked）
   → qwbuddy/bin/qwb-run.sh --task <id> --worker <工人|auto> [--worktree <路径> | --create-worktree | --here]
        （--worker auto = JEV 自动派工：qwb-dispatch.sh 按 qwbuddy/dispatch-rules.json 选工人，
         off/error/ambiguous 落默认工人不阻塞派发；默认不给参数 = 自动开 <项目>/.worktrees/<任务id> 隔离副本并登记 Herdr worktree Space；--here 是显式声明在项目根派发；

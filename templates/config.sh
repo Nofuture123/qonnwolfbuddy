@@ -15,7 +15,7 @@ QWB_HOOK_MAX_MS=7200000                # Claude Code Stop hook 单轮阻塞值�
                                        # 下次 Stop 再起。对应 settings.json hook 的 timeout=7200（单位是秒）
 QWB_ROLE_PI_CONTROL=""                 # 常驻 Pi 职责：真机核验并批准后设为 verified；未启用拒绝启动
 QWB_ROLE_CLAUDE_CONTROL=""             # 仅规划职责：真机核验并批准后设为 verified；未启用拒绝启动
-QWB_CONTROLLER_PANE=""                 # 主控 pane id；开局点名时填入
+QWB_CONTROLLER_PANE=""                 # 值守 --pane 的备用目标；主控取 HERDR_PANE_ID，不写动态 pane ID
 QWB_WORKSPACE=""                       # 本项目的 herdr workspace id（如 wA3）；主控开局把 HERDR_WORKSPACE_ID 填在这里，
                                        # 跨项目派活的主控改填目标项目的 id。非空即用——本机 herdr 查不到该 id 就拒绝派发
                                        # （不静默回退）；留空则按 herdr workspace list 的 worktree.repo_root 匹配项目根
