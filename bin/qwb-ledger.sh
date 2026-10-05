@@ -659,10 +659,17 @@ sub handoff_fallback {
   return if $mode eq 'reminder' && $now-$h->{transport_at}<$interval;
   return {mode=>$mode,role=>$role,pane=>$pane,retry_ms=>0+$retry};
 }
+sub handoff_wait_expired {
+  my ($h,$retry)=@_;
+  return 0 if $h->{handled} || $h->{accepted} eq '' || $h->{owner_fp} ne $owner_fp || !$h->{wait_until} || $now<$h->{wait_until};
+  my $interval=$retry<1800000 ? 1800000 : $retry;
+  return $h->{transport_at}<$h->{wait_until} || $now-$h->{transport_at}>=$interval;
+}
 sub handoff_due {
   my ($h,$retry)=@_;
   return 0 if $pure_progress->($data,$data->{events}[$h->{source_seq}-1],$h);
   return 0 if $h->{handled};
+  return handoff_wait_expired($h,$retry) ? 1 : 0 if $h->{accepted} ne '' && $h->{owner_fp} eq $owner_fp && $h->{wait_until};
   return handoff_fallback($h,$retry) ? 1 : 0 if $h->{transport_count}>=3;
   # 回复迟到不是失活；工具活动或有界合理wait保住本代claim。
   if ($h->{accepted} ne '' && $h->{owner_fp} eq $owner_fp) {
@@ -1486,7 +1493,7 @@ REPORT
     }
     # 旧版本已由规划handled的工人问题可恢复上行；与正常handled使用同一幂等键。
     $added+=ensure_planner_result($_) for values %{$data->{handoffs}};
-    my @p=map { my $fallback=handoff_fallback($_,$retry); +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0,(gate_assignment_handoff($_) ? (gate_assignment=>1) : ()),($fallback ? (fallback=>$fallback) : ())} }
+    my @p=map { my $fallback=handoff_fallback($_,$retry); +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0,(handoff_wait_expired($_,$retry) ? (wait_expired=>{retry_ms=>0+$retry}) : ()),(gate_assignment_handoff($_) ? (gate_assignment=>1) : ()),($fallback ? (fallback=>$fallback) : ())} }
       sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
     # 只给规划分流增加瞬时提示；既有测试请求整批及门禁claim路径保持原输出。
     my %pending=map { $_->{event_id}=>1 } @p;
@@ -1512,8 +1519,14 @@ REPORT
     my $id=$cmd eq 'handoff-transport' ? $args[1] : $args[0];
     my $h=$data->{handoffs}{$id // ''} // fail('handoff event不存在');
     if ($cmd eq 'handoff-transport') {
-      fail('transport参数非法') unless @args==2 || @args==6;
-      if (@args==6) {
+      fail('transport参数非法') unless @args==2 || @args==4 || @args==6;
+      if (@args==4) {
+        my (undef,undef,$mode,$retry)=@args;
+        fail('到期等待重提未到期/非本代接手或间隔非法') unless $mode eq 'wait-expired' && $retry=~/\A[1-9][0-9]*\z/ && $retry<=86400000 && handoff_wait_expired($h,$retry);
+        $h->{transport_count}++ if $h->{transport_count}<3;
+        $h->{transport_at}=$now;
+        $line="working: handoff-transport event_id=$id mode=wait-expired count=$h->{transport_count}";
+      } elsif (@args==6) {
         my (undef,undef,$mode,$role,$pane,$retry)=@args;
         fail('耗尽重提参数非法') unless $retry=~/\A[1-9][0-9]*\z/ && $retry<=86400000;
         my $expected=handoff_fallback($h,$retry);

@@ -620,7 +620,7 @@ collect_due() {
       [[ "$pending" != '[]' ]] || continue
       # 同批完整event_id；旧wake指纹不是消费游标，摘要不把正文当系统指令。
       last="[qwb-handoff] $(printf '%s' "$pending" | perl -MJSON::PP -0777 -e '
-        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{gate_assignment}) ? (gate_assignment=>$_->{gate_assignment}) : ()),(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ()),(exists($_->{fallback}) ? (fallback=>$_->{fallback}) : ())} } @$p]);
+        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{wait_expired}) ? (wait_expired=>$_->{wait_expired}) : ()),(exists($_->{gate_assignment}) ? (gate_assignment=>$_->{gate_assignment}) : ()),(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ()),(exists($_->{fallback}) ? (fallback=>$_->{fallback}) : ())} } @$p]);
       ')"
       fp="$(printf '%s' "$pending" | shasum | cut -d' ' -f1)"
       printf '%s\t%s\t%s\t%s\t\n' "$f" "$st" "$fp" "$last" >> "$out"
@@ -1048,13 +1048,15 @@ record_transport() {
   while IFS=$'\t' read -r id mode role pane retry; do
     if [[ "$mode" == normal ]]; then
       bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" >/dev/null || return 1
+    elif [[ "$mode" == wait-expired ]]; then
+      bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" --mode "$mode" --retry-ms "$retry" >/dev/null || return 1
     else
       bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" --mode "$mode" --route-role "$role" --route-pane "$pane" --retry-ms "$retry" >/dev/null || return 1
     fi
   done < <(printf '%s' "${summary#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
     binmode STDOUT, ":encoding(UTF-8)";
     for my $h (@{decode_json(<STDIN>)}) {
-      my $r=$h->{fallback}; print join("\t",$h->{event_id},$r ? @{$r}{qw(mode role pane retry_ms)} : ("normal","-","-",0)),"\n";
+      my $r=$h->{fallback}; print join("\t",$h->{event_id},$r ? @{$r}{qw(mode role pane retry_ms)} : $h->{wait_expired} ? ("wait-expired","-","-",$h->{wait_expired}{retry_ms}) : ("normal","-","-",0)),"\n";
     }
   ')
 }

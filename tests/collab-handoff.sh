@@ -70,6 +70,53 @@ E=next(h['event_id'] for h in pending() if h['source_event']=='completion')
 send('received','--event',E); send('received','--event',E)
 assert not next(h for h in pending() if h['event_id']==E)['handled']
 send('accept','--event',E,'--op','handle-E'); send('accept','--event',E,'--op','handle-E')
+# C uses a private installed writer clock; never wait twenty real minutes.
+notify_snapshot=Path(T).read_bytes(); notify_runtime=Path(P)/'qwbuddy/bin'
+notify_scripts={s:(notify_runtime/s).read_bytes() for s in ['qwb-ledger.sh','qwb-lib.sh','qwb-send.sh','qwb-wake.sh']}
+notify_L,notify_S=L,S
+clock=Path(P)/'notify-clock';clock.write_text('4102444800000')
+now=Path(P)/'notify-now';now.write_text('#!/bin/sh\ncat "$NOTIFY_CLOCK"\n');now.chmod(0o755)
+try:
+    if os.environ.get('QWB_NOTIFY_BASELINE')=='1':
+        for s in notify_scripts:(notify_runtime/s).write_bytes(subprocess.check_output(['git','-C',ROOT,'show','4b1f2e2:bin/'+s]))
+    script=notify_runtime/'qwb-ledger.sh'
+    script.write_text(script.read_text().replace('my $now=int(time()*1000);','my $now=0+read_file($ENV{NOTIFY_CLOCK});'))
+    L=str(script);S=str(notify_runtime/'qwb-send.sh')
+    os.environ['NOTIFY_CLOCK']=str(clock);os.environ['QWB_NOW_MS_CMD']=str(now)
+    # Suppress unrelated actions while leaving the exact E claim/op and counts intact.
+    for h in pending():
+        if h['event_id']==E:continue
+        eid=h['event_id'];hop='notify-'+hashlib.sha256(eid.encode()).hexdigest()
+        send('received','--event',eid);send('accept','--event',eid,'--op',hop);send('prepared','--event',eid,'--op',hop)
+        send('handled','--event',eid,'--op',hop,'--result-ref',proof(eid,hop,hop+'.json'))
+    base=Path(T).read_bytes()
+    Path(P+'/qwbuddy/config.sh').write_text('QWB_REWAKE_MS=1800000\n')
+    def wake():
+        native=Path(os.environ['TEST_HERDR_LOG']);native.write_text('')
+        call(['bash',str(notify_runtime/'qwb-wake.sh'),'--project',P,'--once','--pane','test:ctl'])
+        return [line for line in native.read_text().splitlines() if line.startswith('pane run ') and E in line]
+    for exhausted in [False,True]:
+        Path(T).write_bytes(base);clock.write_text('4102444800000')
+        if exhausted:
+            for _ in range(3):send('transport','--event',E)
+        send('activity','--event',E,'--wait-ms','1200000','--reason','fixture twenty minute wait')
+        clock.write_text(str(4102444800000+19*60000));assert not wake(), 'nineteen minutes woke early'
+        clock.write_text(str(4102444800000+21*60000))
+        bells=wake();print('EVIDENCE notify C minute21',exhausted,bells,flush=True)
+        assert len(bells)==1, 'expired wait still blocked by retry/count'
+        assert not wake(), 'restart repeats expired wait immediately'
+        clock.write_text(str(4102444800000+50*60000));assert not wake()
+        clock.write_text(str(4102444800000+51*60000));assert len(wake())==1
+        assert read()['handoffs'][E]['transport_count']<=3 and read()['handoffs'][E]['accepted']=='test:ctl'
+        send('activity','--event',E,'--wait-ms','1200000','--reason','new real tool activity')
+        assert not wake(), 'new bounded wait lost protection'
+    print('PASS notify C：19分钟静默、21分钟立即重叫、已封顶仍到期、重启不重叫、30分钟频率上限、新活动保护',flush=True)
+finally:
+    Path(T).write_bytes(notify_snapshot);L,S=notify_L,notify_S
+    for s,raw in notify_scripts.items():(notify_runtime/s).write_bytes(raw)
+    for key in ['NOTIFY_CLOCK','QWB_NOW_MS_CMD']:os.environ.pop(key,None)
+    Path(P+'/qwbuddy/config.sh').write_text('QWB_WAKE_INTERVAL_MS=10\nQWB_REWAKE_MS=20\n')
+if os.environ.get('QWB_NOTIFY_ONLY')=='C':raise SystemExit(0)
 send('activity','--event',E,'--wait-ms','60000','--reason','等待fixture工具返回，最长一分钟')
 time.sleep(.04)
 assert E not in [h['event_id'] for h in json.loads(send('pending','--due','--retry-ms','20'))], '已接手合理wait被误催'
