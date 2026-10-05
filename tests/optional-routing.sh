@@ -164,14 +164,15 @@ cat > "$T/fakebin/herdr" <<'SH'
 printf '%s\n' "$*" >> "$HERDR_LOG"
 python3 -c 'import json,os,sys; open(os.environ["HERDR_LOG"]+".jsonl","a").write(json.dumps(sys.argv[1:])+"\n")' "$@"
 case "$1 $2" in
-  'agent get') if [[ -n "${FAKE_REUSE_AGENT:-}" ]]; then cat "$FAKE_REUSE_AGENT"; exit 0; fi; echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1;;
+  'agent get')
+    if [[ "$3" == ptest ]]; then
+      seq=$((185 + $(grep -c '^agent prompt ' "$HERDR_LOG" || true)))
+      printf '{"result":{"type":"agent_info","agent":{"pane_id":"ptest","agent_status":"idle","state_change_seq":%s}}}\n' "$seq"
+    elif [[ -n "${FAKE_REUSE_AGENT:-}" ]]; then cat "$FAKE_REUSE_AGENT"
+    else echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1; fi;;
   'pane get')
-    seq=$((185 + $(grep -c '^agent prompt ' "$HERDR_LOG" || true)))
-    if [[ -n "${FAKE_REUSE_PANE:-}" ]]; then
-      jq --argjson seq "$seq" '.result.pane.agent_status //= "idle" | .result.pane.state_change_seq=$seq' "$FAKE_REUSE_PANE"
-    else
-      printf '{"result":{"pane":{"pane_id":"ptest","agent_status":"working","state_change_seq":%s}}}\n' "$seq"
-    fi;;
+    if [[ -n "${FAKE_REUSE_PANE:-}" ]]; then cat "$FAKE_REUSE_PANE"
+    else printf '{"result":{"pane":{"pane_id":"ptest","agent_status":"idle"}}}\n'; fi;;
   'pane process-info') jq -cn --arg dir "$FAKE_REUSE_DIR" --argjson pid "$FAKE_REUSE_PID" \
     '{result:{process_info:{pane_id:"ptest",shell_pid:42,foreground_process_group_id:$pid,foreground_processes:[{pid:$pid,argv0:"claude",cwd:$dir}]}}}';;
   'workspace list') echo '{"result":{"workspaces":[{"workspace_id":"wtest","focused":true}]}}';;

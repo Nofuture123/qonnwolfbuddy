@@ -44,7 +44,9 @@ if a[:2]==['workspace','list']: out({'workspaces':[{'workspace_id':'ws','worktre
 elif a[:2]==['tab','create']:
  label=a[a.index('--label')+1];pane='planner-pane' if label=='规划' else ('gate-pane' if label=='门禁' else 'worker-'+label)
  out({'root_pane':{'pane_id':pane,'tab_id':'tab-'+pane,'terminal_id':'terminal-'+pane}})
-elif a[:2]==['agent','get']: print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
+elif a[:2]==['agent','get']:
+ if not a[2].startswith('worker-'): print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
+ out({'type':'agent_info','agent':{'pane_id':a[2],'agent_status':'idle','state_change_seq':185+sum(json.loads(row)[:2]==['agent','prompt'] for row in Path(os.environ['PL_LOG']).read_text().splitlines())}})
 elif a[:2]==['agent','start']:
  v=a[a.index('--')+1:]; pane=a[a.index('--pane')+1]
  if '--session-id' in v:
@@ -52,7 +54,6 @@ elif a[:2]==['agent','start']:
  out({'type':'agent_started'})
 elif a[:2]==['pane','get']:
  pane=a[2]; live=pane=='ctl' or pane in s;d={'pane_id':pane,'workspace_id':'ws','terminal_id':'terminal-'+pane,'foreground_cwd':p}
- d.update(agent_status='idle',state_change_seq=185+sum(json.loads(row)[:2]==['agent','prompt'] for row in Path(os.environ['PL_LOG']).read_text().splitlines()))
  if live:d.update(agent='pi',agent_status='idle',agent_session={'agent':'pi','source':'herdr:pi','kind':'path','value':s.get(pane,{}).get('session','ctl-session')})
  out({'pane':d})
 elif a[:2]==['pane','process-info']:

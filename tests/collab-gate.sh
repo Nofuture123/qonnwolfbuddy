@@ -68,7 +68,8 @@ if ($verb eq 'workspace list') {
     my $label=after('--label');my $gate=$label eq '门禁';$s->{tabs}=($s->{tabs}//0)+1;my $slug=$label.'-'.$s->{tabs};
     out({root_pane=>{pane_id=>$gate?'gate-pane':'worker-'.$slug,tab_id=>$gate?'gate-tab':'tab-'.$slug,terminal_id=>'gate-terminal'}});
 } elsif ($verb eq 'agent get') {
-    print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1;
+    if ($a[2] !~ /^worker-/) { print $json->encode({error=>{code=>'agent_not_found'}}),"\n";exit 1; }
+    out({type=>'agent_info',agent=>{pane_id=>$a[2],agent_status=>'idle',state_change_seq=>$s->{submit_seq}//185}});
 } elsif ($verb eq 'agent prompt') {
     $s->{submit_seq}=($s->{submit_seq}//185)+1;
     out({type=>'prompt_sent'});
@@ -76,7 +77,7 @@ if ($verb eq 'workspace list') {
     if (grep { $_ eq '--session-id' } @a) { my $sid=after('--session-id');$s={session=>after('--session-dir').'/2099_'.$sid.'.jsonl',sid=>$sid}; }
     out({type=>'agent_started'});
 } elsif ($verb eq 'pane get') {
-    my $gate=$a[2] eq 'gate-pane';my $d={pane_id=>$a[2],workspace_id=>'ws',terminal_id=>$gate?'gate-terminal':'ctl-terminal',foreground_cwd=>$project,agent_status=>'idle',state_change_seq=>$s->{submit_seq}//185};
+    my $gate=$a[2] eq 'gate-pane';my $d={pane_id=>$a[2],workspace_id=>'ws',terminal_id=>$gate?'gate-terminal':'ctl-terminal',foreground_cwd=>$project,agent_status=>'idle'};
     if (!$gate || exists $s->{session}) { $d->{agent}='pi';$d->{agent_status}='idle';$d->{agent_session}={agent=>'pi',source=>'herdr:pi',kind=>'path',value=>$gate?$s->{session}:'ctl-session'}; }
     out({pane=>$d});
 } elsif ($verb eq 'pane process-info') {

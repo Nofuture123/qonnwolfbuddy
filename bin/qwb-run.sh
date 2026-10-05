@@ -782,17 +782,17 @@ record_worker_activity() {
 
 read_prompt_state() {
   local meta
-  deliver "herdr pane get（提交确认）" herdr pane get "$PANE"
+  deliver "herdr agent get（提交确认）" herdr agent get "$PANE"
   meta="$(printf '%s' "$DELIVER_OUT" | perl -MJSON::PP=decode_json,encode_json -0777 -e '
     my $j=eval{decode_json(<STDIN>)};
     exit 1 unless ref $j eq "HASH" && !exists $j->{error} && ref $j->{result} eq "HASH";
-    my $p=$j->{result}{pane}; exit 1 unless ref $p eq "HASH";
+    my $p=$j->{result}{agent}; exit 1 unless ref $p eq "HASH";
     my ($status,$seq)=@$p{qw(agent_status state_change_seq)};
     exit 1 unless defined $status && !ref $status && $status =~ /\A(?:idle|working|done|blocked|unknown)\z/;
     exit 1 unless defined $seq && !ref $seq && encode_json($seq) =~ /\A[0-9]+\z/;
     printf "%s\t%s",$status,$seq;' || true)"
   [[ -n "$meta" ]] || delivery_failed "提示词状态校验" 1 \
-    "herdr pane get ${PANE} 应答不合契约：agent_status或数值state_change_seq缺失/非法，拒绝派发；${DELIVER_OUT}"
+    "herdr agent get ${PANE} 应答不合契约：agent_status或数值state_change_seq缺失/非法，拒绝派发；${DELIVER_OUT}"
   IFS=$'\t' read -r PROMPT_STATUS PROMPT_SEQ <<< "$meta"
 }
 

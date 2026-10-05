@@ -134,34 +134,39 @@ case "$1 $2" in
     if [[ "${QWB_STUB_FAIL:-}" == agent-query ]]; then
       echo '{"error":{"code":"io_error"}}' >&2; exit 7
     fi
-    if [[ "${QWB_STUB_REUSE:-0}" == 1 ]]; then
-      printf '{"result":{"agent":{"name":"qwb-case","agent_status":"%s","state_change_seq":%s,"pane_id":"wT:p1","agent":"%s","foreground_cwd":"%s","workspace_id":"%s"}}}\n' \
-        "$status" "$seq" "${QWB_STUB_WORKER:-pi}" "$QWB_STUB_CWD" "${QWB_STUB_WS:-wT}"
-    else
-      echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1
-    fi ;;
+    if [[ "$3" == wT:p1 ]]; then
+      if [[ "${QWB_STUB_FAIL:-}" == state-query ]]; then
+        cat "$QWB_STUB_AGENT_MISSING" >&2; exit 1
+      fi
+      if [[ -n "${QWB_STUB_REAL_AGENT_FILE:-}" ]]; then
+        cat "$QWB_STUB_REAL_AGENT_FILE"
+        [[ "$QWB_STUB_REAL_AGENT_FILE" != *agent-get-missing-real.json ]] || exit 1
+        exit 0
+      fi
+      if [[ -n "${QWB_STUB_CHANGE_AT_MS:-}" && "$(cat "$QWB_STUB_NOW")" -ge "$QWB_STUB_CHANGE_AT_MS" && "$seq" -eq 185 ]]; then
+        prompt_transition done
+        seq=186; status=done
+      fi
+      printf 'state-query status=%s seq=%s\n' "$status" "$seq" >> "$QWB_STUB_LOG"
+    elif [[ "${QWB_STUB_REUSE:-0}" != 1 ]]; then
+      cat "$QWB_STUB_AGENT_MISSING" >&2; exit 1
+    fi
+    printf '{"id":"cli:agent:get","result":{"type":"agent_info","agent":{"name":"qwb-case","agent_status":"%s","state_change_seq":%s,"pane_id":"wT:p1","agent":"%s","foreground_cwd":"%s","workspace_id":"%s"}}}\n' \
+      "$status" "$seq" "${QWB_STUB_WORKER:-pi}" "$QWB_STUB_CWD" "${QWB_STUB_WS:-wT}" |
+      jq --arg fault "${QWB_STUB_STATE_FAULT:-}" '
+        if $fault=="missing-seq" then del(.result.agent.state_change_seq)
+        elif $fault=="string-seq" then .result.agent.state_change_seq="185"
+        elif $fault=="null-seq" then .result.agent.state_change_seq=null
+        elif $fault=="missing-status" then del(.result.agent.agent_status)
+        else . end' ;;
   "pane get")
-    if [[ "${QWB_STUB_FAIL:-}" == state-query ]]; then
-      echo '{"error":{"code":"io_error"}}' >&2; exit 7
-    fi
-    if [[ -n "${QWB_STUB_CHANGE_AT_MS:-}" && "$(cat "$QWB_STUB_NOW")" -ge "$QWB_STUB_CHANGE_AT_MS" && "$seq" -eq 185 ]]; then
-      prompt_transition done
-      seq=186; status=done
-    fi
-    printf 'state-query status=%s seq=%s\n' "$status" "$seq" >> "$QWB_STUB_LOG"
     if [[ "${QWB_STUB_SHELL:-0}" == 1 ]]; then
       printf '{"result":{"pane":{"foreground_cwd":"%s","workspace_id":"wT","pane_id":"wT:p1"}}}\n' "$QWB_STUB_CWD"
     else
       printf '{"result":{"pane":{"agent":"%s","foreground_cwd":"%s","workspace_id":"%s","pane_id":"wT:p1"}}}\n' \
         "${QWB_STUB_WORKER:-pi}" "$QWB_STUB_CWD" "${QWB_STUB_WS:-wT}" |
         jq --arg session "$QWB_STUB_SESSION" '.result.pane.agent_session={source:"herdr:pi",kind:"path",value:$session}'
-    fi | jq --arg status "$status" --argjson seq "$seq" --arg fault "${QWB_STUB_STATE_FAULT:-}" '
-      .result.pane.agent_status=$status | .result.pane.state_change_seq=$seq |
-      if $fault=="missing-seq" then del(.result.pane.state_change_seq)
-      elif $fault=="string-seq" then .result.pane.state_change_seq="185"
-      elif $fault=="null-seq" then .result.pane.state_change_seq=null
-      elif $fault=="missing-status" then del(.result.pane.agent_status)
-      else . end' ;;
+    fi | jq --arg status "$status" '.result.pane.agent_status=$status' ;;
   "pane process-info")
     if [[ "${QWB_STUB_SHELL:-0}" == 1 ]]; then
       echo '{"result":{"process_info":{"pane_id":"wT:p1","foreground_process_group_id":42,"shell_pid":42,"foreground_processes":[{"pid":42,"argv0":"zsh"}]}}}'
@@ -253,6 +258,7 @@ write_ticket
 export QWB_STUB_LOG="$TMP/herdr.log" QWB_STUB_CWD="$PROJECT" QWB_STUB_TASK="$TASK"
 export QWB_STUB_PID="$$" QWB_STUB_SESSION="$TMP/pi-session.jsonl"
 export QWB_STUB_PROMPT_STATE="$TMP/prompt-state" QWB_STUB_PROMPT_SEQ="$TMP/prompt-seq"
+export QWB_STUB_AGENT_MISSING="$ROOT/tests/fixtures/herdr/agent-get-missing-real.json"
 export QWB_STUB_NOW="$TMP/prompt-now" QWB_STUB_SLEEP_LOG="$TMP/prompt-sleep.log"
 printf '#!/usr/bin/env bash\ncat "$QWB_STUB_NOW"\n' > "$TMP/now-ms.sh"
 printf '#!/usr/bin/env bash\necho "$1" >> "$QWB_STUB_SLEEP_LOG"\necho $(( $(cat "$QWB_STUB_NOW") + ${QWB_STUB_SLEEP_BUMP:-5000} )) > "$QWB_STUB_NOW"\n' > "$TMP/sleep-ms.sh"
@@ -539,5 +545,47 @@ for fault in missing-seq string-seq null-seq missing-status query-failed; do
     cat "$TMP/prompt.out" "$TMP/prompt.err" "$QWB_STUB_LOG"
   fi
 done
+
+# 离线真实样本契约：pane没有序号，Pi终态和Claude working的agent应答都可解析。
+python3 -B - "$ROOT/tests/fixtures/herdr" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+pi=json.loads((p/'agent-get-pi-done-real.json').read_text())['result']['agent']
+claude=json.loads((p/'agent-get-claude-working-real.json').read_text())['result']['agent']
+pane=json.loads((p/'pane-get-pi-done-real.json').read_text())['result']['pane']
+missing=json.loads((p/'agent-get-missing-real.json').read_text())
+assert pi['agent_status']=='done' and pi['state_change_seq']==453
+assert claude['agent_status']=='working' and claude['state_change_seq']==454 and 'completion_seq' not in claude
+assert 'state_change_seq' not in pane and missing['error']['code']=='agent_not_found'
+PY
+[[ "$?" -eq 0 ]] && ok '真实应答契约：序号仅agent get提供，completion_seq不是共同必需字段' || bad '真实应答形状不符'
+for sample in agent-get-pi-done agent-get-claude-working agent-get-missing; do
+  prepare_prompt_case
+  QWB_STUB_REAL_AGENT_FILE="$ROOT/tests/fixtures/herdr/$sample-real.json" \
+    run_case > "$TMP/prompt.out" 2> "$TMP/prompt.err"; rc=$?
+  case "$sample" in
+    agent-get-pi-done)
+      [[ "$rc" -ne 0 ]] && grep -q '提示词已投递但工人未开工' "$TMP/prompt.err" \
+        && [[ "$(grep -c '^pane send-keys wT:p1 enter$' "$QWB_STUB_LOG" || true)" -eq 1 ]] ;;
+    agent-get-claude-working)
+      [[ "$rc" -eq 0 ]] && grep -q '^已派发：' "$TMP/prompt.out" && ! grep -q '^pane send-keys' "$QWB_STUB_LOG" ;;
+    agent-get-missing)
+      [[ "$rc" -ne 0 ]] && grep -q 'agent_not_found' "$TMP/prompt.err" && ! grep -q '^agent prompt\|^pane send-keys' "$QWB_STUB_LOG" ;;
+  esac
+  if [[ "$?" -eq 0 ]]; then
+    ok "真实agent get回放 ${sample}：按实际契约确认或拒绝"
+  else
+    bad "真实agent get回放 ${sample}：rc=$rc"
+    cat "$TMP/prompt.out" "$TMP/prompt.err" "$QWB_STUB_LOG"
+  fi
+done
+# 所有模拟pane应答都没有序号，首次/续派/pane-run仍应正常确认。
+PATH="$TMP/bin:$PATH" "$TMP/bin/herdr" pane get wT:p1 > "$TMP/pane-shape.json"
+if jq -e '.result.pane | has("state_change_seq") | not' "$TMP/pane-shape.json" >/dev/null; then
+  ok '模拟pane get不携带state_change_seq'
+else
+  bad '模拟pane get错误携带state_change_seq'
+fi
 
 [[ "$FAILS" -eq 0 ]] && echo "RUNTIME READINESS PASS" || { echo "RUNTIME READINESS FAIL ($FAILS)"; exit 1; }

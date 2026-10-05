@@ -81,10 +81,12 @@ elif args[:2]==["agent","get"] and args[2].startswith("qwb-"):
     print(json.dumps({"error":{"code":"agent_not_found"}}),file=sys.stderr); sys.exit(1)
 elif args[:2]==["tab","create"]:
     print(json.dumps({"result":{"root_pane":{"pane_id":"wTest:p7","tab_id":"wTest:t7"}}}))
-elif args[:2]==["pane","get"]:
+elif args[:2]==["agent","get"]:
     calls=[json.loads(row) for row in Path(os.environ["QWB_STUB_LOG"]).read_text().splitlines()]
     seq=185+sum(row[:2] in (["agent","prompt"],["pane","run"]) for row in calls)
-    print(json.dumps({"result":{"pane":{"pane_id":args[2],"agent_status":"idle","state_change_seq":seq}}}))
+    print(json.dumps({"result":{"type":"agent_info","agent":{"pane_id":args[2],"agent_status":"idle","state_change_seq":seq}}}))
+elif args[:2]==["pane","get"]:
+    print(json.dumps({"result":{"pane":{"pane_id":args[2],"agent_status":"idle"}}}))
 elif args[:2]==["pane","run"] and args[3].startswith("'fake-exec'"):
     p=subprocess.run(["bash","-c",args[3]],env=os.environ.copy(),capture_output=True,text=True)
     if p.returncode: print(p.stderr,file=sys.stderr); sys.exit(p.returncode)

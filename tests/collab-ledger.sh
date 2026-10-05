@@ -28,7 +28,10 @@ set -eu
 printf '%s\n' "$*" >> "$TEST_LOG"
 case "$1 $2" in
   'workspace list') printf '{"result":{"workspaces":[{"workspace_id":"test","focused":true,"worktree":{"repo_root":"%s"}}]}}\n' "$TEST_PROJECT" ;;
-  'agent get') printf '{"error":{"code":"agent_not_found"}}\n'; exit 1 ;;
+  'agent get')
+    [[ "$3" == test:worker ]] || { printf '{"error":{"code":"agent_not_found"}}\n'; exit 1; }
+    seq=$((185 + $(grep -c '^agent prompt ' "$TEST_LOG" || true)))
+    printf '{"result":{"type":"agent_info","agent":{"pane_id":"%s","agent_status":"idle","state_change_seq":%s}}}\n' "$3" "$seq" ;;
   'tab create') printf '{"result":{"root_pane":{"pane_id":"test:worker","tab_id":"test:tab"}}}\n' ;;
   'agent start') printf '{"result":{"type":"agent_started"}}\n' ;;
   'agent prompt')
@@ -54,8 +57,7 @@ case "$1 $2" in
       esac
       exit 1
     fi
-    seq=$((185 + $(grep -c '^agent prompt ' "$TEST_LOG" || true)))
-    printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","agent_status":"idle","state_change_seq":%s,"workspace_id":"test","cwd":"%s"}}}\n' "$3" "$seq" "$TEST_PROJECT" ;;
+    printf '{"result":{"pane":{"pane_id":"%s","agent":"pi","agent_status":"idle","workspace_id":"test","cwd":"%s"}}}\n' "$3" "$TEST_PROJECT" ;;
   'pane list') printf '{"result":{"panes":[{"pane_id":"test:watch","workspace_id":"test"}]}}\n' ;;
   'pane process-info')
     [[ "${TEST_UNKNOWN_WATCH:-0}" != 1 ]] || exit 1

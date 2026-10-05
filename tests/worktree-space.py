@@ -54,10 +54,10 @@ def out(result): print(json.dumps({"result": result}))
 # Keep the literal output hook above for native-proof variants; add the real state fields at the wire boundary.
 wire_out = out
 def out(result):
-    pane = result.get("pane")
-    if isinstance(pane, dict):
-        pane.setdefault("agent_status", "idle")
-        pane["state_change_seq"] = 185 + sum(
+    agent = result.get("agent")
+    if isinstance(agent, dict):
+        agent.setdefault("agent_status", "idle")
+        agent["state_change_seq"] = 185 + sum(
             isinstance(row, list) and row[:2] in (["agent", "prompt"], ["pane", "run"])
             for row in map(json.loads, log.read_text().splitlines()))
     wire_out(result)
@@ -99,7 +99,8 @@ elif args[:2] == ["worktree", "open"]:
     out({"already_open": already, "workspace": {"workspace_id": "wTask"},
          "root_pane": {} if mode == "open-missing-root-tab" else {"tab_id": "wTask:t1", "pane_id": "wTask:p1"}})
 elif args[:2] == ["agent", "get"]:
-    err("agent_not_found")
+    if ':' not in args[2]: err("agent_not_found")
+    out({"type": "agent_info", "agent": {"pane_id": args[2], "agent_status": "idle"}})
 elif args[:2] == ["tab", "create"]:
     out({"root_pane": {"pane_id": "wTask:p2", "tab_id": "wTask:t2"}})
 elif args[:2] == ["pane", "get"] and os.environ.get("QWB_TEST_IGNORE_NATIVE_PID"):

@@ -52,7 +52,10 @@ if a[:2]==["workspace","list"]:
             "checkout_path":state.read_text(),"is_linked_worktree":True}}]
     out({"workspaces":spaces})
 elif a[:2]==["agent","get"]:
-    print('{"error":{"code":"agent_not_found"}}',file=sys.stderr); sys.exit(1)
+    if ':' not in a[2]:
+        print('{"error":{"code":"agent_not_found"}}',file=sys.stderr); sys.exit(1)
+    seq=185+sum(json.loads(row)[:2]==["agent","prompt"] for row in log.read_text().splitlines())
+    out({"type":"agent_info","agent":{"pane_id":a[2],"agent_status":"idle","state_change_seq":seq}})
 elif a[:2]==["worktree","open"]:
     path=a[a.index("--path")+1]; state.write_text(path)
     out({"already_open":False,"workspace":{"workspace_id":"wTask"},
@@ -60,8 +63,7 @@ elif a[:2]==["worktree","open"]:
 elif a[:2]==["tab","create"]:
     out({"root_pane":{"pane_id":"wTask:p2","tab_id":"wTask:t2"}})
 elif a[:2]==["pane","get"]:
-    seq=185+sum(json.loads(row)[:2]==["agent","prompt"] for row in log.read_text().splitlines())
-    out({"pane":{"pane_id":a[2],"agent_status":"idle","state_change_seq":seq}})
+    out({"pane":{"pane_id":a[2],"agent_status":"idle"}})
 else: out({"type":"ok"})
 '''
 

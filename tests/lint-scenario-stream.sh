@@ -64,14 +64,16 @@ args = sys.argv[1:]
 with open(os.environ['STREAM_HERDR_LOG'], 'a') as log:
     log.write(json.dumps(args, ensure_ascii=False)+'\\n')
 if args[:2] == ['agent', 'get']:
-    print(json.dumps({'error': {'code': 'agent_not_found'}})); sys.exit(1)
+    if args[2] != 'fixture-worker':
+        print(json.dumps({'error': {'code': 'agent_not_found'}})); sys.exit(1)
+    seq = 185 + sum(json.loads(row)[:2] == ['agent', 'prompt'] for row in open(os.environ['STREAM_HERDR_LOG']))
+    print(json.dumps({'result': {'type': 'agent_info', 'agent': {'pane_id': args[2], 'agent_status': 'idle', 'state_change_seq': seq}}})); sys.exit(0)
 if args[:2] == ['workspace', 'list']:
     result = {'workspaces': [{'workspace_id': 'fixture-ws'}]}
 elif args[:2] == ['tab', 'create']:
     result = {'root_pane': {'pane_id': 'fixture-worker', 'tab_id': 'fixture-tab'}}
 elif args[:2] == ['pane', 'get']:
-    seq = 185 + sum(json.loads(row)[:2] == ['agent', 'prompt'] for row in open(os.environ['STREAM_HERDR_LOG']))
-    result = {'pane': {'pane_id': args[2], 'agent_status': 'idle', 'state_change_seq': seq}}
+    result = {'pane': {'pane_id': args[2], 'agent_status': 'idle'}}
 elif args[:2] == ['pane', 'process-info']:
     result = {'process_info': {'pane_id': args[-1], 'shell_pid': 42,
               'foreground_process_group_id': 42,
@@ -111,7 +113,7 @@ print(json.dumps({'result': result}))
             assert [cmd[:2] for cmd in commands] == [
                 ['agent', 'get'], ['workspace', 'list'], ['tab', 'create'],
                 ['agent', 'start'], ['pane', 'get'], ['pane', 'process-info'],
-                ['pane', 'get'], ['agent', 'prompt'], ['pane', 'get']], commands
+                ['agent', 'get'], ['agent', 'prompt'], ['agent', 'get']], commands
         print('PASS', name)
 
     check_dispatch('valid large block dispatches', block, 0)
