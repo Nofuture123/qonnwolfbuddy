@@ -4,6 +4,69 @@
 # 本文件只定义函数：不执行动作、不设置 shell 选项（set -euo pipefail 归调用方）。
 # 因此它自己不是可运行脚本——QWBUDDY.md §9 表里按「库文件，不直接运行」列出。
 
+# CLAUDE_PROMPT_SHAPE_BEGIN
+# Claude Code 2.1.289 / Herdr 0.9.3：换行或超过800字符会变粘贴，600留余量。
+# 来源：docs/reviews/2026-10-05-claude-code-herdr-probe.md §12–14。
+# .roles 下资料无自动清理；主控在引用票收尾且相关读者退出后按文件清单回收。
+qwb_shape_prompt() {
+  if [[ -n "$2" && "$2" != claude ]]; then printf '%s' "$5"; return; fi
+  python3 -B - "$@" <<'PY'
+import hashlib, json, os, sys, tempfile
+from pathlib import Path
+CLAUDE_PROMPT_MAX_CHARS = 600
+root, harness, sender, cwd, text = sys.argv[1:6]
+# Standing-role identity was already verified by wake; reuse its bound local tool without a new query.
+if not harness and len(sys.argv) > 6:
+    try:
+        identity = json.loads(sys.argv[6])
+        actor = identity['actor']
+        if Path(actor).name != actor or actor in ('.', '..'):
+            raise ValueError('角色名字非法')
+        record = Path(root) / 'qwbuddy/.roles' / (actor + '.json')
+        if record.is_symlink(): raise ValueError('角色记录符号链接')
+        data = json.loads(record.read_text())
+        if isinstance(data, dict) and all(data.get(k) == identity[k] for k in ('actor', 'pane', 'incarnation', 'owner_fp', 'session_id')):
+            harness = data.get('tool', '')
+    except (KeyError, OSError, ValueError, TypeError):
+        pass  # Unknown keeps the conservative Claude limit.
+if harness == 'pi' or (len(text) <= CLAUDE_PROMPT_MAX_CHARS and '\n' not in text and '\r' not in text):
+    sys.stdout.write(text)
+    sys.exit(0)
+raw = text.encode('utf-8')
+roles = Path(root) / 'qwbuddy/.roles'
+directory = roles / '.prompts'
+path = directory / (hashlib.sha256(raw).hexdigest() + '.md')
+try:
+    # Absolute paths are unambiguous across worktrees; fall back when even the pointer is too long.
+    message = f'QW buddy {sender}。完整指令文件：{json.dumps(str(path), ensure_ascii=False)}。先完整读取该文件，再按原文执行。'
+    if len(message) > CLAUDE_PROMPT_MAX_CHARS:
+        relative = os.path.relpath(path, cwd)
+        scope = '项目根内' if Path(cwd) == Path(root) else '当前工作目录内'
+        message = f'QW buddy {sender}。{scope}完整指令文件：{json.dumps(relative, ensure_ascii=False)}。先完整读取该文件，再按原文执行。'
+    if len(message) > CLAUDE_PROMPT_MAX_CHARS or '\n' in message or '\r' in message:
+        raise ValueError('指路文字仍超限或含换行')
+    if roles.is_symlink() or directory.is_symlink():
+        raise ValueError('指令目录不能是符号链接')
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.publish-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw); f.flush(); os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)  # Publish complete bytes without replacing another operation's file.
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != raw:
+                raise ValueError('已有指令文件不符，拒绝覆盖')
+    finally:
+        os.unlink(tmp)
+    sys.stdout.write(message)
+except (OSError, ValueError) as e:
+    print('错误：完整指令文件发布失败：' + str(e), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+# CLAUDE_PROMPT_SHAPE_END
+
 # 首行去掉时间戳及其后的空白；无锁/空文件安静输出空串。
 qwb_lock_owner() {
   local file="$1/qwbuddy/.controller.lock/owner"

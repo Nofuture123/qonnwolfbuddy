@@ -733,6 +733,18 @@ if [[ -n "$GATE_OP" ]]; then
   fi
 fi
 
+# CLAUDE_PROMPT_SHAPE_BEGIN
+# Shape before the dispatch receipt: a file failure must never leave an "已派发" record.
+SEND_PROMPT="$PROMPT"
+if [[ -n "$REUSE_PANE" ]]; then
+  SEND_PROMPT="这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
+fi
+# pane-run obtains the native kind from its existing submission query after startup.
+if [[ "$LAUNCH_MODE" == herdr ]]; then
+  SEND_PROMPT="$(qwb_shape_prompt "$PROJECT_ROOT" "$WORKER_HARNESS" '主控派工' "$DIR" "$SEND_PROMPT")" || exit 1
+fi
+# CLAUDE_PROMPT_SHAPE_END
+
 # 窗口：复用既有工人 pane / 复用 --pane / 新开 tab。新开时 tab 落 TAB_WS（空 = 不带 --workspace，即调用者 workspace）。
 if [[ -n "$REUSE_PANE" ]]; then
   PANE="$REUSE_PANE"
@@ -853,7 +865,7 @@ case "$LAUNCH_MODE" in
       echo "复用既有工人 ${NAME}（pane ${PANE}）"
       read_prompt_state
       PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
-      deliver "herdr agent prompt" herdr agent prompt "$NAME" "这是返工/续派，读主账本末尾主控最新一条 working: 行。${PROMPT}"
+      deliver "herdr agent prompt" herdr agent prompt "$NAME" "$SEND_PROMPT"
       printf '%s\n' "$DELIVER_OUT"
       confirm_prompt_submitted
     else
@@ -862,7 +874,7 @@ case "$LAUNCH_MODE" in
       record_worker_activity
       read_prompt_state
       PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
-      deliver "herdr agent prompt" herdr agent prompt "$NAME" "$PROMPT"
+      deliver "herdr agent prompt" herdr agent prompt "$NAME" "$SEND_PROMPT"
       printf '%s\n' "$DELIVER_OUT"
       confirm_prompt_submitted
     fi
@@ -883,7 +895,15 @@ case "$LAUNCH_MODE" in
     deliver "herdr agent rename" herdr agent rename "$PANE" "$NAME"
     read_prompt_state
     PROMPT_BEFORE_SEQ="$PROMPT_SEQ"
-    deliver "herdr pane run（提示词）" herdr pane run "$PANE" "$PROMPT"
+# CLAUDE_PROMPT_SHAPE_BEGIN
+    # read_prompt_state already queried the target; reuse its JSON instead of querying Herdr again.
+    PROMPT_HARNESS="$(printf '%s' "$DELIVER_OUT" | perl -MJSON::PP -0777 -e '
+      my $kind=decode_json(<STDIN>)->{result}{agent}{agent};
+      print $kind if defined($kind) && !ref($kind) && encode_json($kind) =~ /^"[a-z][a-z0-9-]*"$/;')"
+    deliver "提示词整形" qwb_shape_prompt "$PROJECT_ROOT" "$PROMPT_HARNESS" '主控派工' "$DIR" "$PROMPT"
+    SEND_PROMPT="$DELIVER_OUT"
+# CLAUDE_PROMPT_SHAPE_END
+    deliver "herdr pane run（提示词）" herdr pane run "$PANE" "$SEND_PROMPT"
     printf '%s\n' "$DELIVER_OUT"
     confirm_prompt_submitted
     ;;

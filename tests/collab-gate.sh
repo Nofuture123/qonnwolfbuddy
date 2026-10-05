@@ -14,6 +14,7 @@ export QWB_GATE_TEST_ROOT
 python3 -u -B - <<'PY'
 from roles_polish_fixture import baseline as polish_baseline, freeze_writer
 from process_fixture import TemporaryDirectory
+from prompt_file import native_calls  # prompt_file.py validates pointers before reading the full message.
 import hashlib, json, os, shutil, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_GATE_TEST_ROOT'])
@@ -202,7 +203,7 @@ close $output;
     def notify_routes(**extra):
         log=tmp/'native-calls.jsonl'; log.write_text('')
         result=call('qwb-wake.sh','--once','--pane','ctl',extra=extra)
-        calls=[json.loads(row) for row in log.read_text().splitlines()]
+        calls=native_calls(log.read_text().splitlines(), p)
         return [a for a in calls if a[:2]==['pane','run']],result
     try:
         routes,result=notify_routes()

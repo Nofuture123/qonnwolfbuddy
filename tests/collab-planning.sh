@@ -13,6 +13,7 @@ export QWB_PLANNING_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 python3 -u -B - <<'PY'
 from process_fixture import TemporaryDirectory, register, release
 from roles_polish_fixture import baseline as polish_baseline, freeze_writer
+from prompt_file import native_calls  # prompt_file.py preserves the original route/body assertions.
 import contextlib, hashlib, json, os, shutil, signal, subprocess, tempfile, time
 from pathlib import Path
 ROOT=Path(os.environ['QWB_PLANNING_ROOT'])
@@ -304,7 +305,7 @@ file.write_text(json.dumps(s))
             rejected=cli('qwb-send.sh',verb,*args,actor='planner-pane',ok=False)
             assert '规划不能办理主控专属交接' in rejected.stderr and intake.read_bytes()==before
         mark=count();cli('qwb-wake.sh','--once','--pane','ctl')
-        routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+        routes=native_calls(log.read_text().splitlines()[mark:], p)
         routes=[a for a in routes if a[:2]==['pane','run'] and upward in a[3]]
         assert len(routes)==1 and routes[0][2]=='ctl',routes
         notify_finish(upward,'ctl')
@@ -470,7 +471,7 @@ file.write_text(json.dumps(s))
         settle(); settle(intake_name)
         def deliveries(ok=True):
             mark=count(); result=cli('qwb-wake.sh','--once','--pane','ctl',ok=ok)
-            calls=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+            calls=native_calls(log.read_text().splitlines()[mark:], p)
             return [a for a in calls if a[:2]==['pane','run'] and 'Up(running)' in a[3]],result
         # 本票同一用例先在固定起点跑红：仅替换私有运行时，不改主仓脚本。
         silence_baseline=os.environ.get('QWB_SILENCE_BASELINE')=='1'
@@ -484,7 +485,7 @@ file.write_text(json.dumps(s))
                 mark=count()
                 result=subprocess.run(['bash',str(runtime/'qwb-wake.sh'),'--project',str(p),'--once','--pane','ctl'],env=env,capture_output=True,text=True)
                 assert result.returncode==0,(result.stdout,result.stderr)
-                routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+                routes=native_calls(log.read_text().splitlines()[mark:], p)
                 routes=[a for a in routes if a[:2]==['pane','run'] and 'Up(running)' in a[3]]
             else: routes,_=deliveries()
             assert not routes, ('A: 纯工人进度不应门铃任何角色',routes)
@@ -701,7 +702,7 @@ file.write_text(json.dumps(s))
             mark=count()
             result=subprocess.run(['bash',str(p/'qwbuddy/bin/qwb-wake.sh'),'--project',str(p),'--once','--pane','ctl'],env=env,capture_output=True,text=True)
             assert result.returncode==0,(result.stdout,result.stderr)
-            routes=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
+            routes=native_calls(log.read_text().splitlines()[mark:], p)
             routes=[a for a in routes if a[:2]==['pane','run'] and 'Up(running)' in a[3]]
         else: routes,_=deliveries()
         control=[a for a in routes if a[2]=='ctl']; planning=[a for a in routes if a[2]=='planner-pane']

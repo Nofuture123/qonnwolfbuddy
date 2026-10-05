@@ -9,6 +9,10 @@ export GIT_CEILING_DIRECTORIES="$TMPDIR"
 # Fail closed even if the PATH stub disappears.
 export HERDR_SOCKET_PATH=/dev/null/qwb-test.sock
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [[ "${1:-}" == prompt-length ]]; then
+  python3 -B "$ROOT/tests/claude-prompt-length.py" "$ROOT"
+  exit "$?"
+fi
 TMP="$(mktemp -d "$TMPDIR/tmp.XXXXXXXX")" || exit 1; trap 'qwb_test_drain && rm -rf "$TMP" || exit 1' EXIT
 export TMPDIR="$TMP"
 P="$TMP/project"; mkdir -p "$P/tasks" "$P/qwbuddy/.controller.lock" "$TMP/bin"

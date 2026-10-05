@@ -856,6 +856,11 @@ route_gate_due() {
       message="门禁看账本：${DUE_N} 张原票有成果 →${DUE_MSG}。按本人持久claim核证据/独立审核/原范围返修，不改场景或自动合并。"
       if grep -q '"gate_assignment":1' "${batches[i]}"; then message="${message} 待接手授权请先 claim，再 received/accept/prepared。"; fi
     fi
+# CLAUDE_PROMPT_SHAPE_BEGIN
+    # Reuse the already-verified role identity and its local tool; unknown stays conservative.
+    message="$(qwb_shape_prompt "$PROJECT_ROOT" '' '值守交接门铃' "$PROJECT_ROOT" "$message" "${grants[i]}")" \
+      || { rm -rf "$dir"; return 3; }
+# CLAUDE_PROMPT_SHAPE_END
     if herdr pane run "${targets[i]}" "$message"; then
       while IFS=$'\t' read -r f st fp last lostpane; do
         qwb_ledger "$PROJECT_ROOT" "$f" wake "$controller" "$st" "$fp" >/dev/null || { rm -rf "$dir"; return 3; }
@@ -898,7 +903,13 @@ check_round() {
   done < "$duef"
   if (( write_failed )); then due_cleanup; return 3; fi
   # 一轮只发一条投递，API成功不代表received或handled。
-  if herdr pane run "$PANE" "看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"; then
+  local message="看账本：${DUE_N} 张未结项有进展 →${DUE_MSG}。只需读这些票。"
+# CLAUDE_PROMPT_SHAPE_BEGIN
+  # This entry has no target harness; unknown follows the Claude limit without a new query.
+  message="$(qwb_shape_prompt "$PROJECT_ROOT" '' '值守叫醒主控' "$PROJECT_ROOT" "$message")" \
+    || { due_cleanup; return 3; }
+# CLAUDE_PROMPT_SHAPE_END
+  if herdr pane run "$PANE" "$message"; then
     while IFS=$'\t' read -r f st fp last lostpane; do
       qwb_ledger "$PROJECT_ROOT" "$f" wake "$PANE" "$st" "$fp" >/dev/null \
         || { echo "警告：wake 行写入失败（下轮重试）：$f" >&2; write_failed=1; continue; }

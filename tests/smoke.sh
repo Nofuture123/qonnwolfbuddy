@@ -21,6 +21,10 @@ qwb_test_scope "$@"
 export TMPDIR="$QWB_TEST_SCOPE_DIR"
 
 # ROOT_TAB_ONLY_BEGIN：窄入口执行原S4–S10与原公共脚本，不复制断言/替换产品。
+if [[ "${1:-}" == prompt-length ]]; then
+  bash "$ROOT/tests/collab-handoff.sh" prompt-length
+  exit "$?"
+fi
 if [[ "${1:-}" == root-tab-missing ]]; then
   python3 -B - "$ROOT/tests/smoke.sh" "$ROOT" <<'PY'
 import shlex, subprocess, sys
@@ -530,6 +534,7 @@ smoke_start invalid-ledger python3 -B "$ROOT/tests/invalid-ledger.py"
 smoke_start r4-cli python3 -B "$ROOT/tests/r4-cli.py"
 smoke_start e2e-controllers-cli python3 -B "$ROOT/tests/e2e-controllers-cli.py"
 smoke_start wake-block-output bash "$ROOT/tests/wake-block-output.sh"
+smoke_start claude-prompt-length bash "$ROOT/tests/collab-handoff.sh" prompt-length
 export -f jev_roles_smoke ok bad
 export ROOT
 smoke_start jev-roles bash -c 'TMP="$TMPDIR/project"; jev_roles_smoke'
@@ -4958,6 +4963,13 @@ if smoke_result wake-block-output; then
 else
   bad "--block 输出公开 CLI 回归失败"
   cat "$TMP/wake-block-output.log"
+fi
+
+if smoke_result claude-prompt-length; then
+  ok "Claude派工/续派及多票门铃单行600字符、指令文件保真与失败关闭"
+else
+  bad "Claude提示词长度公开CLI回归失败"
+  cat "$TMP/claude-prompt-length.log"
 fi
 
 # JEV_ROLES_BEGIN（可提取本节定向跑；仍通过真实脚本与 curl）
