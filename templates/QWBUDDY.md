@@ -39,7 +39,7 @@
 
 当前模板工人表：Pi 均为 `magpie` provider；`pi`/`pi-sol-high` 为 `codex/gpt-6.1-sol` high，`pi-astra-high` 为 `codex/gpt-6-astra` high，`pi-astra-low` 为同型号 low。Claude `claude`/`claude-opus-medium` 为 `claude-opus-5-5` medium，`claude-fable-low` 为 `claude-fable-5-1` low。`dispatch-rules.json` 的规划/常规实现用 Sol high；复杂架构、跨模块、高风险依次候选 Astra high、Fable low；审核默认 Astra low（实现者是 Astra 时改用 Sol high）；顾问依次候选 Fable low、Astra high。独立审核始终要求模型不同、原生会话不同，渠道和档位差异不算不同模型。
 
-主控宿主为 Claude Code 或 Pi；常驻副主控、门控只支持已验证的 Pi 控制，必须显式选具名工人，角色本身没有自动模型默认值。本流程选两者为 `pi-sol-high`，不启用 fast/priority。已装项目以保留的 `workers.sh`、`dispatch-rules.json` 为准，升级不覆盖定制候选。
+主控宿主为 Claude Code 或 Pi；常驻副主控、门控只支持已验证的 Pi 控制，必须显式选具名工人，角色本身没有自动模型默认值。推荐两者都用 `pi-astra-low`（常驻流程的示例即如此），不启用 fast/priority。已装项目以保留的 `workers.sh`、`dispatch-rules.json` 为准，升级不覆盖定制候选。
 
 **首次登记需求、授权常驻职责、修订规格、门控交还或落地时，读 [常驻流程](roles/常驻流程.md)**：包含完整命令和 JSON、每步结果、唤醒交接及账本提交时机。总说明只保留入口，流程正文随 roles 通配安装并由离线测试原样提取执行。
 
