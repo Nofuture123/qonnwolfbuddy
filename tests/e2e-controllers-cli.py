@@ -21,7 +21,7 @@ def invoke(*args):
 
 help_result = invoke("--worker", "pi", "--controller", "claude", "--help")
 assert help_result.returncode == 0, help_result.stderr
-for expected in ("--worker pi|claude", "--controller claude|pi", "sonnet/low",
+for expected in ("--worker pi|claude", "--controller claude|pi", "claude-opus-5-5/medium",
                  "claude-opus-5-5/medium", "magpie/codex/gpt-6.1-sol/high",
                  "~/.pi/agent/trust.json", "~/.claude.json"):
     assert expected in help_result.stdout, expected
@@ -50,9 +50,10 @@ for view in (pi_view, "magpie/codex/gpt-6.1-sol · high\n"):
     assert not visible(view.replace("magpie", "other-provider"), "pi", "magpie/codex/gpt-6.1-sol", "high")
     assert not visible(view.replace("high", "low"), "pi", "magpie/codex/gpt-6.1-sol", "high")
     assert not visible(view.replace("high", "high-other"), "pi", "magpie/codex/gpt-6.1-sol", "high")
-assert visible("Sonnet with low effort", "claude", "sonnet", "low")
-assert not visible("Sonnet with high effort", "claude", "sonnet", "low")
-assert not visible("Opus with low effort", "claude", "sonnet", "low")
+assert visible("Opus 5.5 with medium effort", "claude", "claude-opus-5-5", "medium")
+assert not visible("Opus 5.5 with low effort", "claude", "claude-opus-5-5", "medium")
+assert not visible("Opus 5.4 with medium effort", "claude", "claude-opus-5-5", "medium")
+assert not visible("Sonnet with medium effort", "claude", "claude-opus-5-5", "medium")
 
 with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT, prefix="e2e-cli-") as tmp:
     base = Path(tmp)

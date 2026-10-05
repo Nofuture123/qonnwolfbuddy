@@ -334,7 +334,7 @@ def setup():
 
 def controller_model_visible(view, controller, model, effort):
     """Check current or legacy TUI identity without running the live E2E flow."""
-    model_token = re.escape(model)
+    model_token = re.escape("Opus 5.5" if controller == "claude" and model == "claude-opus-5-5" else model)
     effort_token = re.escape(effort) + r"(?=$|[\s·•])"
     if controller == "claude":
         return bool(re.search(rf"(?i)\b{model_token}\b.*\bwith {re.escape(effort)} effort\b", view))

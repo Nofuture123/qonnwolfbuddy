@@ -54,6 +54,6 @@ Claude Code 核对已安装的 `.claude/settings.json` Stop hook，在下次 Sto
 
 在本台 macOS 机器（Darwin 27.0.0）上，提交 `20ea2cc` 的主控实测：`fast` 2.85 秒；smoke 单独两次为 190.13 秒与 191.28 秒，804 PASS / 0 FAIL，共 95 个节标题（含字母子节，编号末节为 88）；当时四段依次运行的全门为 574.34 秒（同机稍早一次为 456.58 秒），844 PASS / 0 FAIL。改为四段同时运行后，在提交 `c2079f0` 上、同机负载约 55 时全门 502 秒，844 PASS / 0 FAIL；合入前的候选在隔离副本里顺序连跑五次全绿，385–502 秒（负载 5–47），同一晚依次运行的版本两次为 769 秒与 1044 秒（负载 13–23）。全门同时运行 smoke、review-identity、lint、`tests/collab-all.sh`（15 项测试），收齐输出后按上述顺序整段打印。该环境的 Herdr 为 0.9.3、Pi 为 1.0.2、Bash 为 5.3.20（另以 `/bin/bash` 3.2.57 做语法与兼容检查）。完整的逐票证据与起点对比见[审核报告](docs/reviews/2026-10-03-qwb-full-audit-r1.md)。这些是所引源码与机器的记录，不是速度保证、最低版本或后续提交的测试证明。
 
-[E2E 运行记录](docs/E2E-RUNBOOK.md)对应有人工介入的旧基线。历史主控真机运行与收尾演练保存在 `docs/reviews/`，不能证明新工人表已经真机通过。首次信任提示、长时间值守与重启恢复、已迁协作票 land 收尾、生产试用仍待验证。真机入口只接受 Pi 和 Claude Code 主控/工人；Claude Code 主控默认为 `sonnet` / `low`，Pi 主控为 `magpie/codex/gpt-6.1-sol` / `high`；工人为 Pi Sol / `high` 或 Claude Opus 5.5 / `medium`。真机流程由主控运行。
+[E2E 运行记录](docs/E2E-RUNBOOK.md)对应有人工介入的旧基线。历史主控真机运行与收尾演练保存在 `docs/reviews/`，不能证明新工人表已经真机通过。首次信任提示、长时间值守与重启恢复、已迁协作票 land 收尾、生产试用仍待验证。真机入口只接受 Pi 和 Claude Code 主控/工人；Claude Code 主控默认为 `claude-opus-5-5` / `medium`，Pi 主控为 `magpie/codex/gpt-6.1-sol` / `high`；工人为 Pi Sol / `high` 或 Claude Opus 5.5 / `medium`。真机流程由主控运行。
 
 仓库结构：`bin/` 是安装器和运行脚本（当前源码共 16 个 shell 文件）；`templates/` 是主控说明、任务与角色模板、配置和 Pi 扩展；`tests/` 是 smoke 与契约检查；`docs/` 是设计、审核和历史 E2E 记录；`tasks/` 是主账本。

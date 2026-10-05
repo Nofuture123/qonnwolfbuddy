@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 用法: bash tests/e2e-real.sh --worker pi|claude [--controller claude|pi] [--controller-model <模型>] [--controller-effort <档位>] [--timeout-ms 2700000] [--report <新文件>] [--keep]
 
-默认主控/模型/推理档：claude sonnet/low；pi magpie/codex/gpt-6.1-sol/high。
+默认主控/模型/推理档：claude claude-opus-5-5/medium；pi magpie/codex/gpt-6.1-sol/high。
 默认工人/模型/推理档：pi magpie/codex/gpt-6.1-sol/high；claude claude-opus-5-5/medium。
 前提：Herdr pane 内运行；所选主控与工人 CLI 已登录。交互运行会真实调用模型并产生花费。
 脚本在隔离 /tmp Git 项目与新 named Herdr session 运行；可在另一终端用
@@ -36,7 +36,7 @@ done
 [[ "$CONTROLLER" == claude || "$CONTROLLER" == pi ]] \
   || { echo "错误：--controller 只接受 claude|pi" >&2; exit 2; }
 case "$CONTROLLER" in
-  claude) MODEL="${MODEL:-sonnet}"; EFFORT="${EFFORT:-low}" ;;
+  claude) MODEL="${MODEL:-claude-opus-5-5}"; EFFORT="${EFFORT:-medium}" ;;
   pi) MODEL="${MODEL:-magpie/codex/gpt-6.1-sol}"; EFFORT="${EFFORT:-high}" ;;
 esac
 [[ "$TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "错误：--timeout-ms 须为正整数" >&2; exit 2; }
