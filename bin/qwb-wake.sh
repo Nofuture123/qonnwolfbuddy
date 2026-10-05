@@ -521,6 +521,66 @@ ts_epoch() {
 # 非 --block 模式将跳过的票往 stdout 打「跳过：…」说明；全局 OPEN_N = 未结项总数。
 # fp 输入 = state\n最后状态行（\nlost=<pane> 仅 running 票判定为工人丢失时追加）；
 # 工人丢失判定只在有 herdr 且非 --dry-run 时做；无法确认不当丢失、不拼 lost 段（不猜）。
+# 已迁票的在途工人：沿用worker_lost；只读探针不会把unknown猜成死亡。
+collect_worker_due() {
+  local f="$1" st="$2" data="$3" out="$4" source lost="" now
+  now="$(now_ms)"
+  source="$(printf '%s' "$data" | perl -MJSON::PP -MTime::Local=timegm -MDigest::SHA=sha256_hex -0777 -e '
+    my ($now,$retry,$quiet,$ownerfile)=@ARGV;
+    my $d=decode_json(<STDIN>);
+    exit if $d->{phase}=~/^(done|verified)$/ || ($d->{gate} && $d->{gate}{verdict} eq "accepted");
+    my ($e)=grep { $_->{kind} eq "dispatch" && $d->{ops}{$_->{op_id}}{status} ne "not-sent" } reverse @{$d->{events}};
+    exit unless $e; my $op=$e->{op_id};
+    exit if grep { $_->{kind} eq "done" && $_->{op_id} eq $op && $_->{seq}>$e->{seq} } @{$d->{events}};
+    my ($business)=grep { $_->{kind}!~/^(wake|handoff-pending|handoff-transport)$/ } reverse @{$d->{events}};
+    my @t=$business->{at}=~/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/;
+    my $at=timegm($t[5],$t[4],$t[3],$t[2],$t[1]-1,$t[0])*1000;
+    my $due=!$quiet && $retry=~/^[1-9][0-9]*$/ && $now-$at>=$retry;
+    if ($due) {
+      open my $owner,"<",$ownerfile or die "worker owner read: $!\n"; my $fp=sha256_hex(<$owner> // ""); close $owner;
+      $due=0 if grep { !$_->{handled} && $_->{accepted} ne "" && $_->{owner_fp} eq $fp && ($now<$_->{wait_until} || $now-$_->{activity_at}<$retry) } values %{$d->{handoffs} // {}};
+    }
+    print JSON::PP->new->canonical->utf8->encode({dispatch=>$e->{event_id},op=>$op,pane=>$d->{ops}{$op}{pane},timer_due=>$due ? 1 : 0});
+  ' "$now" "${QWB_REWAKE_MS:-0}" "$POSTURE_QUIET" "$PROJECT_ROOT/qwbuddy/.controller.lock/owner")" || return 3
+  [[ -n "$source" ]] || return 0
+  lost="$(worker_lost "$f")" || lost=""
+  if [[ -z "$lost" ]] && ! printf '%s' "$source" | perl -MJSON::PP -0777 -e 'exit !decode_json(<STDIN>)->{timer_due}'; then return 0; fi
+  source="$(perl -MJSON::PP -e 'my $d=decode_json($ARGV[0]); $d->{lost}=$ARGV[1] ne "" ? 1 : 0; print JSON::PP->new->canonical->utf8->encode($d)' "$source" "$lost")"
+  printf '%s\t%s\t-\t[qwb-worker] %s\t%s\n' "$f" "$st" "$source" "$lost" >> "$out"
+}
+
+# 路由最终确定后才按收件代次去重；第二次身份失效也重新计算主控指纹。
+worker_due_row() {
+  local f="$1" st="$2" summary="$3" target="$4" grant="$5" data now
+  data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
+  now="$(now_ms)"
+  printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha1_hex,sha256_hex -MTime::Local=timegm -0777 -e '
+    use utf8;
+    my ($f,$st,$raw,$target,$grant,$now,$retry,$quiet,$ownerfile)=@ARGV;
+    my $d=decode_json(<STDIN>); my $s=decode_json(substr($raw,length("[qwb-worker] ")));
+    exit if $d->{phase}=~/^(done|verified)$/ || ($d->{gate} && $d->{gate}{verdict} eq "accepted");
+    my ($dispatch)=grep { $_->{kind} eq "dispatch" && $d->{ops}{$_->{op_id}}{status} ne "not-sent" } reverse @{$d->{events}};
+    exit unless $dispatch && $dispatch->{event_id} eq $s->{dispatch};
+    exit if grep { $_->{kind} eq "done" && $_->{op_id} eq $s->{op} && $_->{seq}>$dispatch->{seq} } @{$d->{events}};
+    my ($business)=grep { $_->{kind}!~/^(wake|handoff-pending|handoff-transport)$/ } reverse @{$d->{events}};
+    sub epoch { my @t=$_[0]=~/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/; die "worker event time invalid\n" unless @t; return timegm($t[5],$t[4],$t[3],$t[2],$t[1]-1,$t[0])*1000 }
+    my $at=epoch($business->{at});
+    open my $owner,"<",$ownerfile or die "worker owner read: $!\n"; my $owner_raw=<$owner> // ""; close $owner;
+    my $owner_fp=sha256_hex($owner_raw);
+    my $fp=sha1_hex(JSON::PP->new->canonical->utf8->encode(["worker-watch",$s->{dispatch},$s->{op},$s->{pane},$s->{lost} ? "lost" : $business->{seq},$target,$grant,$owner_fp]));
+    my @wakes=grep { $_->{kind} eq "wake" && $_->{line}=~/\bfp=\Q$fp\E(?:\s|$)/ } @{$d->{events}};
+    if ($s->{lost}) { exit if @wakes }
+    else {
+      exit if $quiet || $retry!~/^[1-9][0-9]*$/;
+      exit if grep { !$_->{handled} && $_->{accepted} ne "" && $_->{owner_fp} eq $owner_fp && ($now<$_->{wait_until} || $now-$_->{activity_at}<$retry) } values %{$d->{handoffs} // {}};
+      my $last=@wakes ? epoch($wakes[-1]{at}) : 0; $last=$at if $at>$last;
+      exit if $now-$last<$retry;
+    }
+    $s->{payload}=$s->{lost} ? "工人丢失：pane=$s->{pane} op=$s->{op}；请派工者核查" : "工人无进展：".($now-$at)."ms（阈值${retry}ms）pane=$s->{pane} op=$s->{op}";
+    print join("\t",$f,$st,$fp,"[qwb-worker] ".JSON::PP->new->canonical->utf8->encode($s),$s->{lost} ? $s->{pane} : ""),"\n";
+  ' "$f" "$st" "$summary" "$target" "$grant" "$now" "${QWB_REWAKE_MS:-0}" "$POSTURE_QUIET" "$PROJECT_ROOT/qwbuddy/.controller.lock/owner"
+}
+
 OPEN_N=0; POSTURE_QUIET=0
 collect_due() {
   local out="$1" f st last fp lwf we mtime progress legacy lostpane="" pending retry posture plan_data plan_result plan_rc owner
@@ -537,6 +597,7 @@ collect_due() {
     if [[ "$DRY" -eq 0 ]] && grep -q '^<!-- qwb-collab-v1$' "$f"; then
       # 几十张票扫描：已派当前spec不重复派；仅发一次明确就绪事件，仍由受限授权规划/主控调用run。
       plan_data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
+      collect_worker_due "$f" "$st" "$plan_data" "$out" || return 3
       if printf '%s' "$plan_data" | perl -MJSON::PP -0777 -e '
         my $d=decode_json(<STDIN>); exit 1 unless $d->{planning};
         exit 1 if $d->{claim} || $d->{planning}{pending_revision} || $d->{phase} eq "verified" || ($d->{gate} && $d->{gate}{verdict} eq "accepted");
@@ -636,6 +697,9 @@ compose_msg() {
         print join("；",grep { !$seen{$_}++ } map { $_->{controller_hint} // () } @{decode_json(<STDIN>)});
       ')"
     fi
+    if [[ "$last" == '[qwb-worker] '* ]]; then
+      last="$(printf '%s' "${last#\[qwb-worker\] }" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print decode_json(<STDIN>)->{payload}')"
+    fi
     DUE_MSG="${DUE_MSG}${sep}$(seq_mark "$DUE_N") $(basename "$f" .md)(${st}) ${hint:+${hint}；}最近: ${last}"
     [[ -n "$lostpane" ]] && DUE_MSG="${DUE_MSG}（工人丢失）"
     sep=" "
@@ -658,7 +722,17 @@ route_gate_due() {
   keep="$dir/controller"; : > "$keep"
   while IFS=$'\t' read -r f st fp last lostpane; do
     info=""
-    if [[ "$last" == '[qwb-handoff] '* ]]; then
+    if [[ "$last" == '[qwb-worker] '* ]]; then
+      data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
+      info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
+        use utf8; binmode STDOUT, ":encoding(UTF-8)";
+        my $d=decode_json(<STDIN>); my $s=decode_json(substr($ARGV[0],length("[qwb-worker] ")));
+        my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef);
+        if ($p && $d->{ops}{$s->{op}}{owner} eq $p->{identity}{pane}) {
+          print "$p->{identity}{actor}\t".JSON::PP->new->canonical->encode($p->{identity})."\t$p->{identity}{pane}\t规划";
+        }
+      ' "$last")"
+    elif [[ "$last" == '[qwb-handoff] '* ]]; then
       data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
         use utf8; binmode STDOUT, ":encoding(UTF-8)";
@@ -705,17 +779,33 @@ route_gate_due() {
         fi
       fi
       if (( idx >= 0 )) && [[ "${grants[idx]}" == "$grant" ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "${batches[idx]}"
+        if [[ "$last" == '[qwb-worker] '* ]]; then
+          worker_due_row "$f" "$st" "$last" "$target" "$grant" >> "${batches[idx]}" || { rm -rf "$dir"; return 3; }
+        else
+          printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "${batches[idx]}"
+        fi
         continue
       fi
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
+    if [[ "$last" == '[qwb-worker] '* ]]; then
+      worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
+    else
+      printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
+    fi
   done < "$duef"
   for i in "${!targets[@]}"; do
+    [[ -s "${batches[i]}" ]] || continue
     # 投递前再核代次；失效只交主控，不把旧pane/session当新实例。
     proof="$(gate_proof "${actors[i]}" "${roles[i]}")"
     if [[ "$proof" != "${grants[i]}" ]]; then
-      cat "${batches[i]}" >> "$keep"; continue
+      while IFS=$'\t' read -r f st fp last lostpane; do
+        if [[ "$last" == '[qwb-worker] '* ]]; then
+          worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
+        else
+          printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
+        fi
+      done < "${batches[i]}"
+      continue
     fi
     failed=0
     while IFS=$'\t' read -r f st fp last lostpane; do

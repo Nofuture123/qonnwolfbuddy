@@ -58,6 +58,12 @@ elif a[:2]==['agent','start']:
  out({'type':'agent_started'})
 elif a[:2]==['pane','get']:
  pane=a[2]
+ if pane==os.environ.get('PL_GONE_WORKER'):
+  print(json.dumps({'error':{'code':'pane_not_found'}}));sys.exit(1)
+ if pane==os.environ.get('PL_BAD_WORKER'):
+  print('invalid worker query');sys.exit(2)
+ if pane=='up-worker':
+  out({'pane':{'pane_id':pane,'agent':'pi','workspace_id':'ws'}});sys.exit()
  if pane=='planner-pane' and os.environ.get('PL_EXPIRE_PROOF'):
   counter=Path(os.environ['PL_EXPIRE_PROOF']); n=int(counter.read_text())+1 if counter.exists() else 1; counter.write_text(str(n))
   if n>=3:s.pop(pane,None)
@@ -97,10 +103,11 @@ file.write_text(json.dumps(s))
             children=grown
         return '\n'.join(line for line in rows if int(line.split(None,4)[0]) in children)+'\n'
     step=0
+    runtime_bin=ROOT/'bin'
     def cli(script,*args,ok=True,actor='ctl',extra=None):
         global step
         step+=1; verb=str(args[0]) if args else 'status'; label=f'{step:03}-{verb}'
-        argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else ROOT/'bin'/script),*map(str,args)]
+        argv=['bash',str(p/'qwbuddy/bin/qwb-run.sh' if baseline and script=='qwb-run.sh' else runtime_bin/script),*map(str,args)]
         if Path(script).name not in ('qwb-ledger.sh','qwb-ledger-old.sh','qwb-ledger-new.sh'): argv+=['--project',str(p)]
         if diagnostic: print(f'DIAG start {label} actor={actor}',flush=True)
         target=verb in ('gate-assign','plan-revision','revision-handoff')
@@ -288,6 +295,74 @@ file.write_text(json.dumps(s))
         call('state',name,'--','running'); listing_dir.rmdir()
         print('PASS silence A义务：done/verified与worktree列表不被未办理纯进度挡住；blocked的source/handoff仍未结')
         print('PASS silence A：连续三条工人进度与主控/规划普通进度只记账；多轮零门铃、零传输、不伪造handled')
+        def watch_checks():
+            global runtime_bin
+            saved_bin=runtime_bin; runtime_bin=runtime
+            script=runtime/'qwb-ledger.sh'; original_script=script.read_bytes()
+            original_ticket=ticket.read_bytes(); native_path=Path(env['PL_NATIVE']); native_bytes=native_path.read_bytes()
+            config=p/'qwbuddy/config.sh'; config_bytes=config.read_bytes()
+            clock=temp/'silence-clock'; now=temp/'silence-now'
+            now.write_text('#!/usr/bin/env python3\nimport os\nprint(open(os.environ["PL_CLOCK"]).read().strip())\n'); now.chmod(0o755)
+            env['PL_CLOCK']=str(clock); env['QWB_NOW_MS_CMD']=str(now)
+            clock.write_text('4102444800000')
+            script.write_bytes(original_script.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { open my $c,"<",$ENV{PL_CLOCK} or die $!; return scalar(<$c>)/1000 }').replace(b',gmtime)',b',gmtime(time()))'))
+            config.write_bytes(config_bytes+b'QWB_REWAKE_MS=60000\n')
+            def advance(ms): clock.write_text(str(int(clock.read_text())+ms))
+            try:
+                call('append',name,'--event-id','watch-progress','--','working: 重置静默时钟',actor='up-worker')
+                snapshot=ticket.read_bytes()
+                env['PL_GONE_WORKER']='up-worker'
+                routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='planner-pane' and '工人丢失' in routes[0][3],routes
+                for _ in range(2):
+                    routes,_=deliveries(); assert not routes,routes
+                native=json.loads(native_path.read_bytes()); del native['planner-pane']; native_path.write_text(json.dumps(native))
+                routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='ctl' and '工人丢失' in routes[0][3],routes
+                routes,_=deliveries(); assert not routes,routes
+                native_path.write_bytes(native_bytes); ticket.write_bytes(snapshot)
+                env['PL_EXPIRE_PROOF']=str(temp/'watch-proof-counter')
+                routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='ctl' and '工人丢失' in routes[0][3],routes
+                del env['PL_EXPIRE_PROOF']; native_path.write_bytes(native_bytes)
+                del env['PL_GONE_WORKER']; ticket.write_bytes(snapshot)
+                env['PL_BAD_WORKER']='up-worker'
+                routes,result=deliveries()
+                assert not routes and '无法确认工人状态' in result.stderr,(routes,result.stderr)
+                del env['PL_BAD_WORKER']
+                print('PASS silence B丢失：规划派工一次通知、跨进程重启去重、失效/第二次proof失效转主控、unknown不冒充丢失')
+                advance(59000); routes,_=deliveries(); assert not routes,routes
+                advance(1000); routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='planner-pane' and '工人无进展：60000ms' in routes[0][3],routes
+                routes,_=deliveries(); assert not routes,routes
+                advance(59000); routes,_=deliveries(); assert not routes,routes
+                call('append',name,'--','working: 新进度重新计时',actor='up-worker')
+                advance(59000); routes,_=deliveries(); assert not routes,routes
+                advance(1000); routes,_=deliveries(); assert len(routes)==1 and '工人无进展' in routes[0][3],routes
+                print('PASS silence B停滞：假钟阈值、成功wake低频去重、新业务事件重置，通知收据不重置业务时钟')
+                ticket.write_bytes(snapshot)
+                h=call('handoff-send',name,'--','controller','watch-wait','1','等待已有工具').stdout.strip()
+                for verb in ['received','accept']: handoff(verb,h)
+                cli('qwb-send.sh','activity','--task',ticket,'--event',h,'--wait-ms','120000','--reason','fixture bounded tool wait')
+                advance(60000); routes,_=deliveries(); assert not routes,routes
+                env['PL_GONE_WORKER']='up-worker'; routes,_=deliveries()
+                assert len(routes)==1 and '工人丢失' in routes[0][3],routes
+                del env['PL_GONE_WORKER']
+                ticket.write_bytes(snapshot)
+                # 私有持久快照移除规划授权，模拟原派工者为主控；不会启动任何工人。
+                d=read(name); d.pop('planning'); d['ops']['up-dispatch']['owner']='ctl'
+                body=snapshot.split(b'\n<!-- qwb-collab-v1\n')[0]
+                ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(d,ensure_ascii=False).encode()+b'\n-->\n')
+                env['PL_GONE_WORKER']='up-worker'; routes,_=deliveries()
+                assert len(routes)==1 and routes[0][2]=='ctl' and '工人丢失' in routes[0][3],routes
+                call('append',name,'--','done: 工人已经完成',actor='up-worker')
+                routes,_=deliveries(); assert all('工人丢失' not in r[3] for r in routes),routes
+                print('PASS silence B边界：合理wait抑制停滞但不吞丢失；无规划授权归主控、已done不误报')
+            finally:
+                for key in ['PL_GONE_WORKER','PL_BAD_WORKER','PL_EXPIRE_PROOF','PL_CLOCK','QWB_NOW_MS_CMD']: env.pop(key,None)
+                runtime_bin=saved_bin; script.write_bytes(original_script); ticket.write_bytes(original_ticket); native_path.write_bytes(native_bytes); config.write_bytes(config_bytes)
+        watch_checks()
+        if os.environ.get('QWB_SILENCE_WATCH_ONLY')=='1': return
         call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
         call('append',name,'--event-id','up-blocked','--','blocked: 等待技术处理',actor='up-worker')
         # 红证使用同一新用例和公开入口，仅替换本私有项目运行时脚本。

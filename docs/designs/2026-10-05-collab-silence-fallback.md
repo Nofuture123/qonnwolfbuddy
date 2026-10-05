@@ -5,8 +5,8 @@
 ## 已确认范围与前提
 - A/B/C 对所有已迁票生效。B 的最近派工者为规划且本票授权身份有效时给规划，其余给主控；未迁旧票保持原行为。
 - 已迁票逐字节兼容仅覆盖非纯进度、未耗尽、工人未丢失/停滞的输入；旧断言按新契约改写并逐条报告。
-- `handoffs.recipient` 恒为 controller，并未保存每次实际收件角色；原目标只能按到期时原路由规则判定，不能声称还原历史三次真实目标。建议升级摘要明确“原路由目标（当前判定）”，历史实际目标写 unknown。
-- “直到接收、不会无界增长”建议解释为重提频率有上限、transport_count 封顶、每条交接不派生无限新交接；既有逐次审计 events/wake 行仍随提醒次数增长。若要求整票字节恒定，会改变审计模型，需另行裁决。
+- `handoffs.recipient` 恒为 controller，并未保存每次实际收件角色；升级摘要写“原路由目标（按当前规则判定）”，不声称历史实际目标。
+- “有界”按主控裁决指重提频率有上限、transport_count封顶、不派生新交接；审计events/wake行可随真实提醒增长。
 - 工人丢失只认 `worker_lost` 的 pane_not_found；空 agent、查询失败均 unknown，不推断死亡。沿用最近一条有效 dispatch 的工人边界，不在本票扩成多工人监控。
 
 ## A：纯进度分类与静默
@@ -23,7 +23,7 @@
 
 ## B：复用已有丢失判定、时间与去重
 - 在已迁 collect_due 提前 continue 前补检查；phase 非 done/verified、最近有效 dispatch 尚无对应 op 的 done/not-sent，且没有 accepted 门禁结论的票参与。
-- 调用现有 worker_lost，不改 lib；时间仍用 now_ms/QWB_REWAKE_MS 和 ts_epoch。已迁票用最近业务事件的 at，不能用每轮 pending/transport/wake 都会更新的 mtime。
+- 调用现有 worker_lost，不改其定义；主控04:28:33Z允许在途票每轮新增一次工人pane只读探针，其余Herdr调用对照不变。时间仍用 now_ms/QWB_REWAKE_MS 和 ts_epoch；已迁票用业务事件at，不用通知自身会更新的mtime。
 - “任何新事件”指外部业务动作/工人进度/received/accept/activity 等；排除监督自身 handoff-pending、handoff-transport、wake，避免通知本身无限推迟兜底。新业务事件立即重置静默计时。
 - 路由按最近 dispatch 的真实 ops.owner：等于本票规划 grant pane 且双 identity proof 有效才给规划；主控派发、其他 owner、身份未知/失效均给当前主控。不借兜底扩大门禁或规划权限。
 - 与普通 handoff 分成独立 due 条目，复用 compose_msg/route_gate_due 与 wake-check/wake；有 pending 不遮失联，失联也不吞 pending。B 不扣 handoff 预算。
@@ -42,7 +42,7 @@
 - 重提周期固定 `max(1800000ms, min(86400000ms, 有效QWB_REWAKE_MS或INTERVAL))`，最多每30分钟一次、无需新配置；quiet 不抑制无人接收的动作交接。
 - 主控原交接和已升级交接都按该周期继续提，直到 received/handled；仍使用原 event_id，transport_count 恒为3，transport_at 及普通审计事件记录重提，不递归新建 handoff 或新增无限计数。
 - 耗尽收据在 API/--block 输出前原子发布，保留既有“先记尝试”的崩溃语义：发布失败不投；发布后崩溃最多等一个低频周期再提，不能声称 API 已成功或 received。
-- 摘要带原交接 ID、原路由角色/pane（历史实际投递目标 unknown）、已尝试3次和升级/重提标记。规划后来按原权限 received/handled 后停止本条提醒，既有 planner-result 原子上行照常且唯一。
+- 摘要带原交接ID、原路由角色/pane（按当前规则判定）、已尝试3次和升级/重提标记。规划后来按原权限received/handled后停止本条提醒，既有planner-result原子上行照常且唯一。
 - 不修改 events/handoffs schema、计数上限、owner_fp/op/prepared、接班证明或 wait；需修改 send 薄参数入口，这一点请求随设计确认。旧耗尽交接没有升级收据时按上述规则补一次。
 
 ## 验收与提交
