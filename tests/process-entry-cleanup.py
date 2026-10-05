@@ -123,12 +123,46 @@ os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
 
 
 def check_full_gate():
-    # The exported checkout is private: replace only the four stage boundaries.
+    # Retry windows are mocked: scheduling backoff must never weaken the 2s measurement.
+    import contextlib
+    import importlib.util
+    import io
+    from unittest.mock import patch
+    spec = importlib.util.spec_from_file_location('subscribe_reap', ROOT / 'tests/subscribe-reap.py')
+    reap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reap)
+    for misses in (5, 2):
+        outcomes = [reap.MissedWindow(dict(reader_age=2.1)) for _ in range(misses)]
+        if misses < 5:
+            outcomes.append(dict(reader_age=.1))
+        output = io.StringIO()
+        with patch.object(reap, 'probe_once', side_effect=outcomes) as once, \
+                patch.object(reap.time, 'sleep') as sleep, contextlib.redirect_stdout(output):
+            if misses == 5:
+                try:
+                    reap.probe(ROOT / 'bin', 'normal')
+                except AssertionError as error:
+                    assert str(error) == ('未能验证（测量环境问题，非产品缺陷）：机器负载过高，5 次都没能'
+                                          '在产品 2 秒超时前建立观察窗口；模式=normal，各次读龄=[2.1, 2.1, 2.1, 2.1, 2.1]')
+                else:
+                    raise AssertionError('missed windows must not pass')
+            else:
+                result = reap.probe(ROOT / 'bin', 'normal')
+                assert result['attempts'] == 3 and result['reader_ages'] == [2.1, 2.1, .1], result
+            waits = [call.args[0] for call in sleep.call_args_list]
+            assert waits == ([1, 2, 4, 8] if misses == 5 else [1, 2]), waits
+            assert once.call_count == (5 if misses == 5 else 3), once.call_args_list
+            lines = output.getvalue().splitlines()
+            expected_waits = [1, 2, 4, 8, 0] if misses == 5 else [1, 2]
+            assert len(lines) == misses and all(line.startswith('INCONCLUSIVE subscribe normal:') and
+                   f'retry_wait={wait}s' in line for line, wait in zip(lines, expected_waits)), lines
+    # The exported checkout is private: replace all five stage boundaries.
     stages = ['tests/smoke.sh', 'tests/review-identity.sh',
               'bin/qwb-lint.sh', 'tests/collab-all.sh']
     for index, stage in enumerate(stages):
         (ROOT / stage).write_text(f'''#!/usr/bin/env bash
 set -eu
+[[ "$QWB_FULL_GATE_REAP" == 1 ]]
 if [[ "$GATE_CASE" == term ]]; then
   . "$PWD/tests/process-fixture.sh"
   qwb_test_scope "$@"
@@ -138,32 +172,47 @@ printf '%s\\n' '{index}:stderr' >&2
 touch "$GATE_OBSERVER/{index}.ready"
 while [[ ! -f "$GATE_OBSERVER/0.ready" || ! -f "$GATE_OBSERVER/1.ready" || ! -f "$GATE_OBSERVER/2.ready" || ! -f "$GATE_OBSERVER/3.ready" || "$GATE_CASE" == term ]]; do sleep .02; done
 printf '%s\\n' '{index}:end'
+touch "$GATE_OBSERVER/{index}.end"
 [[ "$GATE_CASE" != '{index}' ]] || exit 7
 ''')
+    (ROOT / 'tests/subscribe-reap.py').write_text('''import os,sys,time
+from pathlib import Path
+observer=Path(os.environ['GATE_OBSERVER'])
+assert all((observer/f'{index}.end').exists() for index in range(4)), 'tail started before parallel stages ended'
+print('4:stdout',flush=True)
+print('4:stderr',file=sys.stderr,flush=True)
+(observer/'4.ready').touch()
+while os.environ['GATE_CASE']=='tail-term':time.sleep(.02)
+print('4:end',flush=True)
+sys.exit(7 if os.environ['GATE_CASE']=='4' else 0)
+''')
     (ROOT / 'qwb.config.sh').write_text("QWB_GATE_FULL='bash tests/full-gate.sh'\n")
-    expected = ''.join(f'{index}:stdout\n{index}:stderr\n{index}:end\n' for index in range(4))
+    expected = ''.join(f'{index}:stdout\n{index}:stderr\n{index}:end\n' for index in range(5))
     for interpreter in ['bash', '/bin/bash']:
-        for case in ['success', '0', '3', 'term']:
+        for case in ['success', '0', '3', '4', 'term', 'tail-term']:
             with tempfile.TemporaryDirectory(prefix='gate-observe-', dir=BASE) as temporary:
                 observer = Path(temporary)
                 env = dict(os.environ, GATE_CASE=case, GATE_OBSERVER=temporary)
                 before = set(BASE.iterdir())
-                command = [interpreter, 'tests/full-gate.sh'] if case == 'term' else [interpreter, 'bin/qwb-test.sh', 'full']
+                interrupted = case in ['term', 'tail-term']
+                command = [interpreter, 'tests/full-gate.sh'] if interrupted else [interpreter, 'bin/qwb-test.sh', 'full']
                 process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, text=True)
                 try:
-                    if case == 'term':
+                    if interrupted:
                         deadline = time.monotonic() + 20
-                        while not all((observer / f'{index}.ready').exists() for index in range(4)):
-                            assert process.poll() is None, 'gate exited before all stages started'
-                            assert time.monotonic() < deadline, 'stages did not run concurrently'
+                        count = 5 if case == 'tail-term' else 4
+                        while not all((observer / f'{index}.ready').exists() for index in range(count)):
+                            assert process.poll() is None, 'gate exited before target stages started'
+                            assert time.monotonic() < deadline, 'target stages did not start'
                             time.sleep(.02)
                         process.terminate()
                     text, _ = process.communicate(timeout=20)
                     rc = process.returncode
-                    assert rc == (143 if case == 'term' else 0 if case == 'success' else 1), (command, case, rc, text)
-                    if case != 'term':
-                        assert text == expected + ('' if case == 'success' else '门失败（full）：bash tests/full-gate.sh 退出码=1\n'), (case, text)
+                    assert rc == (143 if interrupted else 0 if case == 'success' else 1), (command, case, rc, text)
+                    if not interrupted:
+                        failure = 'FAIL  订阅子进程回收公开入口回归\n' if case == '4' else ''
+                        assert text == expected + failure + ('' if case == 'success' else '门失败（full）：bash tests/full-gate.sh 退出码=1\n'), (case, text)
                     assert set(BASE.iterdir()) == before, (case, 'temporary directory survived')
                     assert not any(str(ROOT) in row[4] and row[0] != str(os.getpid())
                                    for row in snapshot()), (case, 'fixture process survived')

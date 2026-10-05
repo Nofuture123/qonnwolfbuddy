@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 全门四段独立日志；全部收齐后按原顺序汇报，失败不取消其他段。
+# 全门四段并发收齐后按原顺序汇报，再串行量订阅回收；失败不取消后续段。
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT" || exit 1
@@ -25,7 +25,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 for ((i=0; i<${#STAGES[@]}; i++)); do
-  bash "${STAGES[$i]}" >"$TMPD/$i.log" 2>&1 &
+  QWB_FULL_GATE_REAP=1 bash "${STAGES[$i]}" >"$TMPD/$i.log" 2>&1 &
   PIDS+=("$!")
 done
 rc=0
@@ -36,4 +36,14 @@ done
 for ((i=0; i<${#STAGES[@]}; i++)); do
   cat "$TMPD/$i.log" || rc=1
 done
+# Keep the serial probe supervised and visible to the same interruption cleanup.
+python3 -B "$ROOT/tests/process_fixture.py" --command \
+  python3 -B "$ROOT/tests/subscribe-reap.py" >"$TMPD/reap.log" 2>&1 &
+PIDS=("$!")
+wait "${PIDS[0]}" || {
+  echo "FAIL  订阅子进程回收公开入口回归" >>"$TMPD/reap.log"
+  rc=1
+}
+PIDS[0]=""
+cat "$TMPD/reap.log" || rc=1
 exit "$rc"

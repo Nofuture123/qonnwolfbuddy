@@ -5016,7 +5016,11 @@ python3 -B "$ROOT/tests/smoke-install.py" check "$GOLDEN" "$GOLDEN_MANIFEST" \
 
 echo "== 88. 值守退出回收订阅读账及孙进程 =="
 # The probe checks product-owned groups before any shared fixture cleanup can hide a leak.
-python3 -B "$ROOT/tests/subscribe-reap.py" || bad "订阅子进程回收公开入口回归"
+if [[ "${QWB_FULL_GATE_REAP:-}" == 1 ]]; then
+  echo "INFO  订阅回收实测由全门尾段串行执行"
+else
+  python3 -B "$ROOT/tests/subscribe-reap.py" || bad "订阅子进程回收公开入口回归"
+fi
 
 # 新节必须加在本行之前
 echo

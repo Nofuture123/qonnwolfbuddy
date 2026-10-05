@@ -50,9 +50,12 @@ def probe(source, mode, immediate=False, wait_seconds=5, report=None, measure=Fa
             if report:
                 Path(report).write_text(json.dumps(outcome, ensure_ascii=False, indent=2))
             age = 'not-started' if outcome['reader_age'] is None else f'{outcome["reader_age"]:.6f}s'
+            retry_wait = 2 ** (attempt - 1) if attempt < attempts else 0
             print(f'INCONCLUSIVE subscribe {mode}: attempt={attempt}/{attempts} '
                   f'reader_age={age}; stage={outcome.get("window_stage", "wake-exit")}; '
-                  'no live observation window', flush=True)
+                  f'no live observation window; retry_wait={retry_wait}s', flush=True)
+            if retry_wait:
+                time.sleep(retry_wait)
             continue
         outcome.update(attempts=attempt, reader_ages=read_ages + [outcome['reader_age']])
         if report:
