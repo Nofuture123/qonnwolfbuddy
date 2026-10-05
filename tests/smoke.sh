@@ -4849,8 +4849,8 @@ echo "== 74. 生产运行时返修定向负例 =="
 runtime_out="$(<"$TMP/runtime-readiness.log")"; runtime_rc=1
 [[ ! -f "$TMP/runtime-readiness.rc" ]] || read -r runtime_rc < "$TMP/runtime-readiness.rc"
 if [[ "$runtime_rc" -eq 0 ]] && grep -q 'RUNTIME READINESS PASS' <<<"$runtime_out" &&
-  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 20 ]]; then
-  ok "锁竞争/生命周期、投递失败与身份拒绝定向测试 20 项通过"
+  [[ "$(printf '%s\n' "$runtime_out" | grep -c '^PASS  ')" -eq 28 ]]; then
+  ok "锁竞争/生命周期、投递失败、提示词提交确认与身份拒绝定向测试 28 项通过"
 else
   bad "运行时定向测试失败（rc=$runtime_rc)"
   printf '%s\n' "$runtime_out"
