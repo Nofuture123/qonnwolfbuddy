@@ -95,8 +95,20 @@ elif args[:2] == ["status", "--json"]:''')
     def evidence():
         line=next(x for x in reversed(ticket.read_text().splitlines()) if x.startswith('working: worker-activity '))
         return line,json.loads(line.split(' evidence=',1)[1])
-    def capture(result):
-        return result.returncode,result.stdout,result.stderr,ticket.read_bytes(),log.read_bytes()
+    def capture(result,tool='pi'):
+        calls=log.read_bytes()
+        if tool=='claude':
+            # Over-limit Claude prompts are sent as a pointer line; compare the instruction it points to.
+            rows=[]
+            for line in calls.decode().splitlines():
+                row=json.loads(line)
+                if row[:2]==['agent','prompt'] and '完整指令文件：' in row[3]:
+                    assert len(row[3])<=600 and '\n' not in row[3],row[3]
+                    name,_=json.JSONDecoder().raw_decode(row[3].split('完整指令文件：',1)[1])
+                    row[3]=Path(name).read_text()
+                rows.append(json.dumps(row))
+            calls=('\n'.join(rows)+'\n').encode()
+        return result.returncode,result.stdout,result.stderr,ticket.read_bytes(),calls
     baseline=bool(os.environ.get('QWB_REUSE_BINDING_BASELINE'))
     install(baseline); e=reset(); first,elapsed=run(e)
     assert first.returncode==0,(first.stdout,first.stderr)
@@ -147,8 +159,8 @@ elif args[:2] == ["status", "--json"]:''')
         for use_old in (True,False):
             install(use_old); e=reset(mode,tool)
             first,elapsed=run(e); assert first.returncode==0,(first.stdout,first.stderr)
-            one=capture(first); _,observed=evidence()
-            again,elapsed=run(e); two=capture(again)
+            one=capture(first,tool); _,observed=evidence()
+            again,elapsed=run(e); two=capture(again,tool)
             if tool=='pi': assert again.returncode==0,(again.stdout,again.stderr)
             else:
                 assert observed['activity']=='unknown' and 'session' not in observed,observed
