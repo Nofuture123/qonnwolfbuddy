@@ -505,9 +505,10 @@ smoke_start() {
     job="$TMP/parallel/$name"
     mkdir -p "$job/home/.codex" "$job/tmp" || exit 1
     printf '[projects."/smoke/seed"]\ntrust_level = "trusted"\n' > "$job/home/.codex/config.toml"
-    export HOME="$job/home" TMPDIR="$job/tmp"
+    export HOME="$job/home" TMPDIR="$job/tmp" QWB_TEST_PROCESS_HELPER
     python3 -B "$QWB_TEST_PROCESS_HELPER" --command bash -c '
-      export HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+      HERDR_TEST_SOCKET="$(python3 -B "$QWB_TEST_PROCESS_HELPER" socket)" || exit 1
+      export HERDR_TEST_SOCKET
       exec "$@"
     ' smoke-child "$@" > "$TMP/$name.log" 2>&1
     printf '%s\n' "$?" > "$TMP/$name.rc"
