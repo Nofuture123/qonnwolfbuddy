@@ -56,6 +56,8 @@ elif a[:2]==['tab','create']:
  label=a[a.index('--label')+1];pane='planner-pane' if label=='规划' else ('gate-pane' if label=='门禁' else 'worker-'+label)
  out({'root_pane':{'pane_id':pane,'tab_id':'tab-'+pane,'terminal_id':'terminal-'+pane}})
 elif a[:2]==['agent','get']:
+ if a[2]=='up-worker' and os.environ.get('PL_REAUTHORIZE_REUSE'):
+  out({'type':'agent_info','agent':{'name':'up-worker','pane_id':'up-worker','agent':'pi','workspace_id':'ws','foreground_cwd':p,'agent_status':s['up-worker']['status'],'state_change_seq':s.get('submit_seq',185)}});sys.exit()
  if not a[2].startswith('worker-'): print(json.dumps({'error':{'code':'agent_not_found'}}));sys.exit(1)
  out({'type':'agent_info','agent':{'pane_id':a[2],'agent_status':'idle','state_change_seq':s.get('submit_seq',185)}})
 elif a[:2]==['agent','start']:
@@ -457,7 +459,7 @@ file.write_text(json.dumps(s))
                     if f not in initial: f.unlink()
                 for f,raw in initial.items(): f.write_bytes(raw)
         assert not failed, ('scenario-names failures',failed)
-    scenario_name_checks()
+    if os.environ.get('QWB_REAUTHORIZE_ONLY')!='1':scenario_name_checks()
     if os.environ.get('QWB_SCENARIO_NAMES_ONLY'):
         raise SystemExit(0)
     def upward_checks():
@@ -694,9 +696,123 @@ file.write_text(json.dumps(s))
                     calls=native_calls(log.read_text().splitlines(),p)
                     assert not any(a[:2]==['pane','run'] and a[2]=='ctl' for a in calls),calls
                     print('PASS escalation 场景9：真实hook block无pane/config为空，先叫规划，再升级以stdout返回且rc2',flush=True)
+                def reauthorize_checks():
+                    # 复用真实授权/派发、假时钟和原生会话绑定；模型与Herdr边界仍全部隔离。
+                    first();call('append',name,'--','working: 收工未回票核查：未完成，等待主控重新授权',actor='planner-pane')
+                    advance(179999);routes,_=deliveries();assert not routes,routes
+                    advance(1);routes,_=deliveries()
+                    assert len(routes)==1 and routes[0][2]=='ctl' and '升级主控' in routes[0][3],routes
+                    approval2=dict(approval,budget=2,evidence='主控核原工人未完成，授权同spec累计总上限2')
+                    authorization=payload('reauthorize.json',approval2)
+                    block=re.search(r'<!-- qwb-reauthorize:authorize actor=controller -->\n```bash\n(.*?)\n```',(p/'qwbuddy/roles/常驻流程.md').read_text(),re.S)
+                    assert block,'安装后说明书缺少续派授权命令'
+                    doc_script=temp/'reauthorize-doc.sh'
+                    doc_script.write_text('set -euo pipefail\n'+block[1].replace('@ROOT@',str(p)).replace('2026-10-05-hello.md',name).replace('pi-sol-high','sol')+'\n')
+                    cli(str(doc_script))
+                    d=read(name);assert d['planning']['authorization']['budget']==2 and d['spec_rev']==0
+                    routes,_=deliveries()
+                    assert len(routes)==1 and routes[0][2]=='planner-pane' and 'planner-ready spec_rev=0' in routes[0][3],('reauthorize: 最新授权后没有叫副主控续派',routes)
+                    d=read(name);ready=[e for e in d['events'] if e['kind']=='plan-ready' and e['line'].startswith('working: planner-ready')]
+                    assert len(ready)==1 and ready[0]['seq']>max(e['seq'] for e in d['events'] if e['kind']=='plan-authorize')
+                    for _ in range(2):routes,_=deliveries();assert not routes,routes
+                    for h in pending():
+                        for verb in ['received','accept','prepared','handled']:handoff(verb,h['event_id'],actor='planner-pane' if 'planner-ready' in h['payload'] else 'ctl')
+                    call('start-check',name,'--','sol',actor='planner-pane')
+                    env['PL_REAUTHORIZE_REUSE']='1'
+                    before_native=json.loads(native.read_text())['up-worker'];mark=count()
+                    cli('qwb-run.sh','--task',ticket,'--worker','sol','--here','--name','up-worker',actor='planner-pane')
+                    calls=native_calls(log.read_text().splitlines()[mark:],p)
+                    assert not any(a[:2] in (['tab','create'],['agent','start'],['pane','send-keys']) for a in calls),calls
+                    assert len([a for a in calls if a[:2]==['agent','prompt'] and a[2]=='up-worker'])==1,calls
+                    assert json.loads(native.read_text())['up-worker']==before_native
+                    d=read(name);dispatches=[e for e in d['events'] if e['kind']=='dispatch']
+                    assert len(dispatches)==2 and all(e['spec_rev']==0 for e in dispatches) and d['claim'] is None
+                    assert 'pane=up-worker' in dispatches[-1]['line'] and 'agent=up-worker' in dispatches[-1]['line']
+                    bound=[e for e in d['events'] if e['line'].startswith('working: worker-activity op='+dispatches[-1]['op_id'])]
+                    assert len(bound)==1 and json.loads(bound[0]['line'].split(' evidence=',1)[1])['session']==str(session)
+                    # 派工者读回并办理本人start-claim的就绪收据，随后扫描不得再叫任何角色。
+                    for h in pending():
+                        if h['payload'].startswith('working: planner-ready'):
+                            for verb in ['received','accept','prepared','handled']:handoff(verb,h['event_id'],actor='planner-pane')
+                    for _ in range(2):
+                        routes,_=deliveries();assert not routes,routes
+                        assert len([e for e in read(name)['events'] if e['kind']=='plan-ready'])==1
+                    call('append',name,'--event-id','reauthorize-delivery','--','done: 同票原窗口完成并交付',actor='up-worker')
+                    routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='ctl' and 'source:reauthorize-delivery' in routes[0][3],routes
+                    routes,_=deliveries();assert not routes,routes
+                    env.pop('PL_REAUTHORIZE_REUSE',None)
+                    print('PASS reauthorize 完整链：60秒副主控一次→180秒升级主控一次→总上限2重新就绪副主控一次→start-check/run原窗口原会话→done主控一次；续派后不重复就绪',flush=True)
+                    setup();before=ticket.read_bytes()
+                    denied=call('plan-authorize',name,'--',payload('reauthorize-exhausted.json',dict(approval,evidence='新的同额授权')),ok=False)
+                    assert denied.returncode==255 and denied.stdout=='' and ticket.read_bytes()==before
+                    assert all(text in denied.stderr for text in ['总上限','已用1次','budget=2','"budget":2']),denied.stderr
+                    for verb,args in [('start-check',['sol']),('start-claim',['exhausted-retry','sol'])]:
+                        denied=call(verb,name,'--',*args,actor='planner-pane',ok=False)
+                        assert '启动预算已耗尽' in denied.stderr and ticket.read_bytes()==before,denied
+                    mark=count();run(name,actor='planner-pane',ok=False);no_dispatch_since(mark)
+                    routes,_=deliveries();assert not routes,routes
+                    # 相同授权内容重放仍成功且保留原授权交接；不提供新的累计额度或就绪门铃。
+                    call('plan-authorize',name,'--',payload('reauthorize-replay.json',approval))
+                    routes,_=deliveries()
+                    assert len(routes)==1 and routes[0][2]=='planner-pane' and 'implementation-authorized' in routes[0][3] and 'planner-ready' not in routes[0][3],routes
+                    assert not any(e['kind']=='plan-ready' for e in read(name)['events'])
+                    print('PASS reauthorize 预算：同额新授权当场拒绝并示例budget=2，票字节不变且不门铃；原授权重放保持既有交接、没有就绪门铃，三个派工入口仍拒绝',flush=True)
+                    def compare(label,snapshot):
+                        # 基线仅撤掉本票就绪判断与授权拒绝；全部依赖仍取当前脚本。
+                        raw=scripts['qwb-wake.sh']
+                        text=raw.decode();start='# REAUTHORIZE_READY_BEGIN\n';end='# REAUTHORIZE_READY_END\n'
+                        assert start in text and end in text
+                        text=re.sub(r'        '+start+r'.*?        '+end,'        exit 1 if grep { $_->{kind} eq "dispatch" && $_->{spec_rev}==$d->{spec_rev} } @{$d->{events}};\n',text,flags=re.S)
+                        comparison_writer=writer.read_bytes()
+                        old_writer=re.sub(rb'  # REAUTHORIZE_AUTHORIZE_BEGIN\n.*?  # REAUTHORIZE_AUTHORIZE_END\n',b'',comparison_writer,flags=re.S)
+                        assert old_writer!=comparison_writer
+                        observed=[];native_snapshot=native.read_bytes()
+                        try:
+                            for version,writer_version in [(text.encode(),old_writer),(raw,comparison_writer)]:
+                                (runtime/'qwb-wake.sh').write_bytes(version);writer.write_bytes(writer_version);ticket.write_bytes(snapshot);native.write_bytes(native_snapshot);log.write_bytes(b'')
+                                result=cli('qwb-wake.sh','--once','--pane','ctl')
+                                observed.append((result.stdout.encode(),result.stderr.encode(),result.returncode,ticket.read_bytes(),log.read_bytes()))
+                            assert observed[0]==observed[1],('reauthorize byte mismatch',label,[key for key,old,new in zip(['stdout','stderr','rc','ticket','native'],observed[0],observed[1]) if old!=new])
+                        finally:
+                            (runtime/'qwb-wake.sh').write_bytes(raw);writer.write_bytes(comparison_writer)
+                        print('EVIDENCE reauthorize 当前脚本只撤掉本票改动，stdout/stderr/rc/票/调用逐字节一致：'+label,flush=True)
+                    setup();compare('没有重新授权',ticket.read_bytes())
+                    setup();call('plan-authorize',name,'--',payload('reauthorize-replay.json',approval));compare('重放后额度不足',ticket.read_bytes())
+                    # 在私有快照中冻结边界，检验wake本身；公开授权入口先验证原票拒绝零写。
+                    setup();call('plan-authorize',name,'--',authorization);boundary=ticket.read_bytes()
+                    for state in ['claim','accepted','verified']:
+                        ticket.write_bytes(boundary);d=read(name)
+                        if state=='claim':
+                            call('gate-assign',name,'--','gate',payload('reauthorize-held-gate.json',{'candidate':str(candidate),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(payload('reauthorize-held-env.json',{})),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}))
+                            call('claim',name,'--','reauthorize-held',actor='gate-pane');d=read(name)
+                            assert d['claim']['owner']=='gate-pane'
+                        elif state=='verified':call('state',name,'--','verified');d=read(name)
+                        else:
+                            call('gate-assign',name,'--','gate',payload('reauthorize-gate.json',{'candidate':str(candidate),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(payload('reauthorize-env.json',{})),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}))
+                            d=read(name);d['gate']['verdict']='accepted';write_state(d)
+                        before=ticket.read_bytes();call('plan-authorize',name,'--',authorization,ok=False);assert ticket.read_bytes()==before
+                        routes,_=deliveries();assert all('planner-ready spec_rev=' not in a[3] for a in routes),routes
+                        assert not any(e['kind']=='plan-ready' for e in read(name)['events'])
+                    # 新spec授权路径仍像当前仅撤本票的脚本一样，包含确切就绪门铃与后续派工。
+                    setup();held_intake=other_dir/intake_name;intake_snapshot=held_intake.read_bytes()
+                    held_intake.rename(new_intake)
+                    try:
+                        change=call('handoff-send',intake_name,'--','controller','reauthorize-revision','1','同包新规格').stdout.strip()
+                        call('plan-revision',name,'--expect',read(name)['rev'],'--',payload('reauthorize-revision.json',dict(source_task=intake_name,source_event=change,spec='同包新规格',constraints='单机，不联网',scenarios=scenarios,needs=request['needs'])),actor='planner-pane')
+                        call('revise',name,'--expect',read(name)['rev'],'--',change,actor='planner-pane')
+                    finally:
+                        new_intake.write_bytes(intake_snapshot);new_intake.rename(held_intake)
+                    call('plan-authorize',name,'--',payload('reauthorize-new-spec.json',approval))
+                    compare('修订新spec授权',ticket.read_bytes())
+                    d=read(name);assert d['spec_rev']==1 and d['planning']['ready']['status']=='ready'
+                    call('start-claim',name,'--','reauthorize-new-spec','sol',actor='planner-pane');call('release',name,'--','reauthorize-new-spec',actor='planner-pane')
+                    print('PASS reauthorize 边界：claim/accepted/verified不就绪；没有重授权与新spec路径逐字节不变，新spec start-claim仍成功',flush=True)
                 try:
+                    if os.environ.get('QWB_REAUTHORIZE_ONLY')=='1':
+                        reauthorize_checks();return
                     if os.environ.get('QWB_ESCALATION_BLOCK_ONLY')=='1':
                         block_check();return
+                    reauthorize_checks()
                     first('规划');call('append',name,'--','working: 派工者已核查，等待主控处理',actor='planner-pane')
                     advance(179999);routes,_=deliveries();assert not routes,routes
                     advance(1);escalation('规划')
@@ -738,7 +854,7 @@ file.write_text(json.dumps(s))
                     block_check()
                 finally:
                     for n,raw in scripts.items():(runtime/n).write_bytes(raw)
-                    writer.write_bytes(writer_current)
+                    writer.write_bytes(writer_current);env.pop('PL_REAUTHORIZE_REUSE',None)
                     for f in others:(other_dir/f.name).rename(f)
                     other_dir.rmdir()
             try:
@@ -751,7 +867,7 @@ file.write_text(json.dumps(s))
                 base=ticket.read_bytes()
                 # 临时Git自身的clean候选；不碰源码仓的任何worktree元数据。
                 candidate=temp/'silent-end-candidate';git('worktree','add','-q','--detach',str(candidate))
-                if os.environ.get('QWB_ESCALATION_ONLY')=='1':
+                if os.environ.get('QWB_ESCALATION_ONLY')=='1' or os.environ.get('QWB_REAUTHORIZE_ONLY')=='1':
                     escalation_checks();return
                 # 同一私有已派快照改为门控归属；身份/claim/门铃仍走公开入口。
                 state=read(name);state.pop('planning');state['ops']['up-dispatch']['owner']='ctl'
@@ -848,7 +964,7 @@ file.write_text(json.dumps(s))
             finally:
                 runtime_bin=saved_bin;wake.write_bytes(wake_bytes);writer.write_bytes(writer_bytes);ticket.write_bytes(original_ticket);config.write_bytes(config_bytes);native.write_bytes(native_bytes)
                 for key in ['PL_CLOCK','QWB_NOW_MS_CMD']:env.pop(key,None)
-        if os.environ.get('QWB_SILENT_END_ONLY')=='1':
+        if os.environ.get('QWB_SILENT_END_ONLY')=='1' or os.environ.get('QWB_REAUTHORIZE_ONLY')=='1':
             silent_end_checks();return
         if os.environ.get('QWB_SILENCE_DELIVERY_ONLY')!='1': watch_checks()
         if os.environ.get('QWB_SILENCE_WATCH_ONLY')=='1': return
@@ -1165,7 +1281,7 @@ file.write_text(json.dumps(s))
             ticket.write_bytes(original); native_path.write_bytes(native_bytes)
             for script,raw in originals.items(): (runtime/script).write_bytes(raw)
             for f in others: (other_dir/f.name).rename(f)
-    if os.environ.get('QWB_PLANNING_UPWARD_ONLY')=='1':
+    if os.environ.get('QWB_PLANNING_UPWARD_ONLY')=='1' or os.environ.get('QWB_REAUTHORIZE_ONLY')=='1':
         upward_checks()
         raise SystemExit(0)
     def accept_land_checks():

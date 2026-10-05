@@ -1134,6 +1134,14 @@ REPORT
   fail('仅主控明确启动授权') unless $controller && @args==1;
   my ($a)=json_file($args[0]); $a=authorization($a);
   my $p=$data->{planning} // fail('先以new登记本票规划'); fail('claim在途/已验收历史不改') if $data->{claim} || accepted_history();
+  # REAUTHORIZE_AUTHORIZE_BEGIN
+  my $used=grep { $_->{kind} eq 'dispatch' && $_->{spec_rev}==$data->{spec_rev} && !($data->{gate} && exists($data->{gate}{dispatches}{$_->{op_id}})) } @{$data->{events}};
+  if ($a->{budget}<=$used && $json->encode($a) ne $json->encode($p->{authorization})) {
+    my $next=$used+1;
+    my $example=$json->encode({workers=>$a->{workers},permissions=>$a->{permissions},evidence=>$a->{evidence},budget=>$next});
+    fail("预算是本规格版本的累计总上限，已用${used}次；要再派一次应填 budget=${next}（上限64）；示例：$example");
+  }
+  # REAUTHORIZE_AUTHORIZE_END
   $p->{authorization}=$a; $p->{ready}={}; $line="working: implementation-authorized spec_rev=$data->{spec_rev} budget=$a->{budget}"; append_body($line);
 } elsif ($cmd eq 'start-check') {
   start_check($args[0]); print "ready\n"; exit;

@@ -641,13 +641,19 @@ collect_due() {
   while IFS=$'\t' read -r f st; do
     OPEN_N=$((OPEN_N + 1))
     if [[ "$DRY" -eq 0 ]] && grep -q '^<!-- qwb-collab-v1$' "$f"; then
-      # 几十张票扫描：已派当前spec不重复派；仅发一次明确就绪事件，仍由受限授权规划/主控调用run。
+      # 最新授权之后未派、当前spec累计预算有余量才再就绪；派工仍走原校验。
       plan_data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
       collect_worker_due "$f" "$st" "$plan_data" "$out" || return 3
       if printf '%s' "$plan_data" | perl -MJSON::PP -0777 -e '
         my $d=decode_json(<STDIN>); exit 1 unless $d->{planning};
         exit 1 if $d->{claim} || $d->{planning}{pending_revision} || $d->{phase} eq "verified" || ($d->{gate} && $d->{gate}{verdict} eq "accepted");
-        exit 1 if grep { $_->{kind} eq "dispatch" && $_->{spec_rev}==$d->{spec_rev} } @{$d->{events}};
+        # REAUTHORIZE_READY_BEGIN
+        my $authorized=0;
+        for (@{$d->{events}}) { $authorized=$_->{seq} if $_->{kind} eq "plan-authorize" && $_->{spec_rev}==$d->{spec_rev} }
+        my @sent=grep { $_->{kind} eq "dispatch" && $_->{spec_rev}==$d->{spec_rev} && !($d->{gate} && exists $d->{gate}{dispatches}{$_->{op_id}}) } @{$d->{events}};
+        exit 1 if grep { $_->{seq}>$authorized } @sent;
+        exit 1 if @sent && @sent>=($d->{planning}{authorization}{budget} // 0);
+        # REAUTHORIZE_READY_END
       '; then
         owner="$(awk 'NR==1 {print $NF}' "$PROJECT_ROOT/qwbuddy/.controller.lock/owner")"
         plan_rc=0
