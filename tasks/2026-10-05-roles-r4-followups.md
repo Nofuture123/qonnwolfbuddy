@@ -95,3 +95,7 @@ Then  既有用例全部通过；未涉及本票改动的输出与起点提交�
 
 - 不改任何放行条件、身份校验与权限；不让未授权的派工变得可行；说明书里不写没有对照代码核实过的命令或字段。
 - 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
+working: 2026-10-05T09:27:35Z 主控手工派发（同 Space 独立 Tab，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6-astra --thinking high） agent=qwb-roles-r4-followups pane=w14Z:p1G dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-r4-followups base=c62fea9
+working: 2026-10-05T09:28:46Z 执行者已完整读取规格及演练记录；核对 qwb-run 的同名工人复用须身份、目录、Space、原dispatch与真实idle全部吻合，查询失败或忙碌均拒绝；旧done仍通知主控，是否送门控由主控gate-assign决定。接下来先补红测，再最小修复义务分类和lint，补说明书分支。
+needs-decision: 2026-10-05T09:30:54Z U3前提与公开入口实测不符：本副本起点c62fea9中，plan-ready生成的blocked经qwb-wake --once送planner-pane，不是主控；controller_hint未将plan-ready列为主控专属。证据=/Users/rocky/projects/qonnwolfbuddy/.worktrees/roles-r4-followups/.qwb-tmp/roles-r4-evidence/red-ready.log（末尾fakeHerdr原文），该红不是目标缺陷红。请裁决：A保留现有路由，仅同spec授权+ready自动满足（建议，符合不改权限范围）；B另授权修正主控路由并同步脚本白名单。其余U2/U4–U9继续实施。
+working: 2026-10-05T09:32:41Z 主控裁决：选 A。保留现有路由（plan-ready 生成的阻塞送规划），不改权限与路由；只做「同一 spec_rev 上主控已 plan-authorize 且随后出现就绪记录之后，这条阻塞自动算已满足」，对规划与主控都不再是未结义务、不再叫醒任何人。任务书里「成为主控的待办」是演练主控的记录（它在 pending 里看到并办了），以你对代码与公开入口的实测为准；说明书相应写成：这条阻塞是预期现象，授权并就绪后自动了结，主控不用办。场景 2、3 里的「主控」按实际收件角色改写。

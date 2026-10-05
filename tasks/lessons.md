@@ -32,3 +32,4 @@
 - [herdr worktree open 自带根 tab](lessons/herdr-worktree-open-自带根tab.md) —— 2026-09-27：方案A 新建 Space 工人直落根 pane 不再 tab create；根 tab 曾是 finish 单点身份证据，缺失时 --root-tab-missing 显式兜底（其余证据齐全+留痕），不静默放行也不死锁。
 - [claude217目录外读取装机时授权](lessons/claude217目录外读取装机时授权.md) —— 2026-09-27：Claude Code 2.1.257+ 目录外读取弹框、答 Block 持久化连 bypass 也拒；init 装机时给 claude 行窄写 --add-dir 项目根，qwb-run 的 `--` 不重复。
 - [JEV角色层与工人注册](lessons/JEV角色层与工人注册.md) —— 2026-09-28：分类稳定、agent 易变；候选注册与启动 argv 分开，额度耗尽须阻止 auto 回退。
+- [任务书前提要对着真实产物核对](lessons/任务书前提要对着真实产物核对.md) —— 主控 2026-10-05：一天五次把没核实的东西当事实写进任务书；第五次（Claude 工人参数白名单没算上安装器写入的 `--add-dir`）离线全过、真机第一步被拒。模板不等于安装后的样子；拿不出实测出处就标推断。
