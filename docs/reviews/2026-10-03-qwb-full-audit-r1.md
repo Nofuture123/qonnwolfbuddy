@@ -313,7 +313,9 @@ smoke 没有变快：装机与值守的提速被新增的测试进程监督、�
 
 `qonnwolfmcp` 与 `video_analysis/class-video-analysis` 升级到当前主干并换成五角色工人表：先在本仓临时目录对两个项目的配置副本试装，再动真项目。做法：备份 `config.sh`、`workers.sh`、`dispatch-rules.json` 到本仓 `.qwb-tmp/upgrade-2026-10-05/<项目>/`；`workers.sh` 与 `dispatch-rules.json` 换成当前模板，`config.sh` 只改 `QWB_WORKERS` 一行；再跑安装器（给三条 Claude 工人声明加上 `--add-dir 项目根`）。结果：两个项目的运行脚本与母本逐字节相同；`qwb-status.sh` 均 rc=0；`qwb-lint.sh` 在 class-video-analysis 通过，在 qonnwolfmcp 仍是升级前就有的那 1 条失败（`2026-09-27-t3d-fold-count.md` 验收场景在派发后被改动）。改动均未提交，留给各项目自己审。两个项目的 `config.sh` 没有新增 `QWB_SILENT_END_MS`、`QWB_ROLE_PI_CONTROL`、`QWB_ROLE_CLAUDE_CONTROL` 三行（脚本对它们有默认值：收工未报告 60 秒、两个常驻职责开关默认关闭）。升级后没有在这两个项目里实际派过票。
 
-`qonnwolf-sites` 没有升级：它的主控当天仍在用旧工人表派工（`2026-10-05-web-cover.md`，09:40Z 派给 `codex`，状态 `blocked`、未结案），换表会去掉它正在用的工人名，留待该票结案并经 Rocky 确认时机后再做。
+`qonnwolf-sites` 当时没有升级（它的主控当天仍在用旧工人表，`2026-10-05-web-cover.md` 09:40Z 派给 `codex`、状态 `blocked` 未结案）。Rocky 同日指示安装后，以 main @ `dec0af6` 用同样的做法升级：运行脚本与母本逐字节相同，`qwb-lint.sh` 通过，`qwb-status.sh` rc=0；它 9 月 26 日定的派工规则（执行用 codex、审核用 Claude）已换成五角色规则，旧文件备份在 `.qwb-tmp/upgrade-2026-10-05/qonnwolf-sites/`。那张未结案的票若要续派，须改用新工人表里的名字。
+
+同日 Rocky 确认「禁止使用 subagent」：`templates/QWBUDDY.md` 硬规矩新增第 7 条，`templates/brief-include.md` 新增一行（提交 `dec0af6`，全门 rc=0、865 PASS / 0 FAIL）。三个已装项目都重跑了安装器拿到新的总说明，并在各自的 `brief-include.md` 末尾补了同一行（该文件安装器不覆盖，由主控手工追加）。
 
 ### 工具与角色调整（2026-10-05，main @ 4bdd2fd）
 
@@ -439,7 +441,7 @@ Rocky 当天定了五角色（主控、副主控、工人、门控、顾问）�
 - **F21** state 五值与状态行前缀的字面量仍散落多处。
 - 第 88 节（订阅回收测试）单节约 29 秒，是 smoke 现在最慢的一节。
 - `bin/qwb-wake.sh` 可见值守启动探测里的裸 `sleep 0.5` ×6（约 3 秒真等待）未动。
-- 已装项目：`qonnwolfmcp` 与 `class-video-analysis` 已在 2026-10-05 升级到 `c6524e0` 并换成五角色工人表；`qonnwolf-sites` 仍是 10-04 的版本与旧工人表（含 codex），原因见「已装项目第二次升级」。
+- 已装项目：`qonnwolfmcp`、`class-video-analysis`、`qonnwolf-sites` 均已在 2026-10-05 升级到 `dec0af6` 并换成五角色工人表；改动未提交，留给各项目自己审。升级后没有在这三个项目里实际派过票。
 - 副主控（规划）与门控（门禁）常驻职责真机演练过八次：正常全链零介入走通（第六次），派工后修订走通（第四次），工人收工不回票的整条故障链自己走到结案（第八次）。尚未在真机上验证的：中止的工具调用不再算未完成（两次打断都没有复现那种记录）、门控派出的审核工人不回票时的升级、门控验收阶段来修订、等待到期重提。第八次演练主控记下的四条小问题（门铃摘要乱码、未结义务筛选的归属、状态页分不清挂钩模式、说明书缺 Claude 副主控启动样例）未核实、未开票。
 
 ## 返修任务
