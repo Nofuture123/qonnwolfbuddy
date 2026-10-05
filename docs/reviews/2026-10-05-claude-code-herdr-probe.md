@@ -17,7 +17,7 @@
 
 ## 运行态与模型证明
 
-6. 空闲为 `idle`；收到提示后约 0.6 秒变 `working`，答完回到 `idle`，`completion_seq` 与 `state_change_seq` 同步加一。本次没有观察到 `done`。
+6. 空闲为 `idle`；收到提示后约 0.6 秒变 `working`，答完回到 `idle`，`completion_seq` 与 `state_change_seq` 同步加一。探测时窗口一直在前台，没有观察到 `done`。**09:40Z 补充（第五轮演练现场实测）：回合结束时窗口不在前台，Herdr 报的是 `done` 而不是 `idle`**（`pane get` 为 `agent_status: done`、`focused: false`，会话文件末条是 `stop_reason` 为 `end_turn` 的 `assistant` 记录）。判断「回合已结束」必须同时接受 `idle` 与 `done`。
 7. 会话文件里每条 `type":"assistant"` 记录带 `message.model`（实测 `claude-opus-5-5`）和顶层 `effort`、`perTurnEffort`（实测 `medium`）。这是可核对的实际模型与档位证据，但只有答过至少一轮才有。
 8. 窗口底部的状态行是使用者自己配置的（本机显示 `Opus 5.5 │ …`，不显示档位），不能当作产品级证据。
 
