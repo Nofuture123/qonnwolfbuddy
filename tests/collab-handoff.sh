@@ -113,13 +113,26 @@ original=Path(T).read_bytes(); Path(T).write_bytes(original.replace(b'"transport
 assert subprocess.run(['bash',S,'pending','--project',P,'--task',T],capture_output=True).returncode!=0
 Path(T).write_bytes(original)
 print('PASS corr/attempt幂等边界、损坏与无权输入拒绝')
-# 未接手blocked/decision有界重投，三次后仍保持完整待办并标出预算耗尽。
+# 未接手blocked/decision正常投三次；主控随后至少30分钟才低频重提。
 for _ in range(6):
     send('transport','--event',a)
 h=next(h for h in pending() if h['event_id']==a)
 assert h['transport_count']==3 and not h['received'] and not h['handled']
 assert a not in [h['event_id'] for h in json.loads(send('pending','--due','--retry-ms','1'))]
-print('PASS transport预算有界且API/门铃不冒充处理')
+# 私有快照推进transport时钟，不等待30分钟；重复提醒保持原交接和3次计数。
+snapshot=Path(T).read_bytes()
+try:
+    d=read(); d['handoffs'][a]['transport_at']=int(time.time()*1000)-1800001
+    body=snapshot.split(b'\n<!-- qwb-collab-v1\n')[0]
+    Path(T).write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(d,ensure_ascii=False).encode()+b'\n-->\n')
+    h=next(h for h in json.loads(send('pending','--due','--retry-ms','1')) if h['event_id']==a)
+    assert h['fallback']==dict(mode='reminder',role='主控',pane='test:ctl',retry_ms=1)
+    send('transport','--event',a,'--mode','reminder','--route-role','主控','--route-pane','test:ctl','--retry-ms','1')
+    h=next(h for h in pending() if h['event_id']==a)
+    assert h['transport_count']==3 and not h['received'] and not h['handled']
+    assert a not in [h['event_id'] for h in json.loads(send('pending','--due','--retry-ms','1'))]
+finally: Path(T).write_bytes(snapshot)
+print('PASS transport正常预算封顶3，耗尽后30分钟重提原交接，API/门铃不冒充处理')
 # transport失败保留原event；status展示未答key和预算耗尽，不洗状态。
 c_fail=send('send','--corr','transport-fail','--attempt','1','--text','宿主传输失败不得吞掉正文')
 call(['bash',ROOT+'/bin/qwb-wake.sh','--project',P,'--once','--pane','test:ctl'],extra={'TEST_TRANSPORT_FAIL':'1'})

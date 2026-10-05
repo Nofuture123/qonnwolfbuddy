@@ -12,12 +12,13 @@ received: --event <id>；accept/prepared: --event <id> --op <op_id>
 activity: --event <id> [--wait-ms <0..86400000> --reason <条件>]
 handled: --event <id> --op <op_id> --result-ref <项目内JSON读回证据>
 reconcile: --event <id> --proof <接班对账JSON> --expect <版本>；旧owner确死才接同一op。
-transport: --event <id>，仅代码监督使用；不等于received/handled。
+transport: --event <id> [--mode escalation|reminder --route-role <角色> --route-pane <pane> --retry-ms <1..86400000>]；仅代码监督使用，不等于received/handled。
+三次仍未接收：角色交接升级主控一次；主控按max(30分钟,retry-ms)低频提醒，计数封顶3，不派生新交接。
 宿主API交付不确认；模型读正文后received，接手accept，动作前prepared，读回后handled。
 EOF
 }
 CMD="${1:-}"; [[ "$CMD" != --help && "$CMD" != -h ]] || { usage; exit 0; }; shift || true
-ROOT="$(pwd)"; TASK=""; TO=controller; CORR=""; ATTEMPT=""; TEXT=""; EVENT=""; OP=""; RESULT=""; PROOF=""; EXPECT=""; RETRY=120000; MODE=all; WAIT=0; REASON=""; REPORT=""
+ROOT="$(pwd)"; TASK=""; TO=controller; CORR=""; ATTEMPT=""; TEXT=""; EVENT=""; OP=""; RESULT=""; PROOF=""; EXPECT=""; RETRY=120000; MODE=all; WAIT=0; REASON=""; REPORT=""; TRANSPORT_MODE=""; ROUTE_ROLE=""; ROUTE_PANE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) ROOT="${2:?}"; shift 2 ;;
@@ -33,6 +34,9 @@ while [[ $# -gt 0 ]]; do
     --proof) PROOF="${2:?}"; shift 2 ;;
     --expect) EXPECT="${2:?}"; shift 2 ;;
     --retry-ms) RETRY="${2:?}"; shift 2 ;;
+    --mode) TRANSPORT_MODE="${2:?}"; shift 2 ;;
+    --route-role) ROUTE_ROLE="${2:?}"; shift 2 ;;
+    --route-pane) ROUTE_PANE="${2:?}"; shift 2 ;;
     --due) MODE=due; shift ;;
     --wait-ms) WAIT="${2:?}"; shift 2 ;;
     --reason) REASON="${2:?}"; shift 2 ;;
@@ -47,7 +51,10 @@ case "$CMD" in
   send) ARGS=("$TO" "$CORR" "$ATTEMPT" "$TEXT") ;;
   pending|transport)
     OWNER="$(awk 'NR==1 {print $NF}' "$ROOT/qwbuddy/.controller.lock/owner")"
-    if [[ "$CMD" == pending ]]; then ARGS=("$OWNER" "$RETRY" "$MODE"); else ARGS=("$OWNER" "$EVENT"); fi ;;
+    if [[ "$CMD" == pending ]]; then ARGS=("$OWNER" "$RETRY" "$MODE"); else
+      ARGS=("$OWNER" "$EVENT")
+      if [[ -n "$TRANSPORT_MODE$ROUTE_ROLE$ROUTE_PANE" ]]; then ARGS+=("$TRANSPORT_MODE" "$ROUTE_ROLE" "$ROUTE_PANE" "$RETRY"); fi
+    fi ;;
   received) ARGS=("$EVENT") ;;
   accept|prepared) ARGS=("$EVENT" "$OP") ;;
   activity) ARGS=("$EVENT" "$WAIT" "$REASON") ;;

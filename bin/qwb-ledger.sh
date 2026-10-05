@@ -629,10 +629,26 @@ if ($cmd =~ /\Ahandoff-/) {
   $pure_progress=eval $progress_classifier;
   fail('纯进度分类不可用') unless ref($pure_progress) eq 'CODE';
 }
+sub handoff_fallback {
+  my ($h,$retry)=@_;
+  return if $h->{handled} || $h->{received} ne '' || $h->{transport_count}<3 || $pure_progress->($data,$data->{events}[$h->{source_seq}-1],$h);
+  my ($role,$pane)=('主控',$owner);
+  my ($request)=grep { source_id($_->{event_id}) eq $h->{event_id} && $_->{reply_sha256} eq '' } values %{$data->{test_requests} // {}};
+  my $g=$data->{gate};
+  if ($request) { ($role,$pane)=('测试体系',$request->{identity}{pane}) }
+  elsif ($g && $data->{claim} && $data->{claim}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/\A(pending|rework)\z/) { ($role,$pane)=('门禁',$g->{identity}{pane}) }
+  elsif ($planning_grant && planner_controller_hint($h) eq '') { ($role,$pane)=('规划',$planning_grant->{identity}{pane}) }
+  my $notified=grep { $_->{kind} eq 'handoff-transport' && $_->{line}=~/\Aworking: handoff-transport event_id=\Q$h->{event_id}\E mode=(?:escalation|reminder) / } @{$data->{events}};
+  my $mode=$role ne '主控' && !$notified ? 'escalation' : 'reminder';
+  my $interval=$retry<1800000 ? 1800000 : $retry;
+  return if $mode eq 'reminder' && $now-$h->{transport_at}<$interval;
+  return {mode=>$mode,role=>$role,pane=>$pane,retry_ms=>0+$retry};
+}
 sub handoff_due {
   my ($h,$retry)=@_;
   return 0 if $pure_progress->($data,$data->{events}[$h->{source_seq}-1],$h);
-  return 0 if $h->{handled} || $h->{transport_count}>=3;
+  return 0 if $h->{handled};
+  return handoff_fallback($h,$retry) ? 1 : 0 if $h->{transport_count}>=3;
   # 回复迟到不是失活；工具活动或有界合理wait保住本代claim。
   if ($h->{accepted} ne '' && $h->{owner_fp} eq $owner_fp) {
     return 0 if $now < $h->{wait_until} || $now-$h->{activity_at} < $retry;
@@ -1441,7 +1457,7 @@ REPORT
     }
     # 旧版本已由规划handled的工人问题可恢复上行；与正常handled使用同一幂等键。
     $added+=ensure_planner_result($_) for values %{$data->{handoffs}};
-    my @p=map { +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0} }
+    my @p=map { my $fallback=handoff_fallback($_,$retry); +{%$_,due=>handoff_due($_,$retry) ? 1 : 0,reconcile=>$_->{prepared} && !$_->{handled} ? 1 : 0,($fallback ? (fallback=>$fallback) : ())} }
       sort { $a->{source_seq}<=>$b->{source_seq} } grep { !$_->{handled} && ($mode eq 'all' || handoff_due($_,$retry)) } values %{$data->{handoffs}};
     # 只给规划分流增加瞬时提示；既有测试请求整批及门禁claim路径保持原输出。
     my %pending=map { $_->{event_id}=>1 } @p;
@@ -1467,10 +1483,19 @@ REPORT
     my $id=$cmd eq 'handoff-transport' ? $args[1] : $args[0];
     my $h=$data->{handoffs}{$id // ''} // fail('handoff event不存在');
     if ($cmd eq 'handoff-transport') {
-      fail('transport参数非法') unless @args==2;
-      # prepared先于传输；传输是否成功未知也不消费待办，有界重投同一event。
-      if ($h->{transport_count}>=3) { print "$id\n"; exit }
-      $h->{transport_count}++; $h->{transport_at}=$now;
+      fail('transport参数非法') unless @args==2 || @args==6;
+      if (@args==6) {
+        my (undef,undef,$mode,$role,$pane,$retry)=@args;
+        fail('耗尽重提参数非法') unless $retry=~/\A[1-9][0-9]*\z/ && $retry<=86400000;
+        my $expected=handoff_fallback($h,$retry);
+        fail('耗尽重提未到期/已接收或路由已变') unless $expected && $json->encode($expected) eq $json->encode({mode=>$mode,role=>$role,pane=>$pane,retry_ms=>0+$retry});
+        $h->{transport_at}=$now;
+        $line="working: handoff-transport event_id=$id mode=$mode role=$role pane=$pane count=3";
+      } else {
+        # prepared先于传输；传输是否成功未知也不消费待办，有界重投同一event。
+        if ($h->{transport_count}>=3) { print "$id\n"; exit }
+        $h->{transport_count}++; $h->{transport_at}=$now;
+      }
     } else {
       if ($test) {
         my ($request)=grep { source_id($_->{event_id}) eq $id && $json->encode($_->{identity}) eq $json->encode($identity) } values %{$data->{test_requests}};
@@ -1532,7 +1557,7 @@ REPORT
         } else { fail("未知交接命令 $cmd") }
       }
     }
-    $line="working: $cmd event_id=$id";
+    $line="working: $cmd event_id=$id" if $line eq '';
   }
 } elsif ($cmd eq 'migrate') {
   fail('已迁入协议，不能重迁') if $data;

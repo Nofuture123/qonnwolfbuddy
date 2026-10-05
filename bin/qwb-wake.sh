@@ -9,7 +9,8 @@ usage() {
 
 已迁票（qwb-collab-v1）：同票持久handoff，完整event_id集合确认；旧wake指纹不消费待办。
   API交付只记transport，received/accepted/handled由接收方分别确认；controller通道可按04授权claim直接门铃本代门禁。
-  每event至多3次门铃，accepted有活动/合理wait不误催；预算耗尽仍保留pending/status。
+  每event正常门铃至多3次；未接收的角色交接耗尽后升级主控一次，主控最短30分钟低频重提。
+  accepted有活动/合理wait不误催；计数封顶3，通知与纯进度均不冒充received/handled。
   所有宿主共用内核监督owner锁，第二实例显式拒绝；旧票仍使用下述兼容指纹。
 
 循环：读账本列未结项 → 有需主控处理的新事实或 running 票超期无进展 → **只发一条** herdr pane run（多票拼进同一条文本）叫醒主控 → 等事件或超时 → 再来。
@@ -619,7 +620,7 @@ collect_due() {
       [[ "$pending" != '[]' ]] || continue
       # 同批完整event_id；旧wake指纹不是消费游标，摘要不把正文当系统指令。
       last="[qwb-handoff] $(printf '%s' "$pending" | perl -MJSON::PP -0777 -e '
-        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ())} } @$p]);
+        my $p=decode_json(<STDIN>); print JSON::PP->new->canonical->utf8->encode([map { +{event_id=>$_->{event_id},payload=>$_->{payload},reconcile=>$_->{reconcile},(exists($_->{controller_hint}) ? (controller_hint=>$_->{controller_hint}) : ()),(exists($_->{fallback}) ? (fallback=>$_->{fallback}) : ())} } @$p]);
       ')"
       fp="$(printf '%s' "$pending" | shasum | cut -d' ' -f1)"
       printf '%s\t%s\t%s\t%s\t\n' "$f" "$st" "$fp" "$last" >> "$out"
@@ -697,6 +698,12 @@ compose_msg() {
         print join("；",grep { !$seen{$_}++ } map { $_->{controller_hint} // () } @{decode_json(<STDIN>)});
       ')"
     fi
+    if [[ "$last" == '[qwb-handoff] '* && "$last" == *'"fallback":'* ]]; then
+      hint="${hint:+${hint}；}$(printf '%s' "${last#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
+        use utf8; binmode STDOUT, ":encoding(UTF-8)";
+        print join("；",map { my $h=$_; my $r=$h->{fallback}; ($r->{mode} eq "escalation" ? "交接升级主控" : "交接低频重提")."：event_id=$h->{event_id}；原路由目标（按当前规则判定）=$r->{role}/$r->{pane}；已投次数=3" } grep { $_->{fallback} } @{decode_json(<STDIN>)});
+      ')"
+    fi
     if [[ "$last" == '[qwb-worker] '* ]]; then
       last="$(printf '%s' "${last#\[qwb-worker\] }" | perl -MJSON::PP -0777 -e 'binmode STDOUT, ":encoding(UTF-8)"; print decode_json(<STDIN>)->{payload}')"
     fi
@@ -722,6 +729,17 @@ route_gate_due() {
   keep="$dir/controller"; : > "$keep"
   while IFS=$'\t' read -r f st fp last lostpane; do
     info=""
+    if [[ "$last" == '[qwb-handoff] '* && "$last" == *'"fallback":'* ]]; then
+      split="$(perl -MJSON::PP -e '
+        my $p=decode_json(substr($ARGV[0],length("[qwb-handoff] "))); my $j=JSON::PP->new->canonical->utf8;
+        print $j->encode([grep { $_->{fallback} } @$p]),"\t",$j->encode([grep { !$_->{fallback} } @$p]);
+      ' "$last")"
+      IFS=$'\t' read -r split remainder <<< "$split"
+      printf '%s\t%s\t%s\t[qwb-handoff] %s\t\n' "$f" "$st" "$(printf '%s' "$split" | shasum | cut -d' ' -f1)" "$split" >> "$keep"
+      [[ "$remainder" != '[]' ]] || continue
+      last="[qwb-handoff] $remainder"
+      fp="$(printf '%s' "$remainder" | shasum | cut -d' ' -f1)"
+    fi
     if [[ "$last" == '[qwb-worker] '* ]]; then
       data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
@@ -1008,13 +1026,18 @@ block_owner_ok() {
 }
 
 record_transport() {
-  local f="$1" summary="$2" id
+  local f="$1" summary="$2" id mode role pane retry
   [[ "$summary" == '[qwb-handoff] '* ]] || return 0
   # 确认严格绑定collect_due的旧批次；并发到达的新事件不得被这次传输消费。
-  while IFS= read -r id; do
-    bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" >/dev/null || return 1
+  while IFS=$'\t' read -r id mode role pane retry; do
+    local args=()
+    if [[ "$mode" != normal ]]; then args=(--mode "$mode" --route-role "$role" --route-pane "$pane" --retry-ms "$retry"); fi
+    bash "$(dirname "$LIB")/qwb-send.sh" transport --project "$PROJECT_ROOT" --task "$f" --event "$id" "${args[@]}" >/dev/null || return 1
   done < <(printf '%s' "${summary#\[qwb-handoff\] }" | perl -MJSON::PP -0777 -e '
-    my $p=decode_json(<STDIN>); print "$_->{event_id}\n" for @$p;
+    binmode STDOUT, ":encoding(UTF-8)";
+    for my $h (@{decode_json(<STDIN>)}) {
+      my $r=$h->{fallback}; print join("\t",$h->{event_id},$r ? @{$r}{qw(mode role pane retry_ms)} : ("normal","-","-",0)),"\n";
+    }
   ')
 }
 

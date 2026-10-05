@@ -81,7 +81,9 @@ elif a[:2]==['pane','send-keys']:
  assert a[2].startswith('worker-') and a[3]=='enter',a
  s['submit_seq']=s.get('submit_seq',185)+1
  out({'type':'ok'})
-elif a[:2] in (['pane','run'],['tab','close']):out({'type':'ok'})
+elif a[:2] in (['pane','run'],['tab','close']):
+ if a[:2]==['pane','run'] and os.environ.get('PL_FAIL_TRANSPORT')==a[2]:sys.exit(9)
+ out({'type':'ok'})
 else:sys.exit(77)
 file.write_text(json.dumps(s))
 ''')
@@ -246,8 +248,8 @@ file.write_text(json.dumps(s))
             for h in pending(task):
                 for verb in ['received','accept','prepared','handled']: handoff(verb,h['event_id'],task)
         settle(); settle(intake_name)
-        def deliveries():
-            mark=count(); result=cli('qwb-wake.sh','--once','--pane','ctl')
+        def deliveries(ok=True):
+            mark=count(); result=cli('qwb-wake.sh','--once','--pane','ctl',ok=ok)
             calls=[json.loads(s) for s in log.read_text().splitlines()[mark:]]
             return [a for a in calls if a[:2]==['pane','run'] and 'Up(running)' in a[3]],result
         # 本票同一用例先在固定起点跑红：仅替换私有运行时，不改主仓脚本。
@@ -361,8 +363,114 @@ file.write_text(json.dumps(s))
             finally:
                 for key in ['PL_GONE_WORKER','PL_BAD_WORKER','PL_EXPIRE_PROOF','PL_CLOCK','QWB_NOW_MS_CMD']: env.pop(key,None)
                 runtime_bin=saved_bin; script.write_bytes(original_script); ticket.write_bytes(original_ticket); native_path.write_bytes(native_bytes); config.write_bytes(config_bytes)
-        watch_checks()
+        if os.environ.get('QWB_SILENCE_DELIVERY_ONLY')!='1': watch_checks()
         if os.environ.get('QWB_SILENCE_WATCH_ONLY')=='1': return
+        def exhausted_checks(gate=False):
+            global runtime_bin
+            saved_bin=runtime_bin; runtime_bin=runtime
+            script=runtime/'qwb-ledger.sh'; original_script=script.read_bytes(); original_ticket=ticket.read_bytes()
+            other_dir=Path(tempfile.mkdtemp(prefix='delivery-other-',dir=temp))
+            others=[f for f in (p/'tasks').glob('*.md') if f!=ticket]
+            for f in others: f.rename(other_dir/f.name)
+            config=p/'qwbuddy/config.sh'; config_bytes=config.read_bytes()
+            clock=temp/'delivery-clock'; now=temp/'delivery-now'
+            now.write_text('#!/usr/bin/env python3\nimport os\nprint(open(os.environ["PL_CLOCK"]).read().strip())\n'); now.chmod(0o755)
+            env['PL_CLOCK']=str(clock); env['QWB_NOW_MS_CMD']=str(now); clock.write_text('4102444800000')
+            script.write_bytes(original_script.replace(b'use Time::HiRes qw(time);',b'use subs qw(time); sub time { open my $c,"<",$ENV{PL_CLOCK} or die $!; return scalar(<$c>)/1000 }').replace(b',gmtime)',b',gmtime(time()))'))
+            config.write_bytes(config_bytes+b'QWB_REWAKE_MS=0\nQWB_WAKE_INTERVAL_MS=60000\n')
+            def advance(ms): clock.write_text(str(int(clock.read_text())+ms))
+            def assert_reminder(routes,event,role):
+                control=[r for r in routes if r[2]=='ctl']
+                assert len(control)==1 and event in control[0][3] and f'={role}/' in control[0][3] and '已投次数=3' in control[0][3],routes
+                return control[0][3]
+            def cap(event):
+                for _ in range(3): cli('qwb-send.sh','transport','--task',ticket,'--event',event)
+            try:
+                if gate:
+                    # 门禁普通working仅允许真实已派child活动绑定；不启动工人模型。
+                    call('gate-dispatch',name,'--','up-gate','silent-child','review','reviewer',actor='gate-pane')
+                    call('dispatch',name,'--','silent-child','up-worker',f'dispatch: 2099 op_id=silent-child worker=reviewer agent=up-worker pane=up-worker dir={p}',actor='gate-pane')
+                    call('append',name,'--event-id','silent-gate-progress','--','working: worker-activity op=silent-child pane=up-worker evidence=fixture',actor='gate-pane')
+                    call('append',name,'--event-id','gate-progress-worker','--','working: 门禁在途工人进度',actor='up-worker')
+                    routes,_=deliveries(); assert not routes,routes
+                    assert not read(name)['handoffs']['source:silent-gate-progress']['handled']
+                    call('append',name,'--event-id','exhaust-gate','--','blocked: 门禁处理的工人问题',actor='up-worker')
+                    pending(); cap('source:exhaust-gate'); routes,_=deliveries()
+                    assert '交接升级主控' in assert_reminder(routes,'source:exhaust-gate','门禁')
+                    before=ticket.read_bytes(); routes,_=deliveries(); assert not routes and ticket.read_bytes()==before,routes
+                    cli('qwb-role.sh','start','--actor','silent-test','--role','测试体系','--worker','sol','--dir',p)
+                    # 请求生成入口另由collab-test-policy全文件验证；这里固定其合法持久读模，专测耗尽分流。
+                    identity=subprocess.run(['bash','-c','. "$1"; qwb_gate_identity "$2" silent-test 测试体系','probe',str(ROOT/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+                    assert identity.returncode==0,identity.stderr
+                    event='exhaust-test'
+                    call('append',name,'--event-id',event,'--','working: 明确绑定的测试请求')
+                    d=read(name); d['test_requests']={'silence-test':{'event_id':event,'identity':json.loads(identity.stdout),'reason':'new-behavior','scenario':'user_good','context':{},'reply':{},'reply_sha256':''}}
+                    body=ticket.read_bytes().split(b'\n<!-- qwb-collab-v1\n')[0]
+                    ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(d,ensure_ascii=False).encode()+b'\n-->\n')
+                    pending(); cap('source:'+event)
+                    routes,_=deliveries(); assert '交接升级主控' in assert_reminder(routes,'source:'+event,'测试体系')
+                    print('PASS silence C门禁/测试：进度静默；两类三投耗尽均绕过原优先路由升级主控一次')
+                    return
+                call('append',name,'--event-id','exhaust-planner','--','blocked: 三次后仍须有人接收',actor='up-worker')
+                event='source:exhaust-planner'
+                for _ in range(3):
+                    routes,_=deliveries(); assert len(routes)==1 and routes[0][2]=='planner-pane' and event in routes[0][3],routes
+                    advance(60000)
+                assert read(name)['handoffs'][event]['transport_count']==3
+                capped=ticket.read_bytes()
+                # 额外参数只描述真实到期路由；不能让调用者伪填目标或提前重提。
+                cli('qwb-send.sh','transport','--task',ticket,'--event',event,'--mode','reminder','--route-role','主控','--route-pane','ctl','--retry-ms','60000',ok=False)
+                assert ticket.read_bytes()==capped
+                # 同批有新动作，升级项仅给主控，新动作照旧给规划。
+                call('append',name,'--event-id','fresh-blocked','--','blocked: 新动作不扣旧升级预算',actor='up-worker')
+                call('append',name,'--event-id','silent-exhaust','--','working: 不参与升级',actor='up-worker')
+                routes,_=deliveries(); assert '交接升级主控' in assert_reminder(routes,event,'规划')
+                planner=[r for r in routes if r[2]=='planner-pane']; assert len(planner)==1 and 'source:fresh-blocked' in planner[0][3] and event not in planner[0][3],routes
+                d=read(name); assert d['handoffs'][event]['transport_count']==3 and d['handoffs']['source:fresh-blocked']['transport_count']==1 and d['handoffs']['source:silent-exhaust']['transport_count']==0
+                before=ticket.read_bytes(); routes,_=deliveries(); assert not routes and ticket.read_bytes()==before,routes
+                ticket.write_bytes(capped); env['PL_FAIL_PUBLISH']='1'
+                routes,result=deliveries(ok=False); assert not routes and result.returncode==3 and ticket.read_bytes()==capped,(routes,result.stderr)
+                del env['PL_FAIL_PUBLISH']
+                env['PL_FAIL_TRANSPORT']='ctl'; routes,result=deliveries()
+                assert '交接升级主控' in assert_reminder(routes,event,'规划') and '投递失败' in result.stderr
+                d=read(name); keys=set(d['handoffs']); assert sum('mode=escalation ' in e['line'] for e in d['events'])==1
+                del env['PL_FAIL_TRANSPORT']
+                routes,_=deliveries(); assert not routes,routes
+                advance(1800000); routes,_=deliveries(); assert '交接低频重提' in assert_reminder(routes,event,'规划')
+                assert set(read(name)['handoffs'])==keys and read(name)['handoffs'][event]['transport_count']==3
+                handoff('received',event,actor='planner-pane'); advance(1800000); routes,_=deliveries(); assert not routes,routes
+                for verb in ['accept','prepared','handled']: handoff(verb,event,actor='planner-pane')
+                result_id='source:planner-result:'+hashlib.sha256(event.encode()).hexdigest()
+                before=ticket.read_bytes(); handoff('handled',event,actor='planner-pane'); assert ticket.read_bytes()==before
+                routes,_=deliveries(); assert len(routes)==1 and routes[0][2]=='ctl' and result_id in routes[0][3],routes
+                assert sum(hid==result_id for hid in read(name)['handoffs'])==1
+                print('PASS silence C规划：三投后一次升级、混批分流、重启不重复、失败发布无半写/API失败有界重提、后来received停止且handled唯一上行')
+                ticket.write_bytes(original_ticket)
+                d=read(name); d.pop('planning'); d['ops']['up-dispatch']['owner']='ctl'
+                body=original_ticket.split(b'\n<!-- qwb-collab-v1\n')[0]
+                ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(d,ensure_ascii=False).encode()+b'\n-->\n')
+                call('append',name,'--event-id','exhaust-controller','--','done: 无规划授权也不能永久沉默',actor='up-worker')
+                event='source:exhaust-controller'; pending(); cap(event); keys=set(read(name)['handoffs'])
+                routes,_=deliveries(); assert not routes,routes
+                advance(1799000); routes,_=deliveries(); assert not routes,routes
+                advance(1000); routes,_=deliveries(); assert '交接低频重提' in assert_reminder(routes,event,'主控')
+                routes,_=deliveries(); assert not routes,routes
+                advance(1800000)
+                due=json.loads(cli('qwb-send.sh','pending','--task',ticket,'--due','--retry-ms','3600000').stdout)
+                assert event not in [h['event_id'] for h in due]
+                advance(1800000)
+                due=json.loads(cli('qwb-send.sh','pending','--task',ticket,'--due','--retry-ms','3600000').stdout)
+                assert event in [h['event_id'] for h in due]
+                handoff('received',event); advance(3600000); routes,_=deliveries(); assert not routes,routes
+                assert set(read(name)['handoffs'])==keys and read(name)['handoffs'][event]['transport_count']==3
+                print('PASS silence C主控：无规划授权三投后30分钟首次重提、更长配置生效、received停止、计数封顶/交接集合不增长')
+            finally:
+                for key in ['PL_CLOCK','QWB_NOW_MS_CMD','PL_FAIL_PUBLISH','PL_FAIL_TRANSPORT']: env.pop(key,None)
+                runtime_bin=saved_bin; script.write_bytes(original_script); ticket.write_bytes(original_ticket); config.write_bytes(config_bytes)
+                for f in others: (other_dir/f.name).rename(f)
+                other_dir.rmdir()
+        exhausted_checks()
+        if os.environ.get('QWB_SILENCE_DELIVERY_ONLY')=='1': return
         call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
         call('append',name,'--event-id','up-blocked','--','blocked: 等待技术处理',actor='up-worker')
         # 红证使用同一新用例和公开入口，仅替换本私有项目运行时脚本。
@@ -474,6 +582,7 @@ file.write_text(json.dumps(s))
         assignment={'candidate':str(p),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(environment),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
         call('gate-assign',name,'--','gate',payload('up-gate.json',assignment))
         call('claim',name,'--','up-gate',actor='gate-pane')
+        exhausted_checks(gate=True)
         call('append',name,'--event-id','up-rework-done','--','done: 门禁接返修成果',actor='up-worker')
         routes,_=deliveries(); assert len(routes)==1 and routes[0][2]=='gate-pane',routes
         report=temp/'up-receipt.json'
@@ -518,6 +627,12 @@ file.write_text(json.dumps(s))
                 event_id='up-after-accepted'
                 data['test_requests']={'compat-test':{'event_id':event_id,'identity':test_identity,'reason':'new-behavior','scenario':'user_good','context':{},'reply':{},'reply_sha256':''}}
             snapshots[case]=frozen_ticket(data)
+        live=json.loads(json.dumps(initial)); live.pop('planning'); live.pop('gate'); live['claim']=None
+        live['seq']+=1; live['rev']+=1
+        live_line=f'dispatch: 2099 op_id=compat-live worker=sol agent=up-worker pane=up-worker dir={p}'
+        live['events'].append({'event_id':'compat-live','seq':live['seq'],'at':'2099-01-01T00:00:00Z','kind':'dispatch','actor':'ctl','op_id':'compat-live','spec_rev':live['spec_rev'],'line':live_line})
+        live['ops']['compat-live']={'owner':'ctl','pane':'up-worker','status':'sent'}; live['workers']['up-worker']='compat-live'
+        snapshots['live']=frozen_ticket(live).replace(b'\n<!-- qwb-collab-v1\n',b'\n'+live_line.encode()+b'\n<!-- qwb-collab-v1\n')
         snapshots['legacy']=b'# legacy\nstate: blocked\nblocked: unchanged legacy input\n'
         evidence=os.environ.get('QWB_PLANNING_UPWARD_EVIDENCE')
         evidence=Path(evidence) if evidence else None
@@ -527,7 +642,7 @@ file.write_text(json.dumps(s))
                 outputs=[]
                 for version in ['baseline','candidate']:
                     for script in originals:
-                        raw=subprocess.check_output(['git','-C',str(ROOT),'show','d66d77c:bin/'+script]) if version=='baseline' else (ROOT/'bin'/script).read_bytes()
+                        raw=subprocess.check_output(['git','-C',str(ROOT),'show','44ab8ac:bin/'+script]) if version=='baseline' else (ROOT/'bin'/script).read_bytes()
                         if script=='qwb-ledger.sh':
                             raw=raw.replace(b'my $now=int(time()*1000);',b'my $now=4102444800000;')
                             raw=raw.replace(b"strftime('%Y-%m-%dT%H:%M:%SZ',gmtime)",b"'2099-01-01T00:00:00Z'")
@@ -543,8 +658,15 @@ file.write_text(json.dumps(s))
                     outputs.append(observed)
                     if evidence:
                         for key,value in observed.items(): (evidence/(case+'-'+version+'.'+key)).write_bytes(value)
-                for key in outputs[0]: assert outputs[0][key]==outputs[1][key], ('P6 byte mismatch',case,key,outputs[0][key],outputs[1][key])
-                print('PASS upward P6逐字节 '+case+': stdout/stderr/rc/票/Herdr一致')
+                for key in outputs[0]:
+                    candidate=outputs[1][key]
+                    if case=='live' and key=='herdr':
+                        lines=candidate.splitlines(keepends=True)
+                        probes=[i for i,line in enumerate(lines) if json.loads(line)==['pane','get','up-worker']]
+                        assert len(probes)==1, ('只允许一次新增工人只读探针',probes)
+                        candidate=b''.join(line for i,line in enumerate(lines) if i!=probes[0])
+                    assert outputs[0][key]==candidate, ('P6 byte mismatch',case,key,outputs[0][key],candidate)
+                print('PASS upward P6逐字节 '+case+': stdout/stderr/rc/票/Herdr一致'+('（仅允许一次新增工人只读探针）' if case=='live' else ''))
         finally:
             ticket.write_bytes(original); native_path.write_bytes(native_bytes)
             for script,raw in originals.items(): (runtime/script).write_bytes(raw)
