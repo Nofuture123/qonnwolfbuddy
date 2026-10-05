@@ -337,9 +337,37 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 - **F49（真机抓到，已修）** 票锁文件 `tasks/<票>.md.qwb-lock`、`qwbuddy/.supervisor.guard`、`qwbuddy/.roles/` 等运行态路径不在安装器的忽略规则里；qonnwolf-sites 与 qonnwolfmcp 的 `git status` 里都挂着未跟踪的守卫文件。
 - **F50（真机抓到，已修）** 真机验收预置票缺 `implementation-authorized:` 与 `dispatch-budget:`，主控首次派发必被拒一次。
 - **F51（已修）** 进度行叫醒：qonnwolf-sites 与 qonnwolfmcp 历史账本 95 张票 904 次叫醒，57.0% 发生在末行为 `working:` 时，17.1% 为时间兜底重叫，15.6% 为 `done:`，7.7% 为尚无状态行，2.6% 为 `blocked:` 或 `needs-decision:`。
-- **F52（真机抓到，在修）** `herdr` 启动方式在 `herdr agent prompt` 之后不确认工人开工；当天约七次 Pi 启动里两次提示词停在输入框未提交，派工脚本仍报「已派发」。`pane-run` 启动方式原有确认与补回车。票 `prompt-submit`。
-- **F53（未修）** `tests/subscribe-reap.py` 要求 2 秒内观察到事件，高负载下五次重采样都会超时而使全门 rc=1；当天两个工人各因此多跑一轮全门，单独复跑均通过。
+- **F52（真机抓到，已修，见下节）** `herdr` 启动方式在 `herdr agent prompt` 之后不确认工人开工；当天约七次 Pi 启动里两次提示词停在输入框未提交，派工脚本仍报「已派发」。`pane-run` 启动方式原有确认与补回车。票 `prompt-submit`。
+- **F53（已修，见下节）** `tests/subscribe-reap.py` 要求 2 秒内观察到事件，高负载下五次重采样都会超时而使全门 rc=1；当天两个工人各因此多跑一轮全门，单独复跑均通过。
 - 未修的小项：工人与主控在未迁旧票上都会先试 `qwb-ledger.sh append` 被拒（rc=25）再改用直接追加；`templates/roles/主控.md` 与 `bin/qwb-run.sh` 发给审核者的提示里仍有「同family」字样；派工规则的顾问档只配了 fable 一个候选。
+
+### 副主控链路与派发可靠性（2026-10-05，main @ 015fb4f）
+
+当天把副主控（规划）与门控（门禁）两个常驻职责第一次放到真机上演练（隔离会话；主控 Claude Code opus 5.5 medium，规划与门禁 Pi astra low，工人 Pi sol high）：职责启动、主控授权、规划开票、规划派工都成功，工人交付后链路断掉，门禁没有被用到。发现 D1–D8 见[演练记录](2026-10-05-real-herdr-roles-drill.md)。据此开票修复，另有两张票来自当天的全门与真机验收。
+
+| 票 | 执行者 | 提交 | 内容 |
+|---|---|---|---|
+| `prompt-submit` | Pi sol high | `6d906c9`…`57d6e7a` | 派发后确认工人开工：比较 `herdr agent get` 的 `state_change_seq` 或状态为 working；5 秒未开工补一次回车，仍未开工则派发失败并给排查命令。首次派发、续派、`pane-run` 三条路共用。修 F52 |
+| `planner-ticket-body` | Pi sol high | `abf5d05` | 规划 `new` 开出的票固定带报告要求一节（与 `templates/TASK.md` 同文，测试断言两处一致）；`gate-assign` 拒绝候选不干净时列出路径并写明由谁续派；`qwb-role.sh start` 缺工作区时写明填 `QWB_WORKSPACE` 并列出可选 id；规定角色的载荷文件放 `qwbuddy/.roles/<actor>.work/`。修 D1、D5、D5b、D8 |
+| `planner-upward` | Pi astra high | `e7113c0`…`b6366c8` | 带规划授权的票：工人 `done` 留给主控（门禁已接手且在 pending 或 rework 时仍先给门禁）；门禁 accepted 与需主控重诊的结论留给主控；规划办理完工人的阻塞类交接时，同一次写入里派生上行交接给主控；规划不能替主控确认主控专属的交接。修 D4。[设计](../designs/2026-10-05-planner-upward.md) |
+| `reap-test-load` | Pi sol high | `015fb4f` | 订阅回收测试挪到全门四段并发之后串行执行（冒烟单跑时照旧实测）；错过观察窗口后退避 1、2、4、8 秒再试；五次都量不到仍判失败。修 F53 |
+
+合并后 main @ `015fb4f`：`bash bin/qwb-test.sh full` rc=0，859 PASS / 0 FAIL，731 秒（主控独立跑；同时有一个工人在跑另一轮全门，负载 25–41）。此前两轮主干全门失败过：`57d6e7a` 上 857 PASS / 2 FAIL（`process-entry-cleanup` 入口超时、`socket-path-regression`，当时六轮全门并发，负载约 85）；`abf5d05` 上 858 PASS / 1 FAIL（`socket-path-regression`，单独重跑 rc=0）。
+
+真机验收：
+
+| 轮 | 候选 | 主控 | 工人 | 结果 |
+|---|---|---|---|---|
+| 11 | `57d6e7a` | Claude Code opus 5.5 medium | Pi sol high | **通过，14 项断言全 PASS**，约 2 分钟。首次派发未触发补回车；身份记录带会话路径。[记录](2026-10-05-e2e-real-claude-pi-r3.md) |
+
+本节发现：
+
+- **F54（已随 `prompt-submit` 修）** 旧的 `pane-run` 开工确认把 `herdr agent wait --timeout 300` 当成 300 秒，实际单位是毫秒，只等 0.3 秒。
+- **F55（真机抓到，在修）** 续派原工人会被拒：Herdr 在 `agent start` 返回约 1.5 秒后才报出 Pi 的会话路径（主控实测 0.02、0.14、0.28 秒时没有，1.52 秒时有），派工脚本在启动返回后立刻记身份，记录里就没有会话；续派时三项比对永远不等。时序相关，第 11 轮真机验收没撞上。票 `reuse-binding`（演练记录 D7）。
+- **F56（未修）** 派发后的开工确认窗口偏短：补回车后只再等 5 秒就判派发失败。当天负载约 40 时一次手工派发里 Pi 超过 20 秒才显示开工。高负载下可能把已经开工的工人判成派发失败。
+- **F57（现场取证，修复已交付待合入）** 值守退出时可能永久卡住：一个 `qwb-wake.sh --block --max-ms 1` 运行 16 分钟不退，调用栈停在退出清理 `event_cleanup` 的 `wait "$EVENT_PID"`；订阅器收到终止信号后没有退出、仍在正常循环。主控的推断（未证实是这次现场的原因）：订阅器靠信号处理函数抛 `SystemExit` 退出，异常若落在对象析构期间会被 Python 丢弃。票 `wake-exit-hang`。
+- **F58（未查明）** 多轮全门并发、负载 60–85 时，`process-entry-cleanup`（入口 60 秒超时；一次在全门 TERM 用例后观察到临时目录残留）与 `socket-path-regression` 会失败，低负载单跑通过。失败输出被截断，没有拿到具体断言。做法上改为：工人只跑快门与定向测试，全门由主控在合并后串行跑。
+- 演练记录里的 D3（说明书四处缺口）、D6（已迁票的进度行会叫规划）未修，归入后续的角色说明合并票与进度静默票。
 
 ### 未做与遗留
 
@@ -351,7 +379,7 @@ Rocky 2026-10-05 裁决：工具只留 Claude Code 与 Pi（Pi 下模型全走 m
 - 第 88 节（订阅回收测试）单节约 29 秒，是 smoke 现在最慢的一节。
 - `bin/qwb-wake.sh` 可见值守启动探测里的裸 `sleep 0.5` ×6（约 3 秒真等待）未动。
 - 已装过本工具的项目需要重跑安装才能拿到这些修复；三个已装项目的 `workers.sh`、`config.sh`、`dispatch-rules.json` 仍是旧工人表（含 codex），安装器不覆盖，需手工换成新表。
-- 副主控（规划）与门控（门禁）常驻职责未在真机上跑过；常驻职责只支持 Pi，Claude Code 当副主控需改 `bin/qwb-role.sh`、`bin/qwb-lib.sh`、`bin/qwb-herdr.sh`。
+- 副主控（规划）与门控（门禁）常驻职责真机演练过一次，未走到门禁验收（见「副主控链路与派发可靠性」）；修复落地后需重跑演练。常驻职责只支持 Pi，Claude Code 当副主控需改 `bin/qwb-role.sh`、`bin/qwb-lib.sh`、`bin/qwb-herdr.sh`。
 
 ## 返修任务
 
