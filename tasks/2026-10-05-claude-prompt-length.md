@@ -2,7 +2,7 @@
 
 ```
 任务 id:  claude-prompt-length
-state: running
+state: verified
 implementation-authorized: Rocky 2026-10-04 起的整仓审核与修复授权（「你查出的点，可以通过herdr，排pi进行执行和修复」）；2026-10-05 五角色裁决
 dispatch-budget: 3
 来源:     2026-10-05 真机实测（docs/reviews/2026-10-05-claude-code-herdr-probe.md 第 12–14 条）；演练记录 R9
@@ -108,3 +108,4 @@ done: 2026-10-05T08:27:54Z 先红证据：未改产品代码时 bash tests/colla
 done: 2026-10-05T08:27:54Z 质量门：bash bin/qwb-test.sh fast → rc0/PASS0/FAIL0，无shellcheck告警；bash bin/qwb-lint.sh → rc0/PASS9/FAIL0、LINT PASS，历史占位警告原样保留。定向：/bin/bash tests/smoke.sh prompt-length → rc0/PASS9/FAIL0（仅新小节公开入口）；bash tests/wake-block-output.sh → rc0/PASS20/FAIL0；bash tests/collab-handoff.sh → rc0/PASS12/FAIL0；/bin/bash tests/collab-gate.sh → rc0/PASS27/FAIL0；/bin/bash tests/collab-planning.sh → rc0/PASS34/FAIL0。对应日志同目录fast/lint/smoke/wake/handoff/gate/planning.log及.rc。
 done: 2026-10-05T08:27:54Z 已在tests/smoke.sh与tests/collab-all.sh检索claude-prompt-length.py、prompt_file.py、collab-gate.sh、collab-planning.sh、collab-handoff.sh、smoke.sh及wake-block-output.sh，入口扫描/显式条数核对留entry-scan.log。smoke增加后台启动+结果验收+prompt-length窄入口；collab-all默认15项不变，无相关固定PASS条数需改；原入口自检rc0覆盖45文件（entry-self-check.log）。共用prompt_file.py先核指路上限与文件摘要，再继续gate/planning原事件/路由断言；python3 -B tests/prompt_file.py rc0，功能由green及两测试独立覆盖。
 done: 2026-10-05T08:27:54Z 完整验收摘要=本副本.qwb-tmp/claude-prompt-length/verification.txt，原始日志保留。自建gate/planning/green/smoke运行器均已退出；误启动的默认smoke已立即TERM、监督排空，未计验收，取消现场的项目目录/匹配进程均无残留（cancelled-smoke-cleanup.log）。未运行qwb-test full或collab-all默认全门，未push/建分支，主仓仅追加本账本，state字段未动。候选SHA=ca683f58def8c86aea1c41ac10c3fc1997a4daaf。
+working: 2026-10-05T09:26:35Z 主控验收：工人提交 ca683f5 合入主干为 d397fe1（合并时 tests/collab-planning.sh 导入行冲突，两边保留）。主控读过全部脚本与模板改动。合并后第一轮全门红 2 项，根因是 tests/collab-herdr.sh 一处钉固定历史提交的逐字节对照：本票正当改变了发给 Claude 工人的内容（超限时改发指路行），旧基线对不上；主控改为取指路行所指文件的原文再比（198d7da），单跑 96/0。主干 198d7da 全门 rc=0、863 PASS、0 FAIL（751 秒，.qwb-tmp/ctl-full-merge13.log）；真机端到端第 16 轮 15 项断言全 PASS（docs/reviews/2026-10-05-e2e-real-claude-pi-r8.md）。第四轮真机演练（候选 d397fe1）里给演练主控的叫醒未出现要求确认的情况。

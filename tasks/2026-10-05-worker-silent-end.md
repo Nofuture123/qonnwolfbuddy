@@ -107,3 +107,4 @@ Then  与起点提交的标准输出、标准错误、退出码、票内容相�
 - 不改 30 分钟「仍在干活但长时间无进度」这条兜底的判定与时限；不把活动未知猜成已收工；不新增常驻进程或第二个值守。
 - 不碰真 Herdr、不启动模型会话；不建分支、不 push、不动主仓根的任何文件（主账本追加状态行除外）。
 working: 2026-10-05T09:21:10Z 主控手工派发（同 Space 独立 Tab，未经 qwb-run）：worker=pi（--provider magpie --model codex/gpt-6.1-sol --thinking high） agent=qwb-worker-silent-end pane=w14Z:p1F dir=/Users/rocky/projects/qonnwolfbuddy/.worktrees/worker-silent-end base=198d7da
+working: 2026-10-05T09:22:23Z 执行者已完整读票及点名模板/脚本/验收入口；确认审核提示词缺回票指令。拟复用activity --task核对本代PID/session，取原生会话末条记录时间作为收工时间，缺时间/早于派发/unknown不触发；先补提示词与快路径红证。代码仅本隔离副本。
