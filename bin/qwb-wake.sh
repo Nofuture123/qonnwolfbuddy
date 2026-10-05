@@ -564,13 +564,27 @@ worker_due_row() {
   local f="$1" st="$2" summary="$3" target="$4" grant="$5" data now
   data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || return 3
   now="$(now_ms)"
+  # SILENT_ESCALATION_BEGIN
+  local escalating=0 expected_end="" controller="$6"
+  if [[ "$summary" == *'"silent_escalation":'* ]]; then
+    escalating=1
+    expected_end="$(printf '%s' "${summary#\[qwb-worker\] }" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{silent_end}')"
+  fi
+  # SILENT_ESCALATION_END
   # SILENT_END_BEGIN: recheck before recipient-specific deduplication/delivery.
   if [[ "$summary" == *'"silent_end":'* ]]; then
     [[ "$POSTURE_QUIET" -eq 0 && "${QWB_SILENT_END_MS:-60000}" =~ ^[1-9][0-9]*$ ]] || return 0
-    summary="[qwb-worker] $(qwb_worker_silent_end "$PROJECT_ROOT" "$f" "$data" "${summary#\[qwb-worker\] }" "$now" "${QWB_SILENT_END_MS:-60000}")" || return 3
+    summary="[qwb-worker] $(qwb_worker_silent_end "$PROJECT_ROOT" "$f" "$data" "${summary#\[qwb-worker\] }" "$now" "${QWB_SILENT_END_MS:-60000}" "$controller")" || return 3
     [[ "$summary" == *'"silent_end":'* ]] || return 0
   fi
   # SILENT_END_END
+  # SILENT_ESCALATION_BEGIN
+  if (( escalating )); then
+    [[ "$summary" == *'"silent_escalation":'* ]] || return 0
+    printf '%s' "${summary#\[qwb-worker\] }" | perl -MJSON::PP -0777 -e 'exit !(decode_json(<STDIN>)->{silent_end} eq $ARGV[0])' "$expected_end" || return 0
+  fi
+  if [[ "$summary" == *'"silent_escalation":'* && "$target" != "$controller" ]]; then return 0; fi
+  # SILENT_ESCALATION_END
   printf '%s' "$data" | perl -MJSON::PP -MDigest::SHA=sha1_hex,sha256_hex -MTime::Local=timegm -0777 -e '
     use utf8;
     my ($f,$st,$raw,$target,$grant,$now,$retry,$quiet,$ownerfile)=@ARGV;
@@ -588,6 +602,9 @@ worker_due_row() {
     # SILENT_END_BEGIN
     $fp=sha1_hex(JSON::PP->new->canonical->utf8->encode(["worker-silent-end",$s->{dispatch},$s->{op},$s->{pane},$s->{silent_end},$target,$grant,$owner_fp])) if $s->{silent_end};
     # SILENT_END_END
+    # SILENT_ESCALATION_BEGIN
+    $fp=sha1_hex(JSON::PP->new->canonical->utf8->encode(["worker-silent-end-escalation",$s->{dispatch},$s->{op},$s->{pane},$s->{silent_end},$target,$owner_fp])) if $s->{silent_escalation};
+    # SILENT_ESCALATION_END
     my @wakes=grep { $_->{kind} eq "wake" && $_->{line}=~/\bfp=\Q$fp\E(?:\s|$)/ } @{$d->{events}};
     if ($s->{lost} || $s->{silent_end}) { exit if @wakes }
     else {
@@ -601,6 +618,11 @@ worker_due_row() {
     my $silent_hint=$d->{gate} && $target eq $d->{gate}{identity}{pane} && $d->{ops}{$s->{op}}{owner} eq $target ? "请读审核工人的窗口或让它补写 done 行" : "请读它的窗口或让它补写状态行";
     $s->{payload}="工人已收工但没有报告：pane=$s->{pane} op=$s->{op}；${silent_hint}" if $s->{silent_end};
     # SILENT_END_END
+    # SILENT_ESCALATION_BEGIN
+    if (my $reminder=$s->{silent_escalation}) {
+      $s->{payload}="升级主控：工人已收工仍无报告，pane=$s->{pane} op=$s->{op}；派工者=$reminder->{role} actor=$reminder->{actor} pane=$reminder->{pane}；$reminder->{role}已于$reminder->{at}被提醒；请主控读工人窗口与票上派工者追加的说明后处理";
+    }
+    # SILENT_ESCALATION_END
     print join("\t",$f,$st,$fp,"[qwb-worker] ".JSON::PP->new->canonical->utf8->encode($s),$s->{lost} ? $s->{pane} : ""),"\n";
   ' "$f" "$st" "$summary" "$target" "$grant" "$now" "${QWB_REWAKE_MS:-0}" "$POSTURE_QUIET" "$PROJECT_ROOT/qwbuddy/.controller.lock/owner"
 }
@@ -776,9 +798,15 @@ route_gate_due() {
     fi
     if [[ "$last" == '[qwb-worker] '* ]]; then
       data="$(qwb_ledger "$PROJECT_ROOT" "$f" read)" || { rm -rf "$dir"; return 3; }
+      # SILENT_ESCALATION_BEGIN
+      last="[qwb-worker] $(printf '%s' "${last#\[qwb-worker\] }" | qwb_worker_silent_notice "$PROJECT_ROOT" "$data" "$(now_ms)" "${QWB_SILENT_END_MS:-60000}" "$controller")" || { rm -rf "$dir"; return 3; }
+      # SILENT_ESCALATION_END
       info="$(printf '%s' "$data" | perl -MJSON::PP -0777 -e '
         use utf8; binmode STDOUT, ":encoding(UTF-8)";
         my $d=decode_json(<STDIN>); my $s=decode_json(substr($ARGV[0],length("[qwb-worker] ")));
+        # SILENT_ESCALATION_BEGIN
+        exit if $s->{silent_escalation};
+        # SILENT_ESCALATION_END
         my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef);
         my $g=$d->{gate};
         if ($s->{silent_end} && $g && $d->{claim} && $d->{claim}{owner} eq $g->{identity}{pane} && $d->{ops}{$s->{op}}{owner} eq $g->{identity}{pane} && $g->{verdict}=~/^(pending|rework)$/) {
@@ -837,7 +865,7 @@ route_gate_due() {
       fi
       if (( idx >= 0 )) && [[ "${grants[idx]}" == "$grant" ]]; then
         if [[ "$last" == '[qwb-worker] '* ]]; then
-          worker_due_row "$f" "$st" "$last" "$target" "$grant" >> "${batches[idx]}" || { rm -rf "$dir"; return 3; }
+          worker_due_row "$f" "$st" "$last" "$target" "$grant" "$controller" >> "${batches[idx]}" || { rm -rf "$dir"; return 3; }
         else
           printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "${batches[idx]}"
         fi
@@ -846,7 +874,7 @@ route_gate_due() {
       if [[ "$role" == 门禁 ]]; then last="$(gate_unavailable_summary "$last" "$actor" "$target")"; fi
     fi
     if [[ "$last" == '[qwb-worker] '* ]]; then
-      worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
+      worker_due_row "$f" "$st" "$last" "$controller" '' "$controller" >> "$keep" || { rm -rf "$dir"; return 3; }
     else
       printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"
     fi
@@ -858,7 +886,7 @@ route_gate_due() {
     if [[ "$proof" != "${grants[i]}" ]]; then
       while IFS=$'\t' read -r f st fp last lostpane; do
         if [[ "$last" == '[qwb-worker] '* ]]; then
-          worker_due_row "$f" "$st" "$last" "$controller" '' >> "$keep" || { rm -rf "$dir"; return 3; }
+          worker_due_row "$f" "$st" "$last" "$controller" '' "$controller" >> "$keep" || { rm -rf "$dir"; return 3; }
         else
           if [[ "${roles[i]}" == 门禁 ]]; then last="$(gate_unavailable_summary "$last" "${actors[i]}" "${targets[i]}")"; fi
           printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$st" "$fp" "$last" "$lostpane" >> "$keep"

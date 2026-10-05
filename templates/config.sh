@@ -6,7 +6,7 @@ QWB_AGENT_START_MS=30000               # 起工人的超时（毫秒）
 QWB_WAKE_INTERVAL_MS=120000            # 值守每轮等待预算（毫秒）
 QWB_REWAKE_MS=1800000                  # 时间兜底重叫：仅 running，距票修改时间/最近 wake 中较晚者超期无进展才重叫；working: 只推迟兜底（0 = 关闭，quiet 下关闭）；
                                        # blocked/needs-decision 等的是主控裁决或使用者，不重叫（重叫只烧主控 token）
-QWB_SILENT_END_MS=60000               # 工人已收工未报告：本代idle证据满一分钟叫派工者一次（0 = 关闭，away/quiet 下关闭；缺可靠时间不触发）
+QWB_SILENT_END_MS=60000               # 工人已收工未报告：本代idle证据满一分钟叫派工者一次（0 = 关闭，away/quiet 下关闭；缺可靠时间不触发）；首次提醒后仍未报告，默认再约3分钟（3倍本阈值）直接叫主控一次
 QWB_WORKTREE_SETUP=""                  # 可选：新建隔离副本后在副本目录里 bash -c 执行一次（如：
                                        #   pnpm install --offline --frozen-lockfile && cp ../../.env .env）。
                                        # 留空不执行；stdout/stderr 透传；非 0 → 拒绝派发、副本保留供排查。

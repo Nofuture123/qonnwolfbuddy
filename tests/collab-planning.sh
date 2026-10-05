@@ -636,6 +636,111 @@ file.write_text(json.dumps(s))
                 state=json.loads(native_bytes); state['up-worker']=dict(session=str(session),status=status); native.write_text(json.dumps(state))
             def restore(snapshot):
                 ticket.write_bytes(snapshot);clock.write_text('4102444800000');native_session()
+            def escalation_checks():
+                scripts={n:(runtime/n).read_bytes() for n in ['qwb-wake.sh','qwb-lib.sh']}
+                writer_current=writer.read_bytes()
+                writer.write_bytes(writer_current.replace(b"$event=unpack('H*',$bytes);",b'$event=sprintf("%032x",$data->{seq});'))
+                other_dir=Path(tempfile.mkdtemp(prefix='escalation-other-',dir=temp))
+                others=[f for f in (p/'tasks').glob('*.md') if f!=ticket]
+                for f in others:f.rename(other_dir/f.name)
+                def escalation_baseline(n,raw):
+                    text=raw.decode()
+                    text=re.sub(r'^ *# SILENT_ESCALATION_BEGIN[^\n]*\n.*?^ *# SILENT_ESCALATION_END\n','',text,flags=re.M|re.S)
+                    if n=='qwb-lib.sh':text=text.replace(' | qwb_worker_silent_notice "$1" "$3" "$5" "$6" "${7:-}"','')
+                    return text.encode()
+                def write_state(d):
+                    body=ticket.read_bytes().split(b'\n<!-- qwb-collab-v1\n')[0]
+                    ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(d,ensure_ascii=False).encode()+b'\n-->\n')
+                def setup(role='规划'):
+                    for n,raw in scripts.items():(runtime/n).write_bytes(raw)
+                    restore(base);config.write_bytes(config_bytes+b'QWB_REWAKE_MS=1800000\nQWB_SILENT_END_MS=60000\n')
+                    if role!='规划':
+                        d=read(name);d.pop('planning');d['ops']['up-dispatch']['owner']='ctl';write_state(d)
+                    if role=='门控':
+                        assignment={'candidate':str(candidate),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(payload('escalation-environment.json',{})),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
+                        call('gate-assign',name,'--','gate',payload('escalation-gate.json',assignment))
+                        call('claim',name,'--','escalation-gate',actor='gate-pane')
+                        d=read(name);d['ops']['up-dispatch']['owner']='gate-pane';write_state(d)
+                def first(role='规划'):
+                    setup(role);advance(59999);routes,_=deliveries();assert not routes,routes
+                    advance(1);routes,_=deliveries();target={'规划':'planner-pane','门控':'gate-pane','主控':'ctl'}[role]
+                    assert len(routes)==1 and routes[0][2]==target and '工人已收工但没有报告' in routes[0][3],routes
+                    return ticket.read_bytes()
+                def escalation(role):
+                    routes,_=deliveries()
+                    assert len(routes)==1 and routes[0][2]=='ctl' and '升级主控' in routes[0][3] and 'pane=up-worker op=up-dispatch' in routes[0][3] and role+'已于2100-01-01T00:01:00Z被提醒' in routes[0][3] and '票上派工者追加的说明' in routes[0][3],('escalation missing or wrong destination',role,routes)
+                    for _ in range(3):advance(60000);routes,_=deliveries();assert not routes,routes
+                def compare(label,snapshot):
+                    observed=[];state_bytes=native.read_bytes()
+                    for version in ['baseline','candidate']:
+                        for n,raw in scripts.items():(runtime/n).write_bytes(escalation_baseline(n,raw) if version=='baseline' else raw)
+                        ticket.write_bytes(snapshot);native.write_bytes(state_bytes);log.write_bytes(b'')
+                        result=cli('qwb-wake.sh','--once','--pane','ctl')
+                        observed.append((result.stdout.encode(),result.stderr.encode(),result.returncode,ticket.read_bytes(),log.read_bytes()))
+                    assert observed[0]==observed[1],('escalation byte/call mismatch',label,observed)
+                    print('EVIDENCE escalation unchanged '+label,flush=True)
+                def block_check():
+                    setup();config.write_bytes(config.read_bytes()+b"QWB_CONTROLLER_PANE=''\n")
+                    ticking=temp/'escalation-block-now'
+                    ticking.write_text('#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\np=Path(os.environ["PL_CLOCK"]);n=int(p.read_text());print(n);p.write_text(str(n+1))\n');ticking.chmod(0o755)
+                    extra={'QWB_NOW_MS_CMD':str(ticking),'QWB_CONTROLLER_PANE':''}
+                    clock.write_text('4102444860000');log.write_bytes(b'')
+                    result=cli('qwb-wake.sh','--block','--max-ms','1',ok=False,extra=extra)
+                    calls=native_calls(log.read_text().splitlines(),p)
+                    assert result.returncode==124 and len([a for a in calls if a[:2]==['pane','run'] and a[2]=='planner-pane' and 'Up(running)' in a[3]])==1,(result.returncode,result.stdout,result.stderr,calls)
+                    clock.write_text('4102445040000');log.write_bytes(b'')
+                    result=cli('qwb-wake.sh','--block','--max-ms','1',ok=False,extra=extra)
+                    assert result.returncode==2 and '升级主控' in result.stdout and 'pane=up-worker op=up-dispatch' in result.stdout and '规划已于2100-01-01T00:01:00Z被提醒' in result.stdout,('block escalation missing from stdout',result.returncode,result.stdout,result.stderr)
+                    calls=native_calls(log.read_text().splitlines(),p)
+                    assert not any(a[:2]==['pane','run'] and a[2]=='ctl' for a in calls),calls
+                    print('PASS escalation 场景9：真实hook block无pane/config为空，先叫规划，再升级以stdout返回且rc2',flush=True)
+                try:
+                    if os.environ.get('QWB_ESCALATION_BLOCK_ONLY')=='1':
+                        block_check();return
+                    first('规划');call('append',name,'--','working: 派工者已核查，等待主控处理',actor='planner-pane')
+                    advance(179999);routes,_=deliveries();assert not routes,routes
+                    advance(1);escalation('规划')
+                    print('PASS escalation 场景1：60秒规划一次，首次提醒后180秒主控一次，含派工者时间/窗口/op/说明',flush=True)
+                    first('门控');advance(180000);escalation('门控')
+                    print('PASS escalation 场景2：门控同样先提醒后升级主控，重复轮次不多叫',flush=True)
+                    for report in ['done','blocked','needs-decision']:
+                        first();advance(179000);call('append',name,'--',report+': 已报告本次操作',actor='up-worker')
+                        routes,_=deliveries();assert all('升级主控' not in r[3] for r in routes),routes
+                        advance(1000);routes,_=deliveries();assert all('升级主控' not in r[3] for r in routes),routes
+                    print('PASS escalation 场景3：done/blocked/needs-decision在到期前报告均取消升级',flush=True)
+                    first();advance(90000);native_session(status='working');mark=count();routes,_=deliveries();assert not routes,routes
+                    probes=[a for a in native_calls(log.read_text().splitlines()[mark:],p) if a[:2]==['pane','get'] and a[2]=='up-worker' or a[:2]==['pane','process-info'] and a[-1]=='up-worker']
+                    assert probes==[['pane','get','up-worker']],probes
+                    ended=time.strftime('%Y-%m-%dT%H:%M:%S.000Z',time.gmtime(int(clock.read_text())//1000));native_session(stamp=ended)
+                    advance(59999);routes,_=deliveries();assert not routes,routes
+                    advance(1);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='planner-pane' and '升级主控' not in routes[0][3],routes
+                    advance(30000);routes,_=deliveries();assert not routes,('old end escalated after new end',routes)
+                    advance(149999);routes,_=deliveries();assert not routes,routes
+                    advance(1);routes,_=deliveries();assert len(routes)==1 and routes[0][2]=='ctl' and '规划已于2100-01-01T00:03:30Z被提醒' in routes[0][3],routes
+                    print('PASS escalation 场景4/7：working零额外查询；再次收工新指纹从新首次提醒计时，旧指纹不升级',flush=True)
+                    first('主控');advance(180000);routes,_=deliveries();assert not routes,routes
+                    advance(180000);routes,_=deliveries();assert not routes,routes
+                    print('PASS escalation 场景5：首次就是主控，只叫一次，不再升级',flush=True)
+                    for mode in ['disabled','quiet','away']:
+                        snapshot=first()
+                        if mode=='disabled':config.write_bytes(config_bytes+b'QWB_REWAKE_MS=1800000\nQWB_SILENT_END_MS=0\n')
+                        else:cli('qwb-ledger.sh','mode-enter','--project',p,'--',mode,'escalation-auth','fixture posture','same authority')
+                        advance(180000);routes,_=deliveries();assert not routes,(mode,routes)
+                        compare(mode,ticket.read_bytes())
+                        if mode!='disabled':cli('qwb-ledger.sh','mode-exit','--project',p,'--','explicit','fixture exit')
+                    print('PASS escalation 场景6：关闭/quiet/away无升级，stdout/stderr/rc/票内容/调用序列逐字节相同',flush=True)
+                    setup();snapshot=ticket.read_bytes();advance(59000);compare('before-first',snapshot)
+                    advance(1000);compare('first-bell',snapshot)
+                    snapshot=ticket.read_bytes();advance(60000);compare('waiting-early',snapshot)
+                    advance(119999);compare('waiting-deadline-minus-one',snapshot)
+                    native_session(status='working');compare('working',ticket.read_bytes())
+                    print('PASS escalation 场景7/8：等待升级不增加重检查；未触发路径完整输出/票字节/原生调用与仅撤本票基线相同',flush=True)
+                    block_check()
+                finally:
+                    for n,raw in scripts.items():(runtime/n).write_bytes(raw)
+                    writer.write_bytes(writer_current)
+                    for f in others:(other_dir/f.name).rename(f)
+                    other_dir.rmdir()
             try:
                 native_session()
                 probe=cli('qwb-herdr.sh','activity','--task',ticket,'--pane','up-worker')
@@ -644,12 +749,14 @@ file.write_text(json.dumps(s))
                 assert evidence['activity']=='idle',evidence
                 call('append',name,'--',f'working: worker-activity op=up-dispatch pane=up-worker evidence={json.dumps(evidence)}')
                 base=ticket.read_bytes()
+                # 临时Git自身的clean候选；不碰源码仓的任何worktree元数据。
+                candidate=temp/'silent-end-candidate';git('worktree','add','-q','--detach',str(candidate))
+                if os.environ.get('QWB_ESCALATION_ONLY')=='1':
+                    escalation_checks();return
                 # 同一私有已派快照改为门控归属；身份/claim/门铃仍走公开入口。
                 state=read(name);state.pop('planning');state['ops']['up-dispatch']['owner']='ctl'
                 body=base.split(b'\n<!-- qwb-collab-v1\n')[0]
                 ticket.write_bytes(body+b'\n<!-- qwb-collab-v1\n'+json.dumps(state,ensure_ascii=False).encode()+b'\n-->\n')
-                # 临时Git自身的clean候选；不碰源码仓的任何worktree元数据。
-                candidate=temp/'silent-end-candidate';git('worktree','add','-q','--detach',str(candidate))
                 assignment={'candidate':str(candidate),'base':git('rev-parse','HEAD'),'attempt':'1','policy':'existing-v1','environment':str(payload('silent-end-environment.json',{})),'required':{'full':['user_good','user_failure']},'workers':{'review':'reviewer','rework':'sol'}}
                 call('gate-assign',name,'--','gate',payload('silent-end-gate.json',assignment))
                 call('claim',name,'--','silent-end-gate',actor='gate-pane')
@@ -673,7 +780,7 @@ file.write_text(json.dumps(s))
                 advance(59999);routes,_=deliveries();assert not routes,routes
                 advance(1);routes,_=deliveries()
                 assert len(routes)==1 and routes[0][2]=='planner-pane' and '工人已收工但没有报告' in routes[0][3] and 'pane=up-worker op=up-dispatch' in routes[0][3],('silent-end: 一分钟没有通知规划',routes)
-                for _ in range(3):advance(60000);routes,_=deliveries();assert not routes,routes
+                for _ in range(3):advance(30000);routes,_=deliveries();assert not routes,routes
                 print('PASS silent-end 场景3：规划派工满一分钟只叫一次，跨进程重启不重叫',flush=True)
                 call('append',name,'--event-id','silent-end-late-done','--','done: 补写真实交付',actor='up-worker')
                 routes,_=deliveries();assert len(routes)==1 and 'source:silent-end-late-done' in routes[0][3] and all('没有报告' not in r[3] for r in routes),routes
@@ -737,6 +844,7 @@ file.write_text(json.dumps(s))
                 finally:
                     for f in others:(others_dir/f.name).rename(f)
                     others_dir.rmdir();env.pop('PL_GONE_WORKER',None)
+                escalation_checks()
             finally:
                 runtime_bin=saved_bin;wake.write_bytes(wake_bytes);writer.write_bytes(writer_bytes);ticket.write_bytes(original_ticket);config.write_bytes(config_bytes);native.write_bytes(native_bytes)
                 for key in ['PL_CLOCK','QWB_NOW_MS_CMD']:env.pop(key,None)

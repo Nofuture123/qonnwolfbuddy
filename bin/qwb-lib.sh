@@ -793,9 +793,46 @@ worker_lost() {
   esac
 }
 
+# SILENT_ESCALATION_BEGIN
+# 从既有收件指纹与wake回执读首次提醒，不新增查询、状态文件或办理收据。
+qwb_worker_silent_notice() {
+  perl -MJSON::PP -MDigest::SHA=sha1_hex,sha256_hex -MTime::Local=timegm -0777 -e '
+    use utf8;
+    my ($project,$data,$now,$threshold,$controller)=@ARGV;
+    my $s=decode_json(<STDIN>); delete $s->{silent_escalation};
+    my $json=JSON::PP->new->canonical->utf8;
+    if ($s->{silent_end} && $controller ne "" && $threshold=~/^[1-9][0-9]*$/) {
+      my $d=decode_json($data); my @senders;
+      push @senders,["门控",$d->{gate}{identity}] if $d->{gate};
+      my $p=$d->{planning_authority} // ($d->{planning} ? $d->{planning}{authority} : undef);
+      push @senders,["规划",$p->{identity}] if $p;
+      my $ownerfile="$project/qwbuddy/.controller.lock/owner";
+      open my $owner,"<",$ownerfile or die "silent escalation owner read: $!\n";
+      my $owner_fp=sha256_hex(<$owner> // ""); close $owner;
+      my $ESCALATE_MULTIPLIER=3;
+      for my $sender (@senders) {
+        my ($role,$identity)=@$sender; my $pane=$identity->{pane};
+        next unless $pane ne $controller && $d->{ops}{$s->{op}}{owner} eq $pane;
+        my $grant=$json->encode($identity);
+        my $first_fp=sha1_hex($json->encode(["worker-silent-end",$s->{dispatch},$s->{op},$s->{pane},$s->{silent_end},$pane,$grant,$owner_fp]));
+        my ($first)=grep { $_->{kind} eq "wake" && $_->{line}=~/\bfp=\Q$first_fp\E(?:\s|$)/ } @{$d->{events}};
+        next unless $first;
+        my @t=$first->{at}=~/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/;
+        next unless @t;
+        my $at=eval { timegm($t[5],$t[4],$t[3],$t[2],$t[1]-1,$t[0])*1000 };
+        next unless defined($at) && $now-$at >= $ESCALATE_MULTIPLIER*$threshold;
+        $s->{silent_escalation}={first_fp=>$first_fp,role=>$role,actor=>$identity->{actor},pane=>$pane,at=>$first->{at}};
+        last;
+      }
+    }
+    print $json->encode($s),"\n";
+  ' "$1" "$2" "$3" "$4" "$5"
+}
+# SILENT_ESCALATION_END
+
 # 原生末条记录时间代表收工；缺证据不猜时间，也不拿票mtime代替。
 qwb_worker_silent_end() {
-  python3 -B - "$1" "$2" "$3" "$4" "$5" "$6" "$(dirname "${BASH_SOURCE[0]}")/qwb-herdr.sh" <<'PY'
+  python3 -B - "$1" "$2" "$3" "$4" "$5" "$6" "$(dirname "${BASH_SOURCE[0]}")/qwb-herdr.sh" <<'PY' | qwb_worker_silent_notice "$1" "$3" "$5" "$6" "${7:-}"
 import datetime, hashlib, json, os, re, subprocess, sys
 from pathlib import Path
 project,task,data,source,now,threshold,helper=sys.argv[1:]
