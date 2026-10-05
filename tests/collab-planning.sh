@@ -398,9 +398,9 @@ file.write_text(json.dumps(s))
                     pending(); cap('source:exhaust-gate'); routes,_=deliveries()
                     assert '交接升级主控' in assert_reminder(routes,'source:exhaust-gate','门禁')
                     before=ticket.read_bytes(); routes,_=deliveries(); assert not routes and ticket.read_bytes()==before,routes
-                    cli('qwb-role.sh','start','--actor','silent-test','--role','测试体系','--worker','sol','--dir',p)
+                    cli('qwb-role.sh','start','--actor','up-test','--role','测试体系','--worker','sol','--dir',p)
                     # 请求生成入口另由collab-test-policy全文件验证；这里固定其合法持久读模，专测耗尽分流。
-                    identity=subprocess.run(['bash','-c','. "$1"; qwb_gate_identity "$2" silent-test 测试体系','probe',str(ROOT/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
+                    identity=subprocess.run(['bash','-c','. "$1"; qwb_gate_identity "$2" up-test 测试体系','probe',str(ROOT/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
                     assert identity.returncode==0,identity.stderr
                     event='exhaust-test'
                     call('append',name,'--event-id',event,'--','working: 明确绑定的测试请求')
@@ -471,8 +471,8 @@ file.write_text(json.dumps(s))
                 other_dir.rmdir()
         exhausted_checks()
         if os.environ.get('QWB_SILENCE_DELIVERY_ONLY')=='1': return
-        call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
         call('append',name,'--event-id','up-blocked','--','blocked: 等待技术处理',actor='up-worker')
+        call('append',name,'--event-id','up-done','--','done: 已交付固定候选',actor='up-worker')
         # 红证使用同一新用例和公开入口，仅替换本私有项目运行时脚本。
         baseline=os.environ.get('QWB_PLANNING_UPWARD_BASELINE')=='1'
         if baseline:
@@ -605,7 +605,7 @@ file.write_text(json.dumps(s))
         print('PASS upward writer：accepted后续交接的四入口拒绝规划，票字节不变')
         if os.environ.get('QWB_PLANNING_UPWARD_COMPARE')!='1': return
         # 同路径、同初始票/身份，固定两份writer的时钟与随机输入；比较未过滤的完整字节。
-        cli('qwb-role.sh','start','--actor','up-test','--role','测试体系','--worker','sol','--dir',p)
+        # 复用耗尽测试已登记的测试角色；fake Herdr每个角色标签只有一个pane。
         probe=subprocess.run(['bash','-c','. "$1"; qwb_gate_identity "$2" up-test 测试体系','probe',str(ROOT/'bin/qwb-lib.sh'),str(p)],env=env,capture_output=True,text=True)
         assert probe.returncode==0,(probe.stdout,probe.stderr)
         test_identity=json.loads(probe.stdout)
